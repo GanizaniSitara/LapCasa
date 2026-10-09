@@ -1,0 +1,69 @@
+{
+  "version": "0.4.0",
+  "build_commit": "342e242f08da407e5cbc9f3849fc81972b443d66",
+  "upstream": "https://github.com/julyx10/lap",
+  "application_logic_unchanged": true,
+  "publication_changes": [
+    ".gitignore",
+    "CONTRIBUTING.md",
+    "PRIVACY.md",
+    "README.md",
+    "importers/picasa/README.md",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/bin/lap_cli.rs",
+    "src-tauri/src/t_advanced_ai.rs",
+    "src-tauri/src/t_cmds.rs",
+    "src-tauri/src/t_edit_recipe.rs",
+    "src-tauri/src/t_edit_tools.rs",
+    "src-tauri/src/t_enhance.rs",
+    "src-tauri/src/t_face_suggest.rs",
+    "src-tauri/src/t_face_thumb.rs",
+    "src-tauri/src/t_folder_rules.rs",
+    "src-tauri/src/t_image.rs",
+    "src-tauri/src/t_sqlite.rs",
+    "src-vite/src/common/api.js",
+    "src-vite/src/common/folderSections.ts",
+    "src-vite/src/common/personFaces.ts",
+    "src-vite/src/components/AiProgressCorner.vue",
+    "src-vite/src/components/AlbumFolder.vue",
+    "src-vite/src/components/AlbumList.vue",
+    "src-vite/src/components/Content.vue",
+    "src-vite/src/components/FlatFolderList.vue",
+    "src-vite/src/components/FolderManager.vue",
+    "src-vite/src/components/FolderSectionHeader.vue",
+    "src-vite/src/components/GridView.vue",
+    "src-vite/src/components/LeftPaneStack.vue",
+    "src-vite/src/components/Person.vue",
+    "src-vite/src/components/PersonSectionHeader.vue",
+    "src-vite/src/components/SmartAlbumList.vue",
+    "src-vite/src/components/Thumbnail.vue",
+    "src-vite/src/components/TitleBar.vue",
+    "src-vite/src/main.js",
+    "src-vite/src/stores/configStore.js",
+    "src-vite/src/views/Home.vue",
+    "src-vite/src/views/ImageEditor.vue"
+  ],
+  "excluded": [
+    "private verification evidence and history",
+    "workstation VM relay",
+    "scratch files and duplicate build/model downloads"
+  ],
+  "submodules": [
+    {
+      "path": "src-tauri/third_party/LibRaw",
+      "commit": "b860248a89d9082b8e0a1e202e516f46af9adb29"
+    },
+    {
+      "path": "src-tauri/third_party/libde265",
+      "commit": "3cd9fbf15ae30edafa22a29fdd8a89355ad52ad0"
+    },
+    {
+      "path": "src-tauri/third_party/libheif",
+      "commit": "62f1b8c76ed4d8305071fdacbe74ef9717bacac5"
+    },
+    {
+      "path": "src-tauri/third_party/libjpeg-turbo",
+      "commit": "9217719d3a58633923b096af4c1d50d304768a64"
+    }
+  ]
+}
