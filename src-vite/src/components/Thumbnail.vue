@@ -350,7 +350,6 @@ const props = defineProps({
     type: Number,
     required: true,
   },
-  fillCardWidth: { type: Boolean, default: false },
   filmstrip: { type: Boolean, default: false },
   suppressPlaceholder: {
     type: Boolean,
@@ -449,7 +448,7 @@ const faceSrc = computed(() => {
     fh: String(box.height),
     fa: String(config.settings.grid.style === 0 ? FACE_TILE_ASPECT : 1),
     fid: String(state.confirmedFaces.get(props.file.id) ?? state.suggestions.get(props.file.id) ?? state.ignored.get(props.file.id) ?? 0),
-    fs: String(props.gridSize / (config.settings.grid.style === 0 ? FACE_TILE_ASPECT : 1)
+    fs: String(props.gridSize
       * window.devicePixelRatio <= 128 ? 128 : config.settings.thumbnailSize),
     fp: path,
   });
@@ -704,8 +703,9 @@ const layoutStyle = computed(() => {
   const size = props.gridSize;
   if (props.filmstrip) return { width: `${size}px`, height: `${size}px` };
   if (style === 0) {
-    const width = faceCrop.value && !props.fillCardWidth ? Math.round(size * FACE_TILE_ASPECT) : size;
-    const height = faceCrop.value ? (props.fillCardWidth ? size / FACE_TILE_ASPECT : size) : size * 3 / 4;
+    // Match the long edge across portrait face crops and landscape photos.
+    const width = faceCrop.value ? size * FACE_TILE_ASPECT : size;
+    const height = faceCrop.value ? size : size * 3 / 4;
     return { width: `${width}px`, height: `${height}px` };
   }
   if (style === 1) return { width: '100%', height: `${size}px` };

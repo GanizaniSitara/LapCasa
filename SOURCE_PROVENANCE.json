@@ -1,6 +1,6 @@
 {
-  "version": "0.4.0",
-  "build_commit": "342e242f08da407e5cbc9f3849fc81972b443d66",
+  "version": "0.4.1",
+  "build_commit": "dd45a7e2a40b2b22b32b606b34002169e16e5e93",
   "upstream": "https://github.com/julyx10/lap",
   "application_logic_unchanged": true,
   "publication_changes": [
@@ -65,5 +65,9 @@
       "path": "src-tauri/third_party/libjpeg-turbo",
       "commit": "9217719d3a58633923b096af4c1d50d304768a64"
     }
-  ]
+  ],
+  "previous_release": {
+    "version": "0.4.0",
+    "build_commit": "342e242f08da407e5cbc9f3849fc81972b443d66"
+  }
 }

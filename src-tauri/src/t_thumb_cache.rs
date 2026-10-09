@@ -6,8 +6,8 @@ const THUMBNAILS_TABLE: TableDefinition<i64, &[u8]> = TableDefinition::new("thum
 const FACE_THUMBNAILS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("face_thumbnails");
 const ORIENTATION_VERSIONS: TableDefinition<i64, u32> = TableDefinition::new("thumbnail_orientation_versions");
 
-static DB_INSTANCE: OnceLock<Arc<Database>> = OnceLock::new();
-static DB_INIT_MUTEX: Mutex<()> = Mutex::new(());
+static DB_INSTANCE: Mutex<Option<Arc<Database>>> = Mutex::new(None);
+static CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static WRITE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn get_db_path() -> Result<PathBuf, String> {
@@ -19,17 +19,16 @@ fn get_db_path() -> Result<PathBuf, String> {
 }
 
 fn get_db() -> Result<Arc<Database>, String> {
-    if let Some(db) = DB_INSTANCE.get() {
-        return Ok(Arc::clone(db));
-    }
-
     // Concurrent first requests must wait for the shared handle, rather than
     // treating an exclusive-open failure as a cache miss and decoding photos.
-    let _init = DB_INIT_MUTEX.lock().map_err(|_| "Poisoned cache initialization lock".to_string())?;
-    if let Some(db) = DB_INSTANCE.get() { return Ok(Arc::clone(db)); }
+    let mut instance = DB_INSTANCE.lock().map_err(|_| "Poisoned cache initialization lock".to_string())?;
+    if CLOSING.load(std::sync::atomic::Ordering::Acquire) { return Err("Thumbnail cache is closing".into()); }
+    if let Some(db) = instance.as_ref() { return Ok(Arc::clone(db)); }
 
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "cache_open");
     let path = get_db_path()?;
     let db = Database::create(path).map_err(|e| format!("Failed to create redb database: {}", e))?;
+    trace.mark("database", 0);
 
     // Ensure the thumbnails table exists
     {
@@ -49,8 +48,28 @@ fn get_db() -> Result<Arc<Database>, String> {
     }
 
     let arc = Arc::new(db);
-    let _ = DB_INSTANCE.set(Arc::clone(&arc));
+    *instance = Some(Arc::clone(&arc));
     Ok(arc)
+}
+
+/// Static values are not dropped on exit. Release the database explicitly so
+/// redb writes its allocator checkpoint and clears its recovery flag normally.
+pub fn shutdown() -> Result<(), String> {
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "cache_shutdown");
+    CLOSING.store(true, std::sync::atomic::Ordering::Release);
+    let db = DB_INSTANCE.lock().map_err(|e| e.to_string())?.take();
+    if let Some(db) = db {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while Arc::strong_count(&db) > 1 {
+            if std::time::Instant::now() >= deadline {
+                return Err("Thumbnail cache still in use at shutdown; recovery may be needed".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(db);
+    }
+    trace.mark("closed", 0);
+    Ok(())
 }
 
 pub fn get_face(key: &str) -> Option<Vec<u8>> {
@@ -134,11 +153,14 @@ pub fn put(file_id: i64, data: &[u8]) -> Result<(), String> {
     if file_id <= 0 || data.is_empty() {
         return Ok(());
     }
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(file_id, "cache_write");
     let db = get_db()?;
+    trace.mark("open", data.len());
     let write_mutex = WRITE_MUTEX.get_or_init(|| Mutex::new(()));
     let _guard = write_mutex
         .lock()
         .map_err(|_| "Poisoned redb write lock".to_string())?;
+    trace.mark("lock_wait", data.len());
     let write_tx = db
         .begin_write()
         .map_err(|e| format!("Failed to begin write tx: {}", e))?;
@@ -152,9 +174,11 @@ pub fn put(file_id: i64, data: &[u8]) -> Result<(), String> {
     }
     write_tx.open_table(ORIENTATION_VERSIONS).map_err(|e| e.to_string())?
         .insert(file_id, crate::t_image::ORIENTATION_ALGORITHM_VERSION).map_err(|e| e.to_string())?;
+    trace.mark("insert", data.len());
     write_tx
         .commit()
         .map_err(|e| format!("Failed to commit write tx: {}", e))?;
+    trace.mark("commit", data.len());
     Ok(())
 }
 

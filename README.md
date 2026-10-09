@@ -6,7 +6,7 @@ LapCasa is a fork of [Lap by julyx10 and contributors](https://github.com/julyx1
 
 ## Download
 
-[Download LapCasa 0.4.0 for Windows x64](https://github.com/GanizaniSitara/LapCasa/releases/tag/v0.4.0).
+[Download LapCasa 0.4.1 for Windows x64](https://github.com/GanizaniSitara/LapCasa/releases/tag/v0.4.1).
 
 1. Download the Windows ZIP and extract the whole folder.
 2. Run `lap-casa.exe`. Keep the DLLs, `models`, `ffmpeg`, and `picasa-import` folders beside it.
@@ -16,7 +16,16 @@ This release is a portable Windows build, with no installer or automatic updater
 
 No personal photos, library databases, caches, or account settings are included. On a new computer, LapCasa creates its own local settings and library. Existing LapCasa settings are reused.
 
-## In 0.4.0
+## In 0.4.1
+
+- Faster grid refills after approving faces: avoid repeatedly copying every person's selection counters.
+- Thumbnail decoding and cache writes run outside the async workers used for navigation.
+- Cached thumbnails have their own workers, and newly requested previews take priority over the scrolling backlog.
+- Faces and photos use the same longest edge at a given slider setting, preserving proportions and column snapping.
+
+On the test library, the post-approval grid pause fell from 1.73 seconds to 0.19 seconds. A one-minute cold scroll stayed responsive, although the final images still needed about 3.7 seconds to finish filling. Large thumbnail caches can also take tens of seconds to reopen at startup; further performance work is ongoing.
+
+### Retained from 0.4.0
 
 - Larger thumbnails at the right end of the size slider, with whole-column snapping.
 - Decoded thumbnails appear as they become ready.
@@ -44,7 +53,7 @@ cargo build --release --locked --bin lap-casa --bin lap-cli
 
 See `scripts/README.md` for model and FFmpeg resource preparation. Portable packaging places the resource folders beside the executable. Python 3.12 is used by the optional Picasa importer; see `importers/picasa/README.md`.
 
-The source for 0.4.0 was exported from build commit `342e242f08da407e5cbc9f3849fc81972b443d66`. Workstation evidence, private development history, and a VM-only relay are excluded; test examples use generic paths. Application logic is unchanged. `SOURCE_PROVENANCE.json` records that mapping.
+The public source contains the same application logic as the tested Windows build. Workstation evidence, private development history, and a VM-only relay are excluded; test examples use generic paths. `SOURCE_PROVENANCE.json` maps each release to its build commit.
 
 ## License and attribution
 

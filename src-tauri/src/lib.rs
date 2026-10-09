@@ -512,6 +512,9 @@ pub async fn run() {
     match run_result {
         Ok(app) => {
             app.run(move |_app_handle, event| match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    if let Err(error) = t_thumb_cache::shutdown() { eprintln!("{error}"); }
+                }
                 // macOS: clicking the Dock icon of a running app reopens it.
                 // When the main window is hidden (closed-to-hide), show it again.
                 #[cfg(target_os = "macos")]

@@ -100,7 +100,6 @@
           :dedup-status="dedupStatuses[Number(getFileItem(item).id)]"
           :grid-size="isVerticalFilmstrip ? Math.max(1, itemWidth - 20) : gridSize"
           :filmstrip="isFilmstripView"
-          :fill-card-width="gridColumns > 0 && !isFilmstripView"
           :suppress-placeholder="peopleView || albumView || isFilmstripView"
           @clicked="(modifiers) => $emit('item-clicked', getFileIndex(item, index), modifiers)"
           @dblclicked="(modifiers) => $emit('item-dblclicked', getFileIndex(item, index), modifiers)"
@@ -529,7 +528,7 @@ const itemHeight = computed(() => {
     if (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) labelHeight += 28 * Number(config.settings.scale || 1); // suggestion tick / x row
     
     const height = props.gridColumns > 0 && config.settings.grid.personFaces !== false
-      && (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) ? size * 6 / 5 : size * 3 / 4;
+      && (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) ? size : size * 3 / 4;
     return height + 20 + labelHeight; // size + padding/border/gap(20) + labels
   }
   if (style === 1) return itemWidth.value + gap * 0.5;

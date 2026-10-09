@@ -8821,6 +8821,9 @@ impl AThumb {
 
         if let Some(thumb) = thumb.filter(|t| t.error_code == 0) {
             if let Some(data) = thumb.thumb_data {
+                // Promote a current disk/SQLite thumbnail once. Regeneration
+                // below already writes redb, so the protocol must not do it again.
+                crate::t_thumb_cache::put(file_id, &data)?;
                 return Ok(Some(data));
             }
 

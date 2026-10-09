@@ -2693,92 +2693,94 @@ pub async fn get_file_thumbs(
     force_regenerate: bool,
     trust_cached: bool,
 ) -> Result<Vec<Option<AThumb>>, String> {
-    let mut thumbs = Vec::with_capacity(files.len());
-    let file_ids: Vec<i64> = files
-        .iter()
-        .map(|request| request.file_id)
-        .filter(|file_id| *file_id > 0)
-        .collect();
-    let mut fetched_thumbs = if force_regenerate {
-        HashMap::new()
-    } else {
-        AThumb::fetch_many(&file_ids)
-            .map_err(|e| format!("Error while fetching thumbnails: {}", e))?
-    };
-
-    for request in files {
-        if request.file_id <= 0 {
-            thumbs.push(None);
-            continue;
-        }
-
-        let mut file_path = request.file_path;
-        let mut file_type = request.file_type.unwrap_or(0);
-        let mut orientation = request.orientation.unwrap_or(1);
-        let mut album_id = request.album_id.unwrap_or(0);
-
-        if file_path.is_none()
-            || request.file_type.is_none()
-            || request.orientation.is_none()
-            || album_id <= 0
-        {
-            if let Some(file) = AFile::get_file_info(request.file_id)
-                .map_err(|e| format!("Error while getting file info for thumbnail: {}", e))?
-            {
-                if file_path.is_none() {
-                    file_path = file.file_path;
-                }
-                if request.file_type.is_none() {
-                    file_type = file.file_type.unwrap_or(0);
-                }
-                if request.orientation.is_none() {
-                    orientation = file.e_orientation.unwrap_or(1) as i32;
-                }
-                if album_id <= 0 {
-                    album_id = file.album_id.unwrap_or(0);
-                }
-            }
-        }
-
-        let Some(file_path) = file_path else {
-            thumbs.push(None);
-            continue;
+    crate::t_protocol::thumbnail_work(move || {
+        let mut thumbs = Vec::with_capacity(files.len());
+        let file_ids: Vec<i64> = files
+            .iter()
+            .map(|request| request.file_id)
+            .filter(|file_id| *file_id > 0)
+            .collect();
+        let mut fetched_thumbs = if force_regenerate {
+            HashMap::new()
+        } else {
+            AThumb::fetch_many(&file_ids)
+                .map_err(|e| format!("Error while fetching thumbnails: {}", e))?
         };
 
-        if let Some(fetched_thumb) = fetched_thumbs.remove(&request.file_id) {
-            if let Some(thumb) = AThumb::resolve_fetched_thumb_if_available(
-                fetched_thumb,
-                &file_path,
-                thumbnail_size,
-                orientation,
-                raw_thumbnail_source == "embedded",
-                force_regenerate,
-                trust_cached,
-            )
-            .map_err(|e| format!("Error while getting thumbnail: {}", e))?
-            {
-                thumbs.push(Some(thumb));
+        for request in files {
+            if request.file_id <= 0 {
+                thumbs.push(None);
                 continue;
             }
+
+            let mut file_path = request.file_path;
+            let mut file_type = request.file_type.unwrap_or(0);
+            let mut orientation = request.orientation.unwrap_or(1);
+            let mut album_id = request.album_id.unwrap_or(0);
+
+            if file_path.is_none()
+                || request.file_type.is_none()
+                || request.orientation.is_none()
+                || album_id <= 0
+            {
+                if let Some(file) = AFile::get_file_info(request.file_id)
+                    .map_err(|e| format!("Error while getting file info for thumbnail: {}", e))?
+                {
+                    if file_path.is_none() {
+                        file_path = file.file_path;
+                    }
+                    if request.file_type.is_none() {
+                        file_type = file.file_type.unwrap_or(0);
+                    }
+                    if request.orientation.is_none() {
+                        orientation = file.e_orientation.unwrap_or(1) as i32;
+                    }
+                    if album_id <= 0 {
+                        album_id = file.album_id.unwrap_or(0);
+                    }
+                }
+            }
+
+            let Some(file_path) = file_path else {
+                thumbs.push(None);
+                continue;
+            };
+
+            if let Some(fetched_thumb) = fetched_thumbs.remove(&request.file_id) {
+                if let Some(thumb) = AThumb::resolve_fetched_thumb_if_available(
+                    fetched_thumb,
+                    &file_path,
+                    thumbnail_size,
+                    orientation,
+                    raw_thumbnail_source == "embedded",
+                    force_regenerate,
+                    trust_cached,
+                )
+                .map_err(|e| format!("Error while getting thumbnail: {}", e))?
+                {
+                    thumbs.push(Some(thumb));
+                    continue;
+                }
+            }
+
+            AThumb::schedule_background_generation_for_library(
+                app_handle.clone(),
+                request.file_id,
+                file_path,
+                file_type,
+                orientation,
+                thumbnail_size,
+                raw_thumbnail_source == "embedded",
+                album_id,
+                force_regenerate,
+                None,
+            );
+
+            thumbs.push(None);
         }
 
-        AThumb::schedule_background_generation_for_library(
-            app_handle.clone(),
-            request.file_id,
-            file_path,
-            file_type,
-            orientation,
-            thumbnail_size,
-            raw_thumbnail_source == "embedded",
-            album_id,
-            force_regenerate,
-            None,
-        );
-
-        thumbs.push(None);
-    }
-
-    Ok(thumbs)
+        Ok(thumbs)
+    }).await?
 }
 
 /// get a file's info

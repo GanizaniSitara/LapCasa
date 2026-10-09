@@ -1792,17 +1792,11 @@ async function ensureFolderGroupRoots() {
 }
 
 function updateGroupSelectedCount(groupId: string, count: number) {
-  groupSelectedCountMap.value = {
-    ...groupSelectedCountMap.value,
-    [groupId]: Math.max(0, count),
-  };
+  groupSelectedCountMap.value[groupId] = Math.max(0, count);
 }
 
 function updateGroupSelectedSize(groupId: string, size: number) {
-  groupSelectedSizeMap.value = {
-    ...groupSelectedSizeMap.value,
-    [groupId]: Math.max(0, size),
-  };
+  groupSelectedSizeMap.value[groupId] = Math.max(0, size);
 }
 
 function syncSelectionVersions() {
@@ -2609,10 +2603,9 @@ const usesColumnGrid = computed(() => config.settings.grid.style === 0 && config
 const gridColumnBounds = computed(() => {
   const width = containerWidth.value;
   const profile = gridSizeProfile.value;
-  const aspect = isPersonFaceView.value ? 5 / 6 : 1;
-  const min = Math.max(1, Math.ceil(width / (profile.maxGridSize * aspect + 20)));
+  const min = Math.max(1, Math.ceil(width / (profile.maxGridSize + 20)));
   // At 1184px client width: 62x74 faces, 74px whole-photo long edge.
-  const minimumSize = isPersonFaceView.value ? 62 : 74;
+  const minimumSize = 74;
   return { min, max: Math.max(min, Math.round(width / (minimumSize + 20))) };
 });
 const activeGridColumns = computed({
@@ -2620,7 +2613,7 @@ const activeGridColumns = computed({
     const saved = isPersonFaceView.value ? config.settings.grid.personFaceColumns : config.settings.grid.columns;
     if (containerWidth.value <= 0) return Number(saved) || 4;
     const oldSize = gridSizeFromPosition(activeSizePosition.value, config.settings.thumbnailSize);
-    const columns = Number(saved) || Math.round(containerWidth.value / (oldSize * (isPersonFaceView.value ? 5 / 6 : 1) + 20));
+    const columns = Number(saved) || Math.round(containerWidth.value / (oldSize + 20));
     return Math.min(gridColumnBounds.value.max, Math.max(gridColumnBounds.value.min, Math.round(columns)));
   },
   set: (value: number) => {
