@@ -1,0 +1,28 @@
+LapCasa 0.4.0
+
+Application source: GPL-3.0-or-later. See LICENSE.
+Derived from Lap by julyx10 and contributors: https://github.com/julyx10/lap
+
+Bundled and linked components retain their upstream copyrights and license terms.
+This application license does not replace the licenses of pretrained weights.
+
+Rust dependencies and versions: src-tauri/Cargo.lock
+JavaScript dependencies and versions: src-vite/pnpm-lock.yaml
+Native source dependencies and exact revisions: .gitmodules and Git submodule pins
+
+ONNX Runtime: https://github.com/microsoft/onnxruntime
+DirectML: https://github.com/microsoft/DirectML
+FFmpeg: https://ffmpeg.org/legal.html
+FFmpeg sidecar source/build information: https://github.com/julyx10/lap-binaries
+LibRaw: https://github.com/LibRaw/LibRaw
+libjpeg-turbo: https://github.com/libjpeg-turbo/libjpeg-turbo
+libheif: https://github.com/strukturag/libheif
+libde265: https://github.com/strukturag/libde265
+
+Pretrained models:
+CLIP: https://huggingface.co/Xenova/clip-vit-base-patch32
+InsightFace buffalo_s: https://github.com/deepinsight/insightface
+YOLOv10n: https://huggingface.co/onnx-community/yolov10n
+PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
+
+Consult these upstream projects for model-specific usage terms and notices.

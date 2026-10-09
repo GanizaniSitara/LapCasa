@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" data-folder-icon="windows" data-icon-source="src/assets/icons/folder-windows.svg">
+  <path fill="#E8B93C" d="M1 3.5A1.5 1.5 0 0 1 2.5 2H6l2 2h5.5A1.5 1.5 0 0 1 15 5.5V12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z"/>
+  <path fill="#F8D775" d="M1 6h14v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z"/>
+</svg>

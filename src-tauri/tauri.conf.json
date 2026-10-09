@@ -1,0 +1,65 @@
+{
+  "productName": "LapCasa",
+  "version": "0.4.0",
+  "identifier": "com.lapcasa.dev",
+  "build": {
+    "beforeBuildCommand": "pnpm --dir ../src-vite build",
+    "beforeDevCommand": "pnpm --dir ../src-vite dev",
+    "devUrl": "http://localhost:3580",
+    "frontendDist": "../src-vite/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "LapCasa",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "default"
+      ],
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/**",
+          "$PICTURES/**",
+          "$VIDEOS/**",
+          "$DOCUMENT/**",
+          "$DESKTOP/**",
+          "$DOWNLOAD/**",
+          "$APPCACHE/**",
+          "/Volumes/**",
+          "/media/**",
+          "/mnt/**",
+          "/run/media/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Graphics and Design",
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "resources": {
+      "../importers/picasa/picasa_import/": "picasa-import/picasa_import/",
+      "resources/models/*": "models",
+      "resources/ffmpeg/*": "ffmpeg"
+    }
+  }
+}
