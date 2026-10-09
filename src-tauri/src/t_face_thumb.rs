@@ -110,7 +110,8 @@ pub fn cached(key: &str) -> Result<Option<Vec<u8>>, String> {
 }
 
 pub async fn get(key: String, file_id: i64, bbox: [f64; 4], size: u32, aspect: f64, face_id: i64) -> Result<Vec<u8>, String> {
-    if let Some(data) = cached(&key)? { return Ok(data); }
+    let lookup_key = key.clone();
+    if let Some(data) = crate::t_protocol::thumbnail_work(move || cached(&lookup_key)).await?? { return Ok(data); }
     let canonical = cache_key(key.strip_prefix("face-v4:").ok_or("invalid face cache key")?)?;
     let _permit = GENERATION.get_or_init(|| tokio::sync::Semaphore::new(2))
         .acquire().await.map_err(|e| e.to_string())?;
