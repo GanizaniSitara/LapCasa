@@ -14,6 +14,7 @@
       <TButton :icon="IconMapCenter" :tooltip="t('map.zoom_center')" @click="isQueryMap ? fitBounds() : zoomCenter()" />
       <TButton
         :icon="config.infoPanel.mapTheme === 0 ? IconMapDefault : IconMapSatellite"
+        :disabled="config.settings.mapProvider !== 'tianditu'"
         :tooltip="t(config.infoPanel.mapTheme === 0 ? 'map.standard' : 'map.satellite')"
         @click="toggleMap"
       />
@@ -32,7 +33,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
 import { config } from '@/common/config'
-import { createTileLayerGroup, getGlobalMapTheme, getMapTheme } from '@/common/mapProviders'
+import { createTileLayerGroup, getMapTheme } from '@/common/mapProviders'
 import {
   getCollectionQueryFileIds,
   getFilesByIds,
@@ -82,7 +83,6 @@ let map = null
 let markerLayer = null
 let tileLayer = null
 let resizeObserver = null
-let tileErrorFallbackTriggered = false
 let pointRequestToken = 0
 let detailRequestToken = 0
 let detailTimer = null
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
   map = null
 })
 
-watch(() => [config.infoPanel.mapTheme, config.settings.mapProvider, config.settings.tiandituToken], updateTheme)
+watch(() => [config.infoPanel.mapTheme, config.settings.mapProvider, config.settings.tiandituToken, config.settings.localMapPath], updateTheme)
 watch(() => config.settings.mapMarkerSize, () => renderMarkers())
 watch(() => [props.queryParams, props.querySource, props.collectionId, props.fileIds], () => {
   if (!props.active) {
@@ -466,30 +466,14 @@ function addPhotoMarker(lat, lon, fileId, count, cluster = null) {
 }
 
 function updateTheme() {
-  const theme = getMapTheme(config.settings.mapProvider, config.settings.tiandituToken, config.infoPanel.mapTheme)
-  applyTheme(theme, false)
-}
-
-function applyTheme(theme, isFallback) {
   if (!map) return
+  const theme = getMapTheme(config.settings.mapProvider, config.settings.tiandituToken, config.infoPanel.mapTheme, config.settings.localMapPath)
   if (tileLayer) map.removeLayer(tileLayer)
   activeMaxZoom.value = theme.maxZoom
   map.setMaxZoom(theme.maxZoom)
   if (map.getZoom() > theme.maxZoom) map.setZoom(theme.maxZoom)
-  if (!isFallback) tileErrorFallbackTriggered = false
-
-  const created = createTileLayerGroup(L, theme)
-  const activeLayer = created.layer
-  tileLayer = activeLayer.addTo(map)
-  created.tileLayers.forEach(layer => {
-    layer.on('tileerror', () => {
-      // Requests from a removed layer can still fail after a provider switch.
-      // Ignore them so an old OSM request cannot replace the new provider.
-      if (tileLayer !== activeLayer || tileErrorFallbackTriggered || isFallback) return
-      tileErrorFallbackTriggered = true
-      applyTheme(getGlobalMapTheme(config.infoPanel.mapTheme), true)
-    })
-  })
+  // A missing tile never authorises contacting a different provider.
+  tileLayer = createTileLayerGroup(L, theme).layer.addTo(map)
 }
 
 function zoomIn() { if (map && zoom.value < activeMaxZoom.value) map.setZoom(zoom.value + 1) }
@@ -512,8 +496,7 @@ function toggleMap() { config.infoPanel.mapTheme = config.infoPanel.mapTheme ===
 function validLatLon(lat, lon) { return lat != null && lon != null && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 }
 async function openAppleMaps() {
   if (!showAppleMapsButton.value) return
-  const label = props.label.trim() || 'LapCasa'
-  await openExternalUrl(`maps://?ll=${props.lat},${props.lon}&q=${encodeURIComponent(label)}`)
+  await openExternalUrl(`maps://?ll=${props.lat},${props.lon}&q=LapCasa`)
 }
 function handleMapKeyDown(event) {
   const target = event.target

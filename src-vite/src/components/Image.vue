@@ -6,15 +6,6 @@
     @wheel="handleImageWheel"
   >
 
-    <!-- Loading overlay -->
-    <transition name="fade">
-      <div
-        v-if="isLoading && !showInlineLoading"
-        class="absolute inset-0 bg-base-100/50 flex items-center justify-center z-50 rounded-box"
-      >
-        <span class="loading loading-dots text-primary"></span>
-      </div>
-    </transition>
 
     <transition name="fade">
       <div
@@ -43,6 +34,13 @@
         :key="`img-${imageFilePath[index] || 'empty'}-${index}`"
         class="slide-wrapper absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
       >
+        <!-- the Ken Burns zoom on its own layer: the slide transition moves the wrapper -->
+        <div
+          class="absolute inset-0"
+          :class="{ 'ken-burns': kenBurnsActive && activeImage === index }"
+          :style="kenBurnsActive && activeImage === index ? kenBurnsStyle : undefined"
+          :data-ken-burns="kenBurnsActive && activeImage === index ? kenBurnsTarget : undefined"
+        >
         <img
           ref="activeImageEl"
           :src="src"
@@ -56,6 +54,7 @@
           @dblclick.stop="toggleZoomFit"
           @contextmenu.prevent.stop="$emit('context-menu', $event)"
         />
+        </div>
       </div>
     </TransitionGroup>
 
@@ -222,6 +221,15 @@ const props = defineProps({
   slideShowTransitionMode: {
     type: Number,
     default: 0,
+  },
+  // LAP-049: Picasa's Pan and Zoom (Ken Burns) slideshow, and how long each slide shows (seconds)
+  kenBurns: {
+    type: Boolean,
+    default: false,
+  },
+  slideSeconds: {
+    type: Number,
+    default: 3,
   },
   fileId: {
     type: Number,
@@ -1246,6 +1254,11 @@ const updatePosition = () => {
   }
 };
 
+// Declared before the immediate watcher below, which resets them on its first run (LAP-101: a
+// later `let` threw "Cannot access before initialization" and the preview never drew).
+let isUpgradingToFullRes = false;
+let fullResLoadedForPath = '';
+
 // Watch file changes and the selected RAW preview source.
 watch([
   () => props.filePath,
@@ -1266,6 +1279,10 @@ watch([
     preloadCache.delete(newFilePath);
   }
   clearStalePreloadEntries(newFilePath || '', props.nextFilePath || '');
+  if (newFilePath !== oldFilePath) {
+    fullResLoadedForPath = '';
+    isUpgradingToFullRes = false;
+  }
 
   if (loadingTimeout) {
     clearTimeout(loadingTimeout);
@@ -1493,6 +1510,40 @@ watch(displayThumbnailSrc, async (newThumbSrc) => {
   }
 });
 
+// LAP-049: Picasa's Pan and Zoom (Ken Burns) slideshow. Each slide zooms gently from 1 to 1.14 over
+// its time, towards the middle of the faces found in it (where they are on screen), or with no
+// faces, towards a point a little off centre that differs from photo to photo (a slow drift).
+const kenBurnsActive = computed(() => props.isSlideShow && props.kenBurns);
+const kenBurnsTarget = computed(() => (faces.value.length ? 'faces' : 'drift'));
+const kenBurnsStyle = computed(() => {
+  const i = activeImage.value;
+  const el = container.value as HTMLElement | null;
+  const cw = el?.clientWidth || 0, ch = el?.clientHeight || 0;
+  let ox = cw / 2, oy = ch / 2;
+  const w = imageSize.value[i]?.width || 0, h = imageSize.value[i]?.height || 0;
+  if (faces.value.length && w && h) {
+    // the faces' middle as a fraction of the picture, then through the picture's on-screen
+    // transform (translate, scale and rotate about its centre)
+    let fx = 0, fy = 0;
+    for (const f of faces.value) {
+      fx += (f.bbox.x + f.bbox.width / 2) / (f.bbox.image_width || w);
+      fy += (f.bbox.y + f.bbox.height / 2) / (f.bbox.image_height || h);
+    }
+    const px = (fx / faces.value.length - 0.5) * w, py = (fy / faces.value.length - 0.5) * h;
+    const a = (imageRotate.value[i] || 0) * Math.PI / 180, s = scale.value[i] || 1;
+    ox = position.value[i].x + w / 2 + s * (px * Math.cos(a) - py * Math.sin(a));
+    oy = position.value[i].y + h / 2 + s * (px * Math.sin(a) + py * Math.cos(a));
+  } else {
+    const k = Number(props.fileId || 0);
+    ox += cw * (((k * 7) % 5) - 2) * 0.06;
+    oy += ch * (((k * 3) % 3) - 1) * 0.06;
+  }
+  return {
+    transformOrigin: `${Math.round(ox)}px ${Math.round(oy)}px`,
+    animationDuration: `${Math.max(1, props.slideSeconds)}s`,
+  };
+});
+
 // watch fileId to fetch faces
 watch(() => [props.fileId, props.edits], async ([newFileId, edits]) => {
   faces.value = []; // Clear previous faces
@@ -1557,6 +1608,70 @@ watch(() => imageRotate.value[activeImage.value], (newValue) => {
 });
 
 // display zoom scale for a while
+async function maybeUpgradeToFullRes() {
+  const currentPath = props.filePath;
+  if (!currentPath) return;
+  const usesBackend = shouldUseBackendPreview(currentPath, Number(props.fileType || 0), isAutoEnhanced.value || !!imageEditState(props.edits).revision);
+  if (!usesBackend) return;
+
+  const currentScale = scale.value[activeImage.value];
+  const actualScale = getActualSizeScale();
+  if (currentScale < actualScale * 0.95 && currentScale <= 1.2) {
+    return;
+  }
+
+  if (fullResLoadedForPath === currentPath || isUpgradingToFullRes) {
+    return;
+  }
+
+  const fullSrc = getPreviewUrl(
+    props.fileId,
+    currentPath,
+    false,
+    props.fileVersion,
+    config.settings.rawThumbnailSource,
+    props.edits,
+    true,
+  );
+  if (!fullSrc) return;
+
+  isUpgradingToFullRes = true;
+  try {
+    const img = new window.Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = reject;
+      img.src = fullSrc;
+    });
+
+    if (props.filePath === currentPath) {
+      const activeIndex = activeImage.value;
+      fullResLoadedForPath = currentPath;
+      noTransition.value = true;
+      const layout = getCompatibleLayout(
+        img.naturalWidth,
+        img.naturalHeight,
+        imageSize.value[activeIndex].width,
+        imageSize.value[activeIndex].height,
+      );
+      setImageSlot(
+        activeIndex,
+        currentPath,
+        fullSrc,
+        img.naturalWidth,
+        img.naturalHeight,
+        layout.width,
+        layout.height,
+      );
+      setTimeout(() => { noTransition.value = false; }, 100);
+    }
+  } catch (err) {
+    console.debug('Failed to upgrade preview to full res:', err);
+  } finally {
+    isUpgradingToFullRes = false;
+  }
+}
+
 watch(() => scale.value[activeImage.value], (newValue) => {
   emit('scale', { 
     scale: newValue, 
@@ -1564,6 +1679,7 @@ watch(() => scale.value[activeImage.value], (newValue) => {
     minScale: minScale.value, 
     maxScale: maxScale.value 
   });
+  void maybeUpgradeToFullRes();
 });
 
 function resetNavigatorAutoHide() {
@@ -2071,6 +2187,7 @@ const zoomOut = () => {
 const zoomActual = () => {
   const container = containerSize.value;
   zoomImage(container.width / 2, container.height / 2, getActualSizeScale());
+  void maybeUpgradeToFullRes();
 };
 
 // Zoom image at cursor position
@@ -2213,6 +2330,18 @@ defineExpose({
 </script>
 
 <style scoped>
+/* LAP-049: Pan and Zoom (Ken Burns): one slow zoom over the slide's time */
+.ken-burns {
+  animation-name: lap-ken-burns;
+  animation-duration: 3s; /* the slide's time, set inline */
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes lap-ken-burns {
+  from { transform: scale(1); }
+  to { transform: scale(1.14); }
+}
+
 /* Slideshow / Swipe transition */
 .slide-next-enter-active,
 .slide-next-leave-active,

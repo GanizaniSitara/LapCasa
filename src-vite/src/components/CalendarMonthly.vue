@@ -109,6 +109,7 @@ const clickDate = (year: number, month: number) => {
   libConfig.calendar.year = year;
   libConfig.calendar.month = month; // -1 means selecting a year
   libConfig.calendar.date = -1;   // -1 means selecting a month
+  libConfig.calendar.quarter = null;
 
   console.log('clickDate:', libConfig.calendar.year, libConfig.calendar.month, libConfig.calendar.date);
 };

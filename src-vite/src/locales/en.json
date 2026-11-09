@@ -268,6 +268,7 @@
     "unknown_camera": "Unknown camera",
     "unknown_lens": "Unknown lens",
     "semantic_matches": "Visual matches",
+    "semantic_notice": "Approximate — not a confirmed location.",
     "text_matches": "Text matches",
     "index": {
       "wait_index": "Queued for scan",
@@ -358,6 +359,7 @@
     "title": "Calendar",
     "tabs": {
       "years": "Years",
+      "quarters": "Quarters",
       "months": "Months",
       "days": "Days"
     },
@@ -434,7 +436,8 @@
         "Lens",
         "Year",
         "File type",
-        "Culling"
+        "Culling",
+        "Quarter"
       ],
       "sort_type_options": [
         "Taken Date",
@@ -577,7 +580,7 @@
       "image_search_failed": "Image search unavailable",
       "image_search_failed_hint": "Check that the image search model is available, then try again.",
       "image_search_language_unsupported": "The default search model supports English only",
-      "image_search_language_unsupported_hint": "Choose the Multilingual model in Settings to search in this language.",
+      "image_search_language_unsupported_hint": "Photo descriptions are searched in English.",
       "image_files": "No photos found",
       "raw_files": "No RAW files found",
       "video_files": "No video files found",
@@ -684,6 +687,27 @@
       "copy": "Copy to clipboard",
       "paste": "Paste",
       "edit_image": "Edit...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Open photo in {app}...",
       "open_video_in_app": "Open video in {app}...",
       "open_selected_images_in_app": "Open photos in {app}...",
@@ -1215,6 +1239,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "AI acceleration",
+      "gpu_description": "Graphics hardware, GPU add-on and AI engines.",
+      "open_gpu": "Open AI acceleration",
+      "about_title": "About LapCasa",
+      "about_description": "Version, build, license and credits.",
+      "open_about": "Open About"
+    },
     "general": {
       "title": "General",
       "section_language": "Language",
@@ -1467,7 +1499,8 @@
         "viewing": "Viewing",
         "file_actions": "File actions",
         "selection": "Selection",
-        "metadata": "Metadata"
+        "metadata": "Metadata",
+        "editor": "Editor"
       },
       "actions": {
         "toggle_sidebar": "Toggle sidebar",
@@ -1526,7 +1559,28 @@
         "rotate": "Rotate view (clockwise)",
         "rotate_counterclockwise": "Rotate view (counterclockwise)",
         "thumbnail_increase": "Increase thumbnail size",
-        "thumbnail_decrease": "Decrease thumbnail size"
+        "thumbnail_decrease": "Decrease thumbnail size",
+        "thumbnails_small": "Small thumbnails",
+        "thumbnails_normal": "Normal thumbnails",
+        "toggle_timeline": "Show / hide the timeline",
+        "editor_tab_basic": "Basic Fixes tab",
+        "editor_tab_tuning": "Tuning tab",
+        "editor_tab_effects": "Effects tab",
+        "editor_automask": "Automask (brightness by region)",
+        "editor_automask_whole": "Automask: apply to Whole photo",
+        "editor_automask_subject": "Automask: apply to Subject",
+        "editor_automask_sky": "Automask: apply to Sky",
+        "editor_automask_people": "Automask: apply to People",
+        "editor_automask_background": "Automask: apply to Background",
+        "editor_automask_select": "Automask: click to select an area",
+        "editor_automask_show_mask": "Automask: show / hide the mask",
+        "editor_automask_remove": "Automask: remove the open Automask",
+        "editor_rotate": "Rotate clockwise",
+        "editor_rotate_counterclockwise": "Rotate counterclockwise",
+        "undo": "Undo",
+        "redo": "Redo",
+        "editor_apply": "Apply",
+        "editor_close": "Cancel / back to the Library"
       }
     },
     "advanced": {

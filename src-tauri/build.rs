@@ -8,7 +8,6 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     write_build_info();
@@ -16,7 +15,10 @@ fn main() {
     build_libheif();
 
     // build tauri
-    tauri_build::build();
+    tauri_build::try_build(
+        tauri_build::Attributes::new().codegen(tauri_build::CodegenContext::new()),
+    )
+    .expect("Tauri build failed");
 }
 
 fn build_libheif() {
@@ -193,15 +195,21 @@ fn build_libheif() {
 
 /// writes the build information to a file
 fn write_build_info() {
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=../src-vite/dist");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=tauri.windows.conf.json");
     let out_dir = env::var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("build_info.rs");
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
-    // This intentionally records the real build time for About/version
-    // metadata, so Cargo will rewrite build_info.rs on each build.
-    let timestamp = now.as_secs();
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    let timestamp = match env::var("SOURCE_DATE_EPOCH") {
+        Ok(value) => value.parse::<u64>().expect("SOURCE_DATE_EPOCH must be unsigned Unix seconds"),
+        Err(env::VarError::NotPresent) => git_output(&["show", "-s", "--format=%ct", "HEAD"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        Err(error) => panic!("Invalid SOURCE_DATE_EPOCH: {error}"),
+    };
     let commit_hash = current_git_commit_hash().unwrap_or_default();
 
     let mut formatted = String::new();
@@ -212,16 +220,32 @@ fn write_build_info() {
     )
     .unwrap();
 
-    fs::write(dest_path, formatted).unwrap();
+    if fs::read(&dest_path).ok().as_deref() != Some(formatted.as_bytes()) {
+        fs::write(dest_path, formatted).unwrap();
+    }
 }
 
 fn current_git_commit_hash() -> Option<String> {
-    println!("cargo:rerun-if-changed=../.git/HEAD");
-    println!("cargo:rerun-if-changed=../.git/refs/heads");
-    println!("cargo:rerun-if-changed=../.git/packed-refs");
+    // Git resolves per-worktree HEAD and shared refs to their actual locations.
+    let mut paths = vec!["HEAD".to_string(), "packed-refs".to_string(), "refs".to_string()];
+    if let Some(reference) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
+        paths.push(reference);
+    }
+    for name in paths {
+        if let Some(path) = git_output(&["rev-parse", "--path-format=absolute", "--git-path", &name]) {
+            // Watching a missing file makes Cargo rebuild on every invocation.
+            if Path::new(&path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
+        }
+    }
+    git_output(&["rev-parse", "--short=7", "HEAD"])
+}
 
+fn git_output(args: &[&str]) -> Option<String> {
     let output = Command::new("git")
-        .args(["rev-parse", "--short=7", "HEAD"])
+        .args(args)
+        .current_dir(env::var_os("CARGO_MANIFEST_DIR")?)
         .output()
         .ok()?;
     if !output.status.success() {

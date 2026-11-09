@@ -291,3 +291,14 @@ html, body {
   opacity: 1;
   transition: opacity 150ms ease;
 }
+
+/* Picasa parity: every change is instant. No transitions, fades or animated layout;
+   only loading spinners keep moving, and the slideshow's Pan and Zoom (Ken Burns), which is
+   Picasa's own (LAP-049). Overrides inline transition styles too. */
+*:not(.loading):not(.animate-spin):not(.ken-burns),
+*:not(.loading):not(.animate-spin)::before,
+*:not(.loading):not(.animate-spin)::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}

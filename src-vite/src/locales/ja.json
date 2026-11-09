@@ -357,6 +357,7 @@
     "title": "カレンダー",
     "tabs": {
       "years": "年",
+      "quarters": "Quarters",
       "months": "月",
       "days": "日"
     },
@@ -433,7 +434,8 @@
         "レンズ",
         "年",
         "ファイルタイプ",
-        "選別"
+        "選別",
+        "Quarter"
       ],
       "sort_type_options": [
         "撮影日",
@@ -677,6 +679,27 @@
       "copy": "クリップボードにコピー",
       "paste": "ペースト",
       "edit_image": "編集...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "{app} で写真を開く...",
       "open_video_in_app": "{app} で動画を開く...",
       "open_selected_images_in_app": "写真を {app} で開く...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "AI アクセラレーション",
+      "gpu_description": "グラフィックス ハードウェア、GPU アドオン、AI エンジン。",
+      "open_gpu": "AI アクセラレーションを開く",
+      "about_title": "LapCasa について",
+      "about_description": "バージョン、ビルド、ライセンス、クレジット。",
+      "open_about": "アプリ情報を開く"
+    },
     "general": {
       "title": "一般",
       "section_language": "言語",

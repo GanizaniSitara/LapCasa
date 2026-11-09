@@ -109,8 +109,12 @@ fn image_response(data: Vec<u8>) -> http::Response<Vec<u8>> {
         .unwrap()
 }
 
+fn recipe_revision(uri: &http::Uri) -> Option<u64> {
+    uri.query().unwrap_or("").split('&').find_map(|p|p.strip_prefix("er=").and_then(|n|n.parse::<u64>().ok())).filter(|n|*n>0)
+}
+
 fn has_recipe_revision(uri: &http::Uri) -> bool {
-    uri.query().unwrap_or("").split('&').any(|p|p.strip_prefix("er=").and_then(|n|n.parse::<u64>().ok()).is_some_and(|n|n>0))
+    recipe_revision(uri).is_some()
 }
 
 async fn recipe_response(file_id: i64, thumbnail: bool) -> http::Response<Vec<u8>> {
@@ -201,32 +205,7 @@ async fn thumbnail_response(file_id: i64, library_id: String, kind: &'static str
         trace.mark("executor_wait", 0);
         let has_auto_enhance = crate::t_enhance::is_file_auto_enhanced(file_id);
         trace.mark("edit_lookup", 0);
-        let data = if let Some(data) = crate::t_thumb_cache::get(file_id) {
-            trace.mark("cache_hit", data.len());
-            Some(data)
-        } else {
-            trace.mark("cache_miss", 0);
-            let data = t_sqlite::AThumb::fetch_raw_for_library(file_id, &library_id).ok().flatten();
-            trace.mark("sql_thumbnail", data.as_ref().map_or(0, Vec::len));
-            data.or_else(|| {
-                let file = t_sqlite::AFile::get_file_info(file_id).ok().flatten()?;
-                let path = file.file_path?;
-                // A grid cache miss must produce a thumbnail, not send a full
-                // original while separately queuing the same decode again.
-                let thumb = t_sqlite::AThumb::get_or_create_thumb(
-                    file_id, &path, file.file_type.unwrap_or(0),
-                    file.e_orientation.unwrap_or(1) as i32, 200, false, false,
-                    file.duration.map(|d| d as u64), None,
-                ).ok().flatten()?;
-                let data = if thumb.error_code == 2 {
-                    std::fs::read(path).ok()
-                } else {
-                    thumb.thumb_data
-                };
-                trace.mark("generated_thumbnail", data.as_ref().map_or(0, Vec::len));
-                data
-            })
-        };
+        let data = grid_thumbnail(file_id, &library_id, &mut |step, len| trace.mark(step, len));
         match data {
             Some(data) => image_response(if has_auto_enhance {
                 crate::t_enhance::apply_auto_enhance_to_bytes_for_file(&data, Some(file_id)).unwrap_or(data)
@@ -234,6 +213,36 @@ async fn thumbnail_response(file_id: i64, library_id: String, kind: &'static str
             None => text_response(http::StatusCode::NOT_FOUND, "thumbnail not found"),
         }
     }).await.unwrap_or_else(|error| text_response(http::StatusCode::INTERNAL_SERVER_ERROR, &error))
+}
+
+/// A grid tile's thumbnail bytes (before auto-enhance): the slab cache, else the library's
+/// stored thumbnail, else generated now. Shared by the thumbnail protocol and the native grid.
+pub(crate) fn grid_thumbnail(file_id: i64, library_id: &str, mark: &mut dyn FnMut(&'static str, usize)) -> Option<Vec<u8>> {
+    if let Some(data) = crate::t_thumb_cache::get(file_id) {
+        mark("cache_hit", data.len());
+        return Some(data);
+    }
+    mark("cache_miss", 0);
+    let data = t_sqlite::AThumb::fetch_raw_for_library(file_id, library_id).ok().flatten();
+    mark("sql_thumbnail", data.as_ref().map_or(0, Vec::len));
+    data.or_else(|| {
+        let file = t_sqlite::AFile::get_file_info(file_id).ok().flatten()?;
+        let path = file.file_path?;
+        // A grid cache miss must produce a thumbnail, not send a full
+        // original while separately queuing the same decode again.
+        let thumb = t_sqlite::AThumb::get_or_create_thumb(
+            file_id, &path, file.file_type.unwrap_or(0),
+            file.e_orientation.unwrap_or(1) as i32, 200, false, false,
+            file.duration.map(|d| d as u64), None,
+        ).ok().flatten()?;
+        let data = if thumb.error_code == 2 {
+            std::fs::read(path).ok()
+        } else {
+            thumb.thumb_data
+        };
+        mark("generated_thumbnail", data.as_ref().map_or(0, Vec::len));
+        data
+    })
 }
 
 pub fn register_protocols(builder: Builder<Wry>) -> Builder<Wry> {
@@ -327,8 +336,23 @@ pub fn register_protocols(builder: Builder<Wry>) -> Builder<Wry> {
                 });
                 return;
             }
-            if has_recipe_revision(request.uri()) {
-                tauri::async_runtime::spawn(async move {responder.respond(recipe_response(file_id,false).await);});
+            if let Some(revision) = recipe_revision(request.uri()) {
+                let full = request.uri().query().unwrap_or("").split('&').any(|p| p == "full=1");
+                tauri::async_runtime::spawn(async move {
+                    responder.respond(if full {
+                        match crate::t_edit_recipe::render_full(file_id).await {
+                            Ok(data) => image_response(data),
+                            Err(error) => text_response(http::StatusCode::NOT_FOUND, &error),
+                        }
+                    } else {
+                        // The revision the URL names, not whatever the photo's edits are now (LAP-087):
+                        // an image cached for one revision must never show another's edits.
+                        match crate::t_edit_recipe::render_revision(file_id, revision).await {
+                            Ok(data) => image_response(data),
+                            Err(error) => text_response(http::StatusCode::NOT_FOUND, &error),
+                        }
+                    });
+                });
                 return;
             }
 
@@ -340,7 +364,8 @@ pub fn register_protocols(builder: Builder<Wry>) -> Builder<Wry> {
                 return;
             }
 
-            let original=request.uri().query().unwrap_or("").split('&').any(|p|p=="original=1");
+            let original = request.uri().query().unwrap_or("").split('&').any(|p| p == "original=1");
+            let full = request.uri().query().unwrap_or("").split('&').any(|p| p == "full=1");
             tauri::async_runtime::spawn(async move {
                 let file = match thumbnail_work(move || t_sqlite::AFile::get_file_info(file_id)).await {
                     Ok(Ok(Some(file))) => file,
@@ -367,21 +392,43 @@ pub fn register_protocols(builder: Builder<Wry>) -> Builder<Wry> {
                     .map(crate::t_enhance::is_auto_enhance_active)
                     .unwrap_or(false);
 
-                let response = match t_image::get_file_image_bytes_cached(
-                    &file_path,
-                    prefer_embedded_raw_preview,
-                )
-                .await
-                {
-                    Ok(data) => {
-                        let final_data = if has_auto_enhance {
-                            crate::t_enhance::apply_auto_enhance_to_bytes_for_file(&data, Some(file_id)).unwrap_or(data)
-                        } else {
-                            data
-                        };
-                        image_response(final_data)
+                let orientation = file.e_orientation.unwrap_or(1) as i32;
+
+                let response = if full {
+                    match t_image::get_file_image_bytes_cached(
+                        &file_path,
+                        prefer_embedded_raw_preview,
+                    )
+                    .await
+                    {
+                        Ok(data) => {
+                            let final_data = if has_auto_enhance {
+                                crate::t_enhance::apply_auto_enhance_to_bytes_for_file(&data, Some(file_id)).unwrap_or(data)
+                            } else {
+                                data
+                            };
+                            image_response(final_data)
+                        }
+                        Err(_) => text_response(http::StatusCode::NOT_FOUND, "preview not found"),
                     }
-                    Err(_) => text_response(http::StatusCode::NOT_FOUND, "preview not found"),
+                } else {
+                    match t_image::get_or_create_preview_image(
+                        file_id,
+                        &file_path,
+                        orientation,
+                    )
+                    .await
+                    {
+                        Ok(data) => {
+                            let final_data = if has_auto_enhance {
+                                crate::t_enhance::apply_auto_enhance_to_bytes_for_file(&data, Some(file_id)).unwrap_or(data)
+                            } else {
+                                data
+                            };
+                            image_response(final_data)
+                        }
+                        Err(_) => text_response(http::StatusCode::NOT_FOUND, "preview not found"),
+                    }
                 };
                 responder.respond(response);
             });
@@ -391,6 +438,15 @@ pub fn register_protocols(builder: Builder<Wry>) -> Builder<Wry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recipe_revision_reads_the_er_parameter() {
+        let uri = |q: &str| format!("http://preview.localhost/lib/7?{q}").parse::<http::Uri>().unwrap();
+        assert_eq!(recipe_revision(&uri("ov=2&er=12&rk=abc")), Some(12));
+        assert_eq!(recipe_revision(&uri("ov=2&er=0")), None);
+        assert_eq!(recipe_revision(&uri("ov=2&original=1")), None);
+        assert!(has_recipe_revision(&uri("er=3")));
+    }
     use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
     use std::time::Duration;
 

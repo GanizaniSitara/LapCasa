@@ -1,8 +1,8 @@
-//! Face suggestions for named people.
+//! Picasa-style face suggestions for named people.
 //!
 //! Named (anchored) people imported from Picasa have face boxes but no embeddings.
 //! `seed_named_embeddings` gives them one: it copies the embedding of a LapCasa-detected
-//! face whose centre lies inside the imported box (and marks that detected face as a
+//! face whose centre lies inside the Picasa box (and marks that detected face as a
 //! duplicate of the named one), or computes one from the box with the recognition model.
 //! `compute_suggestions` then compares every unconfirmed detected face with each named
 //! person's sample faces (mean of the top-k cosine similarities) and marks the best
@@ -22,11 +22,11 @@ pub const TOP_K: usize = 3;
 /// Best person must beat the runner-up by this much, or the face is ambiguous.
 pub const MIN_MARGIN: f32 = 0.05;
 
-// Detected (SCRFD) boxes are tighter than imported face rectangles. Measured on the
+// Detected (SCRFD) boxes are tighter than Picasa face rectangles. Measured on the
 // 1,133 overlapping pairs: width x0.615, height x0.664, centre 4.6% of height lower.
-const IMPORTED_TO_DET_W: f32 = 0.615;
-const IMPORTED_TO_DET_H: f32 = 0.664;
-const IMPORTED_TO_DET_DY: f32 = 0.046;
+const PICASA_TO_DET_W: f32 = 0.615;
+const PICASA_TO_DET_H: f32 = 0.664;
+const PICASA_TO_DET_DY: f32 = 0.046;
 
 /// Additive schema for suggestions. Safe to run on every start.
 pub fn migrate(conn: &Connection) -> Result<(), String> {
@@ -166,7 +166,7 @@ pub fn seed_named_embeddings(
             stats.failed += 1;
             continue;
         };
-        // 1. A detected face centred inside the imported box is the same physical face.
+        // 1. A detected face centred inside the Picasa box is the same physical face.
         let detected: Vec<(i64, String, Vec<u8>)> = detected_stmt
             .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
@@ -194,7 +194,7 @@ pub fn seed_named_embeddings(
             stats.from_overlap += 1;
             continue;
         }
-        // 2. Otherwise embed the imported box (mapped to a detector-style box).
+        // 2. Otherwise embed the Picasa box (mapped to a detector-style box).
         let Some(engine) = engine.as_deref_mut() else { continue };
         if image_cache.as_ref().map(|c| c.0) != Some(file_id) {
             let img = path_stmt
@@ -209,9 +209,9 @@ pub fn seed_named_embeddings(
             continue;
         };
         let (iw, ih) = (img.width() as f32, img.height() as f32);
-        let w = b.width * IMPORTED_TO_DET_W;
-        let h = b.height * IMPORTED_TO_DET_H;
-        let cy = pcy + b.height * IMPORTED_TO_DET_DY;
+        let w = b.width * PICASA_TO_DET_W;
+        let h = b.height * PICASA_TO_DET_H;
+        let cy = pcy + b.height * PICASA_TO_DET_DY;
         let x = (pcx - w / 2.0).clamp(0.0, (iw - 2.0).max(0.0));
         let y = (cy - h / 2.0).clamp(0.0, (ih - 2.0).max(0.0));
         let fb = FaceBox {
@@ -414,7 +414,7 @@ pub fn confirm(conn: &Connection, person_id: i64, face_ids: Option<&[i64]>) -> R
     .map_err(|e| e.to_string())
 }
 
-/// Learning step after confirms / undos for one person (suggestions keep coming as you
+/// Learning step after confirms / undos for one person (Picasa keeps suggesting as you
 /// confirm): re-score the unconfirmed detected faces against everyone's samples, now that
 /// this person has more confirmed faces, and add the faces where this person comes out on
 /// top under the same rules as `compute_suggestions`. Existing suggestions are left alone.
@@ -653,7 +653,7 @@ fn id_filter_col(col: &str, ids: &[i64]) -> String {
 }
 
 /// Similarity at which confirming one face also confirms a pending suggestion of the same
-/// person (near-identical faces drop out of the list together).
+/// person (Picasa's behaviour: near-identical faces drop out of the list together).
 /// Checked by eye on one person's suggestion pairs at 0.80-0.85: all the same person.
 pub const CASCADE_THRESHOLD: f32 = 0.80;
 
@@ -699,6 +699,13 @@ pub fn confirm_with_cascade(conn: &Connection, person_id: i64, face_ids: &[i64],
         return Ok(Vec::new());
     }
     confirm(conn, person_id, Some(&ids))?;
+    // A tick regroups the photo with the confirmed ones (t_sqlite build_order_clause);
+    // Confirm all keeps suggested_at, so its tiles stay in place for the session.
+    conn.execute(
+        &format!("UPDATE faces SET suggested_at = NULL WHERE person_id = ?1{}", id_filter(Some(&ids))),
+        [person_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(pending.iter().zip(&chosen).filter(|(_, c)| **c).map(|(p, _)| p.1).collect())
 }
 
@@ -731,6 +738,134 @@ fn id_filter(face_ids: Option<&[i64]>) -> String {
             ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
         ),
     }
+}
+
+/// Suggestions for a handful of newly detected faces only, under the rules of
+/// `compute_suggestions`: samples are the confirmed faces of named people, a person already
+/// confirmed in the photo is not suggested there, rejections are honoured, one suggestion per
+/// person per photo (an existing one in the photo stands), threshold and margin as given.
+/// Nothing else in the table is touched. Returns how many of `face_ids` got a suggestion.
+pub fn suggest_faces(conn: &Connection, face_ids: &[i64], threshold: f32) -> Result<usize, String> {
+    if face_ids.is_empty() {
+        return Ok(0);
+    }
+    let samples: Vec<(i64, i64, Vec<u8>)> = conn
+        .prepare(&format!(
+            "SELECT f.person_id, f.file_id, f.embedding FROM faces f JOIN persons p ON p.id = f.person_id
+             WHERE f.embedding IS NOT NULL AND {NAMED} AND {VISIBLE}"
+        ))
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut people: Vec<i64> = Vec::new();
+    let mut person_index: HashMap<i64, usize> = HashMap::new();
+    let mut sample_person: Vec<usize> = Vec::new();
+    let mut rows: Vec<f32> = Vec::new();
+    let mut confirmed_in_file: HashSet<(i64, usize)> = HashSet::new();
+    for (pid, file_id, bytes) in &samples {
+        let Some(emb) = parse_embedding(bytes).filter(|e| e.len() == 512) else { continue };
+        let idx = *person_index.entry(*pid).or_insert_with(|| {
+            people.push(*pid);
+            people.len() - 1
+        });
+        sample_person.push(idx);
+        rows.extend_from_slice(&emb);
+        confirmed_in_file.insert((*file_id, idx));
+    }
+    if people.is_empty() {
+        return Ok(0);
+    }
+    let sample_matrix = Array2::from_shape_vec((sample_person.len(), 512), rows).map_err(|e| e.to_string())?;
+    let rejected: HashSet<(i64, i64)> = conn
+        .prepare("SELECT face_id, person_id FROM face_rejections")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    // Photos that already hold a suggestion for a person keep it: at most one per person per photo.
+    let mut taken: HashSet<(i64, i64)> = conn
+        .prepare("SELECT file_id, suggested_person_id FROM faces WHERE suggested_person_id IS NOT NULL")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let ids = id_filter_col("f.id", face_ids);
+    let candidates: Vec<(i64, i64, Vec<u8>)> = conn
+        .prepare(&format!(
+            "SELECT f.id, f.file_id, f.embedding FROM faces f LEFT JOIN persons p ON p.id = f.person_id
+             WHERE f.embedding IS NOT NULL AND f.duplicate_of IS NULL AND f.suggested_person_id IS NULL
+               AND f.id NOT IN (SELECT face_id FROM face_ignores)
+               AND (f.person_id IS NULL OR COALESCE(p.is_anchored, 0) = 0){ids}"
+        ))
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    // (face_id, file_id, person idx, score), best first
+    let mut winners: Vec<(i64, i64, usize, f32)> = Vec::new();
+    let n_people = people.len();
+    for (face_id, file_id, bytes) in &candidates {
+        let Some(emb) = parse_embedding(bytes).filter(|e| e.len() == 512) else { continue };
+        let m = Array2::from_shape_vec((1, 512), emb).map_err(|e| e.to_string())?;
+        let sims = m.dot(&sample_matrix.t());
+        let row = sims.row(0);
+        let mut top: Vec<[f32; TOP_K]> = vec![[f32::NEG_INFINITY; TOP_K]; n_people];
+        for (s, &pi) in row.iter().zip(sample_person.iter()) {
+            let t = &mut top[pi];
+            if *s > t[TOP_K - 1] {
+                let mut i = TOP_K - 1;
+                while i > 0 && *s > t[i - 1] {
+                    t[i] = t[i - 1];
+                    i -= 1;
+                }
+                t[i] = *s;
+            }
+        }
+        let mut best = (usize::MAX, f32::NEG_INFINITY);
+        let mut second = f32::NEG_INFINITY;
+        for (pi, t) in top.iter().enumerate() {
+            if confirmed_in_file.contains(&(*file_id, pi)) || rejected.contains(&(*face_id, people[pi])) {
+                continue;
+            }
+            let vals: Vec<f32> = t.iter().copied().filter(|v| v.is_finite()).collect();
+            if vals.is_empty() {
+                continue;
+            }
+            let score = vals.iter().sum::<f32>() / vals.len() as f32;
+            if score > best.1 {
+                second = best.1;
+                best = (pi, score);
+            } else if score > second {
+                second = score;
+            }
+        }
+        if best.0 != usize::MAX && best.1 >= threshold && best.1 - second >= MIN_MARGIN {
+            winners.push((*face_id, *file_id, best.0, best.1));
+        }
+    }
+    winners.sort_by(|a, b| b.3.total_cmp(&a.3));
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let stamp = now();
+    let mut count = 0;
+    for (face_id, file_id, pi, score) in winners {
+        if !taken.insert((file_id, people[pi])) {
+            continue;
+        }
+        tx.execute(
+            "UPDATE faces SET suggested_person_id = ?1, suggestion_score = ?2,
+                    suggested_at = COALESCE(suggested_at, ?4) WHERE id = ?3",
+            params![people[pi], score as f64, face_id, stamp],
+        )
+        .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -823,7 +958,7 @@ mod tests {
             (23, 503, emb(&[(0, 0.6), (5, 0.8)])),     // sim to all <= 0.6
         ];
         for (id, file, e) in rows {
-            conn.execute("INSERT INTO faces (id, file_id, embedding, suggested_person_id) VALUES (?1,?2,?3,1)",
+            conn.execute("INSERT INTO faces (id, file_id, embedding, suggested_person_id, suggested_at) VALUES (?1,?2,?3,1,7)",
                 params![id, file, e]).unwrap();
         }
         let mut files = confirm_with_cascade(&conn, 1, &[20], CASCADE_THRESHOLD).unwrap();
@@ -831,6 +966,13 @@ mod tests {
         assert_eq!(files, vec![500, 501, 502]);
         let still: Vec<(i64, i64)> = suggested(&conn).into_iter().filter(|(id, _)| *id >= 20).collect();
         assert_eq!(still, vec![(23, 1)]);
+        // Ticked faces drop suggested_at (they regroup); Confirm all keeps it (nothing moves).
+        let at = |id: i64| -> Option<i64> {
+            conn.query_row("SELECT suggested_at FROM faces WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!((at(20), at(21), at(22)), (None, None, None));
+        confirm(&conn, 1, None).unwrap();
+        assert_eq!(at(23), Some(7));
     }
 
     #[test]
@@ -899,5 +1041,36 @@ mod tests {
         assert_eq!((dup, pid), (Some(10), None));
         let has: bool = conn.query_row("SELECT embedding IS NOT NULL FROM faces WHERE id = 10", [], |r| r.get(0)).unwrap();
         assert!(has);
+    }
+
+    #[test]
+    fn suggest_faces_touches_only_the_given_faces() {
+        let conn = fixture();
+        // Faces 3-5 as laid out above; first the library-wide pass, then two new faces arrive.
+        compute_suggestions(&conn, 0.6).unwrap();
+        let before: Vec<(i64, Option<i64>)> = conn
+            .prepare("SELECT id, suggested_person_id FROM faces ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        conn.execute("INSERT INTO faces (id, file_id, bbox, embedding, person_id) VALUES (90, 300, '{}', ?1, NULL)", [emb(&[(0, 0.95), (3, 0.05)])]).unwrap(); // Ann-like, new photo
+        conn.execute("INSERT INTO faces (id, file_id, bbox, embedding, person_id) VALUES (91, 300, '{}', ?1, NULL)", [emb(&[(5, 1.0)])]).unwrap();              // nobody
+        conn.execute("INSERT INTO faces (id, file_id, bbox, embedding, person_id) VALUES (92, 301, '{}', ?1, NULL)", [emb(&[(0, 0.9), (1, 0.85)])]).unwrap();     // Ann and Bea too close: no margin
+        let n = suggest_faces(&conn, &[90, 91, 92], 0.6).unwrap();
+        assert_eq!(n, 1);
+        let get = |id: i64| -> Option<i64> { conn.query_row("SELECT suggested_person_id FROM faces WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!(get(90), Some(1), "Ann suggested on the new face");
+        assert_eq!(get(91), None);
+        assert_eq!(get(92), None);
+        let after: Vec<(i64, Option<i64>)> = conn
+            .prepare("SELECT id, suggested_person_id FROM faces WHERE id < 90 ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(before, after, "earlier faces untouched");
+        // A second Ann-like face in the same new photo does not get a second Ann suggestion.
+        conn.execute("INSERT INTO faces (id, file_id, bbox, embedding, person_id) VALUES (93, 300, '{}', ?1, NULL)", [emb(&[(0, 0.97)])]).unwrap();
+        assert_eq!(suggest_faces(&conn, &[93], 0.6).unwrap(), 0);
+        // Nothing was confirmed or renamed.
+        let persons: Vec<(i64, String)> = conn.prepare("SELECT id, name FROM persons ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(persons.len(), 3);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM faces WHERE id >= 90 AND person_id IS NOT NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 }

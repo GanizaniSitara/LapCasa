@@ -9,6 +9,7 @@ import 'cally'
 import router from '@/common/router'
 import App from '@/App.vue'
 import { useConfigStore } from '@/stores/configStore'
+import { initUiInteractionSensor } from '@/common/scheduler'
 import '@/assets/app.css'
 
 // I18n
@@ -34,16 +35,23 @@ app.use(pinia) // Use Pinia
 const config = useConfigStore() // Use the config store
 const currentWindowLabel = getCurrentWebviewWindow().label
 const isMainWindow = currentWindowLabel === 'main'
+// Older provider settings did not record an explicit online privacy choice.
+if (config.settings.mapPrivacyVersion !== 1) {
+  config.setMapProvider('offline')
+}
 
-// One-time: show whole pictures (Fit Entire Image) for settings saved
+// One-time: show whole pictures like Picasa (Fit Entire Image) for settings saved
 // before that became the default. The user can still choose Crop to Fill in Settings.
-if (isMainWindow && config.settings.grid && !config.settings.grid.scalingFitDefault) {
+if (isMainWindow && config.settings.grid && !config.settings.grid.scalingPicasaDefault && !config.settings.grid.scalingFitDefault) {
   config.settings.grid.scaling = 0
-  config.settings.grid.scalingFitDefault = true
+  config.settings.grid.scalingPicasaDefault = true
 }
 const isSettingsWindow = currentWindowLabel === 'settings'
 
 if (isMainWindow) {
+  listen('ai-info-visibility-changed', (event) => {
+    config.infoPanel.showAiTags = event.payload === true
+  })
   config.$subscribe((_mutation, state) => {
     void emit('config-settings-synced', JSON.parse(JSON.stringify(state.settings)))
   })
@@ -87,6 +95,9 @@ app.use(i18n)
 
 // Mount the app
 app.mount('#app')
+
+// Initialize cooperative yielding interaction sensor
+initUiInteractionSensor()
 
 // Listen for events
 if (isMainWindow) {
@@ -144,6 +155,9 @@ if (isMainWindow) {
   listen('settings-mapProvider-changed', (event) => {
     config.setMapProvider(event.payload)
   })
+  listen('settings-localMapPath-changed', (event) => {
+    config.setLocalMapPath(event.payload)
+  })
   listen('settings-tiandituToken-changed', (event) => {
     config.setTiandituToken(event.payload)
   })
@@ -200,6 +214,9 @@ if (isMainWindow) {
   })
   listen('settings-slideShowTransition-changed', (event) => {
     config.setSlideShowTransition(event.payload)
+  })
+  listen('settings-slideShowPanZoom-changed', (event) => {
+    config.setSlideShowPanZoom(event.payload)
   })
   listen('settings-imageSearchThresholdIndex-changed', (event) => {
     config.setImageSearchThresholdIndex(event.payload)

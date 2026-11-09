@@ -1,5 +1,6 @@
-import { computed, markRaw, Ref } from 'vue';
+import { computed, markRaw, Ref, ref } from 'vue';
 import { config, libConfig } from '@/common/config';
+import { PHOTO_DISCOVERY_ENABLED } from '@/common/discoveryFeatures';
 import { SIDEBAR } from '@/common/constants';
 import { DEFAULT_PLATFORM, getShortcutLabel, ShortcutActionId } from '@/common/shortcuts';
 import {
@@ -27,7 +28,10 @@ import {
   IconBookmark,
   IconSplitOn,
   IconSplitOn4,
+  IconMail,
 } from '@/common/icons';
+
+export const copiedEffectsState = ref(false);
 
 const OPEN_IN_APP_LABELS = {
   generic: ['open_in_app', 'Open in external app...'],
@@ -45,10 +49,13 @@ export const useFileMenuItems = (
     selectMode?: Ref<boolean>;
     selectionMediaKind?: Ref<'image' | 'video' | 'mixed' | 'empty'>;
     selectionCount?: Ref<number>;
+    hasCopiedEffects?: Ref<boolean>;
+    effectsClipboard?: boolean;
   }
 ) => {
   const createAction = (actionName: string) => () => onAction(actionName);
   const shortcut = (actionId: ShortcutActionId) => getShortcutLabel(actionId, DEFAULT_PLATFORM);
+  const hasCopied = options?.hasCopiedEffects ?? copiedEffectsState;
 
   // Resolves a label string against the current locale, or returns the fallback if none was found.
   const menuLabel = ([key, fallback]: readonly [string, string]) =>
@@ -75,6 +82,39 @@ export const useFileMenuItems = (
     };
   };
 
+  // Picasa's Send to (LAP-008): Email (review selected photos in the default email app), then the
+  // configured external apps for the photos' kind and Manage app..., as under Open in external app.
+  const sendToMenu = (disabled: boolean, kind?: ExternalAppKind) => {
+    const apps = kind ? config.externalAppsFor(kind) : [];
+    return {
+      label: String(localeMsg.value.menu.file.send_to || 'Send to'),
+      icon: markRaw(IconMail),
+      disabled,
+      children: [
+        {
+          label: String(localeMsg.value.menu.file.send_email || 'Email'),
+          icon: markRaw(IconMail),
+          action: createAction('send-email'),
+        },
+        {
+          label: String(localeMsg.value.menu.file.export_to_folder || 'Export to Folder...'),
+          shortcut: shortcut('file.exportToFolder'),
+          disabled: kind === 'video',
+          action: createAction('export-to-folder'),
+        },
+        { label: '-', action: null },
+        ...apps.map((app: any) => ({
+          label: app.name || app.path,
+          action: createAction(`open-external-app:${app.id}`),
+        })),
+        {
+          label: String(localeMsg.value.menu.file.manage_app || 'Manage app...'),
+          action: createAction('manage-external-apps'),
+        },
+      ],
+    };
+  };
+
   // Creates a context menu for multi-select mode.
   const buildSelectionMenu = () => {
     const kind = options?.selectionMediaKind?.value ?? 'empty';
@@ -90,11 +130,99 @@ export const useFileMenuItems = (
       // A mixed image+video selection has no single external-app target, so
       // disable the entry rather than showing an empty app list.
       { ...externalAppMenu(externalAppKind), disabled: kind === 'mixed' },
+      sendToMenu(selectionCount === 0, externalAppKind),
       {
         label: localeMsg.value.menu.file.refresh_file_info,
         icon: markRaw(IconRefresh),
         disabled: selectionCount === 0,
         action: createAction('refresh-file-info'),
+      },
+      { label: '-', action: null },
+      {
+        label: String(localeMsg.value?.menu?.file?.copy_all_effects || 'Copy All Effects'),
+        disabled: kind !== 'image' || selectionCount !== 1,
+        action: createAction('copy-all-effects-selection'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.paste_all_effects || 'Paste All Effects'),
+        disabled: !hasCopied.value || selectionCount === 0 || kind === 'video',
+        action: createAction('paste-all-effects-selection'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.batch_edit || 'Batch Edit'),
+        disabled: selectionCount === 0 || kind === 'video' || kind === 'empty',
+        submenuOpenDelay: 200,
+        children: [
+          {
+            label: String(localeMsg.value?.menu?.file?.rotate_clockwise || 'Rotate Clockwise'),
+            action: createAction('batch-rotate-cw'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.rotate_counter_clockwise || 'Rotate Counter-clockwise'),
+            action: createAction('batch-rotate-ccw'),
+          },
+          { label: '-', action: null },
+          {
+            label: String(localeMsg.value?.menu?.file?.feeling_lucky || "I'm Feeling Lucky"),
+            action: createAction('batch-edit:lucky'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.auto_contrast || 'Auto Contrast'),
+            action: createAction('batch-edit:auto_contrast'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.auto_color || 'Auto Color'),
+            action: createAction('batch-edit:auto_color'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.sharpen || 'Sharpen'),
+            action: createAction('batch-edit:sharpen'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.sepia || 'Sepia'),
+            action: createAction('batch-edit:sepia'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.bw || 'B&W'),
+            action: createAction('batch-edit:bw'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.warmify || 'Warmify'),
+            action: createAction('batch-edit:warmify'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.film_grain || 'Film Grain'),
+            action: createAction('batch-edit:film_grain'),
+          },
+          { label: '-', action: null },
+          {
+            label: String(localeMsg.value?.menu?.file?.undo_all_edits || 'Undo All Edits'),
+            action: createAction('batch-edit:undo_all'),
+          },
+          { label: '-', action: null },
+          {
+            label: String(localeMsg.value?.menu?.file?.adjust_date_time || 'Adjust Date and Time...'),
+            action: createAction('adjust-date-time'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.geotag || 'Place / Geotag...'),
+            action: createAction('geotag'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.clear_geotags || 'Clear Geotags'),
+            action: createAction('clear-geotags'),
+          },
+          { label: '-', action: null },
+          {
+            label: String(localeMsg.value?.menu?.file?.create_collage || 'Create Picture Collage...'),
+            action: createAction('create-collage'),
+          },
+          {
+            label: String(localeMsg.value?.menu?.file?.export_picture_to_folder || 'Export Picture to Folder...'),
+            shortcut: shortcut('file.exportToFolder'),
+            action: createAction('export-to-folder'),
+          },
+        ],
       },
     ];
   };
@@ -120,6 +248,7 @@ export const useFileMenuItems = (
         action: createAction('open')
       },
       { ...externalAppMenu(isVideo ? 'video' : 'image'), hidden: !isImage && !isVideo },
+      { ...sendToMenu(false, isVideo ? 'video' : 'image'), hidden: !isImage && !isVideo },
       {
         label: localeMsg.value.menu.file.edit_image,
         icon: markRaw(IconImageEdit),
@@ -127,6 +256,18 @@ export const useFileMenuItems = (
         disabled: !isImage,
         action: createAction('edit')
       },
+      ...(options?.effectsClipboard ? [
+        {
+          label: String(localeMsg.value?.menu?.file?.copy_all_effects || 'Copy All Effects'),
+          disabled: !isImage,
+          action: createAction('copy-all-effects'),
+        },
+        {
+          label: String(localeMsg.value?.menu?.file?.paste_all_effects || 'Paste All Effects'),
+          disabled: !isImage || !hasCopied.value,
+          action: createAction('paste-all-effects'),
+        },
+      ] : []),
       {
         label: localeMsg.value.menu.file.print,
         icon: markRaw(IconPrint),
@@ -216,6 +357,10 @@ export const useFileMenuItems = (
         ],
       },
       {
+        label: file.value?.is_hidden ? (localeMsg.value.menu?.file?.unhide || 'Unhide') : (localeMsg.value.menu?.file?.hide || 'Hide'),
+        action: () => onAction(file.value?.is_hidden ? 'unhide' : 'hide'),
+      },
+      {
         label: localeMsg.value.menu.meta.tag,
         icon: markRaw(IconTag),
         shortcut: shortcut('meta.tag'),
@@ -238,6 +383,29 @@ export const useFileMenuItems = (
         icon: markRaw(IconRotate),
         shortcut: shortcut('meta.rotate'),
         action: createAction('rotate')
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.adjust_date_time || 'Adjust Date and Time...'),
+        action: createAction('adjust-date-time'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.geotag || 'Place / Geotag...'),
+        action: createAction('geotag'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.clear_geotags || 'Clear Geotags'),
+        disabled: f.gps_latitude == null && f.gps_longitude == null,
+        action: createAction('clear-geotags'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.create_collage || 'Create Picture Collage...'),
+        disabled: !isImage,
+        action: createAction('create-collage'),
+      },
+      {
+        label: String(localeMsg.value?.menu?.file?.make_poster || 'Make a Poster...'),
+        disabled: !isImage,
+        action: createAction('make-poster'),
       },
       { label: "-", action: null },
       {
@@ -283,7 +451,7 @@ export const useFileMenuItems = (
         label: localeMsg.value.menu.file.find_similar_images,
         icon: markRaw(IconPhotoSearch),
         shortcut: shortcut('file.searchSimilar'),
-        disabled: !isImage,
+        disabled: !PHOTO_DISCOVERY_ENABLED || !isImage,
         action: createAction('search-similar')
       },
       {

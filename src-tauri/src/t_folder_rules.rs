@@ -1,4 +1,4 @@
-//! Per-folder scan rules for the Folder Manager.
+//! Picasa-style per-folder scan rules for the Folder Manager.
 //!
 //! Each rule pins a folder (and, by inheritance, its whole subtree) to one of:
 //! - `always`  - included and kept in sync (the default under an album root)
@@ -234,7 +234,7 @@ pub struct FolderTreeEntry {
 
 fn is_system_folder_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    matches!(lower.as_str(), "$recycle.bin" | "system volume information" | "recycler" | "@eadir" | "__macosx")
+    matches!(lower.as_str(), "$recycle.bin" | "system volume information" | "recycler" | "@eadir" | "__macosx" | ".picasaoriginals")
 }
 
 /// Direct subfolders of `path` read from disk (not the DB), with modes.
@@ -512,4 +512,34 @@ mod tests {
         assert_eq!(level[1].explicit_mode.as_deref(), Some(MODE_EXCLUDE));
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn picasa_originals_is_system_folder_and_skipped_by_list_tree_level() {
+        assert!(is_system_folder_name(".picasaoriginals"));
+        assert!(is_system_folder_name(".PicasaOriginals"));
+        assert!(is_system_folder_name(".PICASAORIGINALS"));
+        assert!(!is_system_folder_name("picasaoriginals"));
+
+        let root = std::env::temp_dir().join(format!("lap_picasa_orig_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".PicasaOriginals")).unwrap();
+        fs::create_dir_all(root.join("Photos")).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+        let r = vec![];
+        let level = list_tree_level(&r, &root_str).unwrap();
+        let names: Vec<_> = level.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Photos"]);
+        let _ = fs::remove_dir_all(&root);
+
+        let root2 = std::env::temp_dir().join(format!("lap_picasa_orig_lower_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root2);
+        fs::create_dir_all(root2.join(".picasaoriginals")).unwrap();
+        fs::create_dir_all(root2.join("Album")).unwrap();
+        let root2_str = root2.to_string_lossy().to_string();
+        let level2 = list_tree_level(&r, &root2_str).unwrap();
+        let names2: Vec<_> = level2.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names2, vec!["Album"]);
+        let _ = fs::remove_dir_all(&root2);
+    }
 }
+

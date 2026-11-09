@@ -1,5 +1,5 @@
 <template>
-  <!-- Stacked left pane: Albums, People and Folders as collapsible sections of one
+  <!-- Picasa-style left pane: Albums, People and Folders (Picasa's order) as collapsible sections of one
        continuous scrolling column. The long lists do not scroll themselves: Folders is
        virtualised against this column and People pages in as the column nears its end. -->
   <div ref="scrollerRef" class="relative h-full overflow-x-hidden overflow-y-auto" data-left-pane-stack="true" @scroll="updateSectionInView">
@@ -23,6 +23,7 @@
         @contextmenu.capture="onItemEvent($event, SIDEBAR.PERSON)"
       >
         <Person
+          ref="personRef"
           :titlebar="localeMsg.sidebar.people"
           :stacked="true"
           :collapsed="config.leftStack.peopleCollapsed"
@@ -70,6 +71,7 @@ const albumsRef = ref<HTMLElement | null>(null);
 const peopleRef = ref<HTMLElement | null>(null);
 const foldersRef = ref<HTMLElement | null>(null);
 const albumListRef = ref<any>(null);
+const personRef = ref<any>(null);
 
 // Picking a person or a folder (click, right-click) switches the grid to that view, as the
 // separate People / Folders panels did. Runs before the row's own handler, so the view and
@@ -125,6 +127,7 @@ function revealSection(index: number, force = false): boolean {
   const target = sections().find(item => item.index === index);
   if (!target) return false;
   const isFolders = index === SIDEBAR.ALBUM;
+  const isPeople = index === SIDEBAR.PERSON;
   const section = target.el;
   const scroller = scrollerRef.value;
   if (!section || !scroller) return false;
@@ -132,9 +135,13 @@ function revealSection(index: number, force = false): boolean {
   if (!force && !config.leftStack[collapsedKey]) {
     const top = section.offsetTop - scroller.scrollTop;
     if (top >= -2 && top < scroller.clientHeight - 24) return false;
+    // People is tall: already scrolled inside the open list is in view too.
+    if (isPeople && section.offsetTop + section.offsetHeight > scroller.scrollTop && top < -2) return false;
   }
   config.leftStack[collapsedKey] = false;
-  void nextTick(() => {
+  void nextTick(async () => {
+    // People: show the selected person's row (Person 31xx from the Timeline), not the list's top.
+    if (isPeople && await personRef.value?.revealSelectedPerson?.()) return;
     scroller.scrollTop = section.offsetTop;
     if (isFolders) albumListRef.value?.revealSelectedFolder?.();
   });

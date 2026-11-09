@@ -5,13 +5,15 @@
   <template v-else>
     <router-view />
     <ToastContainer />
+    <GpuAcceleration prompt />
   </template>
 </template>
  
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { restoreStateCurrent, StateFlags } from '@tauri-apps/plugin-window-state';
 import { useConfigStore } from '@/stores/configStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -19,6 +21,7 @@ import { clearIndexRecoveryInfo, getAppConfig } from '@/common/api';
 import { isMac, setTheme, SCALE_VALUES, isEditableTarget } from '@/common/utils';
 import { matchesShortcut } from '@/common/shortcuts';
 import ToastContainer from '@/components/ToastContainer.vue';
+import GpuAcceleration from '@/components/GpuAcceleration.vue';
 
 const libConfig = useLibraryStore();
 const isReady = ref(false);
@@ -114,6 +117,12 @@ onMounted(async () => {
     isReady.value = true;
     // Show window after everything is loaded (main window only)
     if (win.label === 'main') {
+      await nextTick();
+      try {
+        await restoreStateCurrent(StateFlags.ALL & ~StateFlags.VISIBLE);
+      } catch (error) {
+        console.error('[App] Window state restoration failed:', error);
+      }
       await win.show();
     }
   }

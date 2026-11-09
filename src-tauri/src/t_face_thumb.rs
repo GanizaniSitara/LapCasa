@@ -92,6 +92,65 @@ fn crop_image(img: DynamicImage, rect: [f64; 4], size: u32) -> DynamicImage {
     img.crop_imm(x, y, cw, ch).thumbnail(size, size)
 }
 
+// The face crop in upright, normalised coordinates: the region generate() cuts from the
+// original, expressed on the upright image (inverse of source_rect's upright->raw table).
+fn upright_rect(bbox: [f64; 4], width: u32, height: u32, aspect: f64, orientation: i32, display: bool) -> [f64; 4] {
+    if display {
+        let (w, h) = if (5..=8).contains(&orientation) { (height, width) } else { (width, height) };
+        return framed_rect(bbox, w, h, aspect, 1);
+    }
+    let r = framed_rect(bbox, width, height, aspect, orientation);
+    let points = [(r[0], r[1]), (r[0] + r[2], r[1]), (r[0], r[1] + r[3]), (r[0] + r[2], r[1] + r[3])];
+    let mut bounds = [1.0_f64, 1.0_f64, 0.0_f64, 0.0_f64];
+    for (x, y) in points {
+        let (x, y) = match orientation {
+            2 => (1.0 - x, y), 3 => (1.0 - x, 1.0 - y), 4 => (x, 1.0 - y),
+            5 => (y, x), 6 => (1.0 - y, x), 7 => (1.0 - y, 1.0 - x), 8 => (y, 1.0 - x),
+            _ => (x, y),
+        };
+        bounds[0] = bounds[0].min(x); bounds[1] = bounds[1].min(y);
+        bounds[2] = bounds[2].max(x); bounds[3] = bounds[3].max(y);
+    }
+    [bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]]
+}
+
+// Picasa draws People tiles by cutting the face from its cached whole-photo thumbnail.
+// Do the same; None means "use the original" (edited photo, no cached thumbnail, a
+// thumbnail that is not the whole upright photo, or a face too small to crop well).
+fn from_cached_thumbnail(file_id: i64, bbox: [f64; 4], size: u32, aspect: f64, face_id: i64) -> Result<Option<Vec<u8>>, String> {
+    let Some(crop) = cached_thumbnail_crop(file_id, bbox, size, aspect, face_id, false)? else { return Ok(None) };
+    Ok(Some(crate::t_jpeg::encode_rgb8(&crop.to_rgb8(), 90)?))
+}
+
+// The face cut from the cached thumbnail, not yet encoded: shared by the face protocol
+// above and the native grid (native_grid.rs), so both show the same headshot.
+/// `allow_small`: accept a face too small in the thumbnail for full quality (a soft crop the native
+/// grid can show at once while it fetches the sharp one in the background).
+pub(crate) fn cached_thumbnail_crop(file_id: i64, bbox: [f64; 4], size: u32, aspect: f64, face_id: i64, allow_small: bool) -> Result<Option<DynamicImage>, String> {
+    let Some(thumb) = crate::t_thumb_cache::get(file_id) else { return Ok(None) };
+    let Some(file) = crate::t_sqlite::AFile::get_file_info(file_id).map_err(|e| e.to_string())? else { return Ok(None) };
+    let Some(path) = file.file_path else { return Ok(None) };
+    let conn = crate::t_sqlite::open_conn()?;
+    let edits: Option<String> = conn.query_row("SELECT edits FROM afiles WHERE id=?1", [file_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let doc = crate::t_edit_recipe::state(edits.as_deref());
+    if doc["recipe"].is_object() || doc["auto_enhance"].as_bool().unwrap_or(false) { return Ok(None); }
+    let orientation = crate::t_image::get_image_orientation(&path);
+    let Ok((width, height)) = image::image_dimensions(&path) else { return Ok(None) };
+    let display = is_display_box(&conn, file_id, face_id)?;
+    let (box_width, box_height) = if display && (5..=8).contains(&orientation) { (height, width) } else { (width, height) };
+    if bbox[0] + bbox[2] <= 0.0 || bbox[1] + bbox[3] <= 0.0 || bbox[0] >= box_width as f64 || bbox[1] >= box_height as f64 {
+        return Ok(None);
+    }
+    let Ok(img) = image::load_from_memory(&thumb) else { return Ok(None) };
+    let (tw, th) = img.dimensions();
+    let (uw, uh) = if (5..=8).contains(&orientation) { (height, width) } else { (width, height) };
+    let upright_aspect = uw as f64 / uh as f64;
+    if tw == 0 || th == 0 || ((tw as f64 / th as f64) - upright_aspect).abs() > 0.02 * upright_aspect { return Ok(None); }
+    let rect = upright_rect(bbox, width, height, aspect, orientation, display);
+    if !allow_small && (rect[2] * tw as f64).min(rect[3] * th as f64) < size as f64 / 3.0 { return Ok(None); }
+    Ok(Some(crop_image(img, rect, size)))
+}
+
 pub fn cached(key: &str) -> Result<Option<Vec<u8>>, String> {
     let started=std::time::Instant::now();
     let canonical = cache_key(key.strip_prefix("face-v4:").ok_or("invalid face cache key")?)?;
@@ -113,6 +172,12 @@ pub async fn get(key: String, file_id: i64, bbox: [f64; 4], size: u32, aspect: f
     let lookup_key = key.clone();
     if let Some(data) = crate::t_protocol::thumbnail_work(move || cached(&lookup_key)).await?? { return Ok(data); }
     let canonical = cache_key(key.strip_prefix("face-v4:").ok_or("invalid face cache key")?)?;
+    let fast_key = canonical.clone();
+    if let Some(data) = crate::t_protocol::thumbnail_work(move || {
+        let data = from_cached_thumbnail(file_id, bbox, size, aspect, face_id)?;
+        if let Some(bytes) = &data { crate::t_thumb_cache::put_face(&fast_key, bytes)?; }
+        Ok::<_, String>(data)
+    }).await?? { return Ok(data); }
     let _permit = GENERATION.get_or_init(|| tokio::sync::Semaphore::new(2))
         .acquire().await.map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -197,24 +262,37 @@ fn named_crops(conn: &rusqlite::Connection, library_id: &str, size: u32, aspect:
         let b: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
         let bbox = ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(f64::NAN));
         let path = std::path::PathBuf::from(folder).join(name).to_string_lossy().into_owned();
-        let mut url = reqwest::Url::parse(&format!("lap://localhost/{library_id}/{file_id}")).map_err(|e| e.to_string())?;
-        {
-            let mut params = url.query_pairs_mut();
-            for (key, value) in ["fx", "fy", "fw", "fh"].into_iter().zip(bbox) { params.append_pair(key, &value.to_string()); }
-            params.append_pair("fa", &aspect.to_string()).append_pair("fid", &face_id.to_string())
-                .append_pair("fs", &size.to_string()).append_pair("fp", &path);
-            if let Some(space) = b["coordinate_space"].as_str() { params.append_pair("fc", space); }
-            if version > 0 { params.append_pair("v", &version.to_string()); }
-        }
-        let doc=crate::t_edit_recipe::state(edits.as_deref());
-        if let Some(render_key)=doc["render_key"].as_str() {
-            url.query_pairs_mut().append_pair("rk",render_key);
-        }
-        let (key, error) = match cache_key(url.as_str()) {
+        let (key, error) = match face_key(library_id, file_id, &b, aspect, face_id, size, &path, version, edits.as_deref()) {
             Ok(key) => (key, None), Err(error) => (String::new(), Some(error)),
         };
         Ok(PendingCrop { face_id, file_id, path, bbox, key, error })
     }).collect()
+}
+
+/// The face cache key of the page's face URL for this crop (the fields Thumbnail.vue sends).
+pub(crate) fn face_key(library_id: &str, file_id: i64, b: &serde_json::Value, aspect: f64, face_id: i64, size: u32,
+    path: &str, version: i64, edits: Option<&str>) -> Result<String, String> {
+    let bbox = ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(f64::NAN));
+    let mut url = reqwest::Url::parse(&format!("lap://localhost/{library_id}/{file_id}")).map_err(|e| e.to_string())?;
+    {
+        let mut params = url.query_pairs_mut();
+        for (key, value) in ["fx", "fy", "fw", "fh"].into_iter().zip(bbox) { params.append_pair(key, &value.to_string()); }
+        params.append_pair("fa", &aspect.to_string()).append_pair("fid", &face_id.to_string())
+            .append_pair("fs", &size.to_string()).append_pair("fp", path);
+        if let Some(space) = b["coordinate_space"].as_str() { params.append_pair("fc", space); }
+        if version > 0 { params.append_pair("v", &version.to_string()); }
+    }
+    let doc=crate::t_edit_recipe::state(edits);
+    if let Some(render_key)=doc["render_key"].as_str() {
+        url.query_pairs_mut().append_pair("rk",render_key);
+    }
+    cache_key(url.as_str())
+}
+
+/// Crop a face from the original photo (the slow path), JPEG encoded.
+pub(crate) fn generate_from_original(path: &str, file_id: i64, bbox: [f64; 4], size: u32, aspect: f64, face_id: i64) -> Result<Vec<u8>, String> {
+    let conn = crate::t_sqlite::open_conn()?;
+    generate(&conn, path, file_id, bbox, size, aspect, face_id)
 }
 
 #[derive(Default, serde::Serialize)]
@@ -293,8 +371,8 @@ mod tests {
     #[test]
     #[ignore = "Explicit TEST runtime-key audit; app must be closed"]
     fn observed_runtime_keys_hit_test_cache() {
-        let conn=rusqlite::Connection::open_with_flags("C:/lapcasa-test/library/library.db",rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        let cache=crate::t_thumb_cache::FaceCache::open(std::path::Path::new("C:/lapcasa-test/profile/thumbs.redb")).unwrap();
+        let conn=rusqlite::Connection::open_with_flags(&std::env::var("LAP_FACE_AUDIT_DB").expect("Set LAP_FACE_AUDIT_DB to a disposable library copy"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let cache=crate::t_thumb_cache::FaceCache::open(std::path::Path::new(&std::env::var("LAP_FACE_AUDIT_CACHE").expect("Set LAP_FACE_AUDIT_CACHE to a disposable cache copy"))).unwrap();
         let mut crops=std::collections::HashMap::new();
         let mut after=0;
         loop {
@@ -303,7 +381,7 @@ mod tests {
             after=batch.last().unwrap().face_id;
             for crop in batch { crops.insert(crop.face_id,crop.key); }
         }
-        let log=std::fs::read_to_string("C:/lapcasa-test/face-cache-runtime.log").unwrap();
+        let log=std::fs::read_to_string(std::env::var("LAP_FACE_AUDIT_LOG").expect("Set LAP_FACE_AUDIT_LOG to the fixture trace")).unwrap();
         for line in log.lines().filter(|line| line.contains("face_cache_trace")) {
             let trace:serde_json::Value=serde_json::from_str(line).unwrap();
             let actual=trace["key"].as_str().unwrap();
@@ -331,12 +409,12 @@ mod tests {
             CREATE TABLE afolders(id INTEGER,path TEXT); CREATE TABLE afiles(id INTEGER,folder_id INTEGER,name TEXT,modified_at INTEGER,edits TEXT);
             CREATE TABLE faces(id INTEGER,file_id INTEGER,bbox TEXT,person_id INTEGER,suggested_person_id INTEGER);
             CREATE TABLE face_ignores(face_id INTEGER PRIMARY KEY,ignored_at INTEGER);
-            INSERT INTO persons VALUES(4432,'Example Person',1);
+            INSERT INTO persons VALUES(4432,'Person A',1);
             INSERT INTO afiles VALUES(29211,1,'sample.jpg',1767436297,NULL);
             INSERT INTO faces VALUES(28791,29211,'{\"x\":406.95491,\"y\":330.098787,\"width\":646.043793,\"height\":777.136858,\"confidence\":1.0}',4432,NULL);").unwrap();
-        conn.execute("INSERT INTO afolders VALUES(1,?1)",["C:\\Photos\\Fixture"]).unwrap();
+        conn.execute("INSERT INTO afolders VALUES(1,?1)",["C:\\photos\\fixture"]).unwrap();
         let crops=named_crops(&conn,"library",512,5.0/6.0,0).unwrap();
-        let browser="http://lap.localhost/library/29211?fx=406.95491&fy=330.098787&fw=646.043793&fh=777.136858&fa=0.8333333333333334&fid=28791&fs=512&fp=C%3A%5CPhotos%5CFixture%5Csample.jpg&v=1767436297";
+        let browser="http://lap.localhost/library/29211?fx=406.95491&fy=330.098787&fw=646.043793&fh=777.136858&fa=0.8333333333333334&fid=28791&fs=512&fp=C%3A%5Cphotos%5Cfixture%5Csample.jpg&v=1767436297";
         assert_eq!(crops[0].key,cache_key(browser).unwrap());
         // Captured detector coordinates must survive JSON parsing bit-for-bit;
         // a one-ULP difference otherwise bypasses a pre-generated crop.
@@ -345,7 +423,8 @@ mod tests {
             .replace("646.043793","214.7691650390625").replace("777.136858","278.10205078125");
         assert_eq!(named_crops(&conn,"library",512,5.0/6.0,0).unwrap()[0].key,cache_key(&exact).unwrap());
         if let Ok(path) = std::env::var("LAP_FACE_PARITY_CACHE") {
-            let expected=std::path::Path::new("C:/lapcasa-test/profile/thumbs.redb");
+            let expected_path=std::env::var("LAP_FACE_PARITY_EXPECTED_CACHE").expect("Set LAP_FACE_PARITY_EXPECTED_CACHE to the same disposable fixture cache");
+            let expected=std::path::Path::new(&expected_path);
             assert_eq!(std::fs::canonicalize(&path).unwrap(),std::fs::canonicalize(expected).unwrap());
             let cache=crate::t_thumb_cache::FaceCache::open(std::path::Path::new(&path)).unwrap();
             assert!(cache.contains(&cache_key(browser).unwrap()).unwrap(),"captured request must hit the actual TEST redb table");
@@ -410,6 +489,30 @@ mod tests {
         assert!(rect.iter().all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
         let crop = crop_image(DynamicImage::ImageRgb8(image::RgbImage::from_pixel(640,480,image::Rgb([0,255,0]))),rect,512);
         assert!(crop.width()>0 && crop.height()>0);
+    }
+
+    #[test]
+    fn crop_from_cached_upright_thumbnail_matches_crop_from_original() {
+        // An asymmetric scene, so a wrong orientation mapping shows up as a pixel mismatch.
+        let mut raw = image::RgbImage::from_pixel(1000, 600, image::Rgb([40, 40, 40]));
+        for y in 100..200 { for x in 200..280 { raw.put_pixel(x, y, image::Rgb([0, 200, 0])); } }
+        for y in 100..140 { for x in 200..230 { raw.put_pixel(x, y, image::Rgb([0, 0, 220])); } }
+        for y in 170..200 { for x in 250..280 { raw.put_pixel(x, y, image::Rgb([220, 0, 0])); } }
+        let bbox = [200.0, 100.0, 80.0, 100.0];
+        for orientation in 1..=8 {
+            let original = DynamicImage::ImageRgb8(raw.clone());
+            let slow = crate::t_image::apply_orientation(
+                crop_image(original.clone(), framed_rect(bbox, 1000, 600, 1.0, orientation), 64), orientation).to_rgb8();
+            let upright = crate::t_image::apply_orientation(original, orientation);
+            let thumb = upright.resize_exact(upright.width() / 2, upright.height() / 2, image::imageops::FilterType::Triangle);
+            let fast = crop_image(thumb, upright_rect(bbox, 1000, 600, 1.0, orientation, false), 64).to_rgb8();
+            let a = image::imageops::resize(&slow, 16, 16, image::imageops::FilterType::Triangle);
+            let b = image::imageops::resize(&fast, 16, 16, image::imageops::FilterType::Triangle);
+            let diff: f64 = a.pixels().zip(b.pixels())
+                .map(|(p, q)| (0..3).map(|c| (p.0[c] as f64 - q.0[c] as f64).abs()).sum::<f64>()).sum::<f64>()
+                / (16.0 * 16.0 * 3.0);
+            assert!(diff < 12.0, "orientation {orientation}: thumbnail crop differs from original crop by {diff}");
+        }
     }
 
     #[test]

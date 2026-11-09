@@ -1079,9 +1079,9 @@ function scrollSelectedDuplicateGroupIntoView(groupId: number) {
   const itemRect = item.getBoundingClientRect();
   const padding = 4;
   if (itemRect.top < containerRect.top + padding) {
-    container.scrollBy({ top: itemRect.top - containerRect.top - padding, behavior: 'smooth' });
+    container.scrollBy({ top: itemRect.top - containerRect.top - padding });
   } else if (itemRect.bottom > containerRect.bottom - padding) {
-    container.scrollBy({ top: itemRect.bottom - containerRect.bottom + padding, behavior: 'smooth' });
+    container.scrollBy({ top: itemRect.bottom - containerRect.bottom + padding });
   }
 }
 

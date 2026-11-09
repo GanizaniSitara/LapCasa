@@ -53,7 +53,7 @@ brew install --cask lap
 - **Mapa interativo** para explorar fotos e vídeos geolocalizados em grupos que seguem os filtros atuais.
 - **Álbuns inteligentes** para salvar visualizações baseadas em regras com agrupamento e ordenação personalizados.
 - **Coleções e tags** para organizar arquivos selecionados em lote sem mover ou duplicar os originais.
-- **Busca com IA local** por texto, similaridade visual, temas e agrupamento de rostos, com busca opcional em mais de 50 idiomas.
+- **Busca com IA local** por texto, similaridade visual, temas e agrupamento de rostos. A pesquisa por descrição usa inglês.
 - **Apple Live Photos e Google Motion Photos** com reprodução do movimento e um filtro comum nos álbuns inteligentes.
 - **Pares RAW + JPEG/HEIC** exibidos como um único item, mantendo os arquivos associados juntos durante as operações.
 - **Miniaturas e prévias RAW configuráveis** usando renderização RAW ou a prévia incorporada da câmera.

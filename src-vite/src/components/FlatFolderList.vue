@@ -1,5 +1,5 @@
 <template>
-  <!-- Folders list: every folder that holds pictures, flat and always open,
+  <!-- Picasa Folders list: every folder that holds pictures, flat and always open,
        in disk order (top-level folder, then its subfolders). Rows are virtualised
        (fixed 24px height). In the stacked left pane (`scroller` set) the list does not
        scroll itself: it is virtualised against the shared scrolling column. -->

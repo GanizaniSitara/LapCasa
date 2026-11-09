@@ -37,6 +37,32 @@ use tauri::{AppHandle, Emitter, Manager, State};
 // open several connections, all of which must resolve to the same library.
 pub(crate) static FILE_REFRESH_LIBRARY_LOCK: Mutex<()> = Mutex::new(());
 
+static EXTERNAL_SEARCH_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static EXTERNAL_SEARCH_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn consume_external_search() -> Result<Option<serde_json::Value>, String> {
+    let _guard = EXTERNAL_SEARCH_LOCK.lock().map_err(|e| e.to_string())?;
+    let path = t_config::get_app_data_dir()?.join("external-search.json");
+    let claimed = path.with_file_name(format!("external-search.taken-{}.json",std::process::id()));
+    match fs::rename(&path,&claimed) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+    let contents = fs::read_to_string(&claimed);
+    // Remove even malformed requests rather than repeatedly trying them forever.
+    fs::remove_file(&claimed).map_err(|e| e.to_string())?;
+    serde_json::from_str(&contents.map_err(|e| e.to_string())?).map(Some).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn take_external_search() -> Result<Option<serde_json::Value>, String> {
+    // Frontend subscribes before invoking: the poller must not consume a request
+    // during startup while there is no event listener yet.
+    EXTERNAL_SEARCH_READY.store(true, std::sync::atomic::Ordering::Release);
+    consume_external_search()
+}
+
 // cancellation token for indexing
 pub struct IndexCancellation(pub Arc<Mutex<HashMap<i64, bool>>>);
 pub struct ImportCancellation(pub Arc<Mutex<ImportState>>);
@@ -92,13 +118,59 @@ include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 
 /// get app config (libraries list and current library)
 #[tauri::command]
-pub fn get_app_config() -> Result<AppConfig, String> {
+pub async fn get_app_config() -> Result<AppConfig, String> {
     t_config::load_app_config()
 }
 
 #[tauri::command]
-pub fn get_ai_progress() -> Result<t_advanced_ai::AiProgress, String> {
-    t_advanced_ai::ai_progress()
+pub async fn get_ai_progress() -> Result<t_advanced_ai::AiProgress, String> {
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_ai_progress");
+    let result = t_advanced_ai::ai_progress();
+    trace.mark("done", 0);
+    result
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileAiInfo {
+    ai_tags: Option<String>,
+    ai_objects: Option<String>,
+    ocr_text: Option<String>,
+    description: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_file_ai_info(file_id: i64) -> Result<FileAiInfo, String> {
+    let conn = t_sqlite::open_conn()?;
+    let (ai_tags, ai_objects, ocr_text): (Option<String>, Option<String>, Option<String>) = conn
+        .query_row("SELECT ai_tags, ai_objects, ocr_text FROM afiles WHERE id = ?1", [file_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        }).map_err(|e| e.to_string())?;
+    let description = if t_config::load_app_config()?.ai_description_enabled {
+        t_advanced_ai::ai_description(ai_tags.as_deref(), ai_objects.as_deref(), ocr_text.as_deref())
+    } else { None };
+    Ok(FileAiInfo { ai_tags, ai_objects, ocr_text, description })
+}
+
+#[tauri::command]
+pub fn set_experimental_ai_config(
+    app_handle: AppHandle,
+    scene: bool,
+    objects: bool,
+    ocr: bool,
+    description: bool,
+) -> Result<AppConfig, String> {
+    let mut config = t_config::load_app_config()?;
+    config.ai_scene_detection_enabled = scene;
+    config.ai_object_detection_enabled = objects;
+    config.ai_ocr_enabled = ocr;
+    config.ai_description_enabled = description;
+    t_config::save_app_config(&config)?;
+    t_advanced_ai::experimental_config_changed();
+    if t_advanced_ai::background_enabled() {
+        t_advanced_ai::start_ai_worker(app_handle.clone());
+    }
+    let _ = app_handle.emit("experimental-ai-config-changed", ());
+    Ok(config)
 }
 
 #[tauri::command]
@@ -373,10 +445,10 @@ pub fn change_db_storage_dir(
     status_state: State<t_face::FaceIndexingStatus>,
 ) -> Result<String, String> {
     ensure_db_storage_change_allowed(&status_state)?;
+    cancel_plain_search();
+    crate::t_search::clear_plain_search_cache();
     let result = t_storage::change_db_storage_dir(new_dir);
-    if result.is_ok() {
-        revalidate_db_after_path_change();
-    }
+    if result.is_ok() { revalidate_db_after_path_change(); }
     result
 }
 
@@ -385,10 +457,10 @@ pub fn reset_db_storage_dir(
     status_state: State<t_face::FaceIndexingStatus>,
 ) -> Result<String, String> {
     ensure_db_storage_change_allowed(&status_state)?;
+    cancel_plain_search();
+    crate::t_search::clear_plain_search_cache();
     let result = t_storage::reset_db_storage_dir();
-    if result.is_ok() {
-        revalidate_db_after_path_change();
-    }
+    if result.is_ok() { revalidate_db_after_path_change(); }
     result
 }
 
@@ -429,22 +501,28 @@ pub fn edit_library(id: &str, name: &str) -> Result<(), String> {
 /// remove a library (also deletes the database file)
 #[tauri::command]
 pub fn remove_library(id: &str) -> Result<(), String> {
+    if t_config::load_app_config()?.current_library_id == id {
+        cancel_plain_search();
+        crate::t_search::clear_plain_search_cache();
+    }
     t_config::remove_library(id)
 }
 
 /// Startup integrity check result for the selected library.
 #[tauri::command]
-pub fn is_database_corrupted() -> bool {
+pub async fn is_database_corrupted() -> bool {
     t_sqlite::is_database_corrupted()
 }
 
 /// switch to a different library
 #[tauri::command]
 pub async fn switch_library(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
+    cancel_plain_search();
     // The blocking task reports whether the target library turned out to be corrupt, deciding from
     // create_db's returned error itself rather than re-reading the process-global flag afterwards
     // (which a concurrent switch could resolve against a different library).
     let corrupted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        crate::t_search::clear_plain_search_cache();
         let _guard = FILE_REFRESH_LIBRARY_LOCK.lock().map_err(|e| e.to_string())?;
         t_config::switch_library(&id)?;
         t_utils::clear_album_accessibility();
@@ -490,13 +568,13 @@ pub fn save_library_state(id: &str, state: LibraryState) -> Result<(), String> {
 
 /// get library state
 #[tauri::command]
-pub fn get_library_state(id: &str) -> Result<LibraryState, String> {
+pub async fn get_library_state(id: &str) -> Result<LibraryState, String> {
     t_config::get_library_state(id)
 }
 
 /// get current library state
 #[tauri::command]
-pub fn get_current_library_state() -> Result<LibraryState, String> {
+pub async fn get_current_library_state() -> Result<LibraryState, String> {
     t_config::get_current_library_state()
 }
 
@@ -504,7 +582,7 @@ pub fn get_current_library_state() -> Result<LibraryState, String> {
 
 /// get all albums
 #[tauri::command]
-pub fn get_all_albums(refresh_accessibility: bool) -> Result<Vec<Album>, String> {
+pub async fn get_all_albums(refresh_accessibility: bool) -> Result<Vec<Album>, String> {
     // Best-effort: repair stale covers so the album list never renders a
     // broken thumbnail.
     let albums = Album::get_all_albums()
@@ -530,7 +608,7 @@ pub fn get_all_albums(refresh_accessibility: bool) -> Result<Vec<Album>, String>
 
 /// Get the indexed folder records used by the album sidebar search.
 #[tauri::command]
-pub fn get_all_album_folders() -> Result<Vec<AFolder>, String> {
+pub async fn get_all_album_folders() -> Result<Vec<AFolder>, String> {
     let albums = Album::get_all_albums()?;
     Ok(AFolder::get_all()?.into_iter().filter(|folder| albums.iter()
         .find(|album| album.id == Some(folder.album_id))
@@ -549,7 +627,7 @@ pub fn generate_directory_thumbnails(
 
 /// get one album
 #[tauri::command]
-pub fn get_album(album_id: i64) -> Result<Album, String> {
+pub async fn get_album(album_id: i64) -> Result<Album, String> {
     let mut album = Album::get_album_by_id(album_id)
         .map_err(|e| format!("Error while getting one album: {}", e))?;
     t_utils::apply_album_accessibility(&mut album);
@@ -572,9 +650,12 @@ pub fn recount_album(album_id: i64) -> Result<Album, String> {
 }
 
 #[tauri::command]
-pub fn get_album_visible_counts() -> Result<HashMap<i64, i64>, String> {
-    Album::get_visible_counts()
-        .map_err(|e| format!("Error while getting album visible counts: {}", e))
+pub async fn get_album_visible_counts() -> Result<HashMap<i64, i64>, String> {
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_album_visible_counts");
+    let result = Album::get_visible_counts()
+        .map_err(|e| format!("Error while getting album visible counts: {}", e));
+    trace.mark("done", 0);
+    result
 }
 
 /// add an album
@@ -1177,13 +1258,176 @@ pub fn open_files_with_app(file_paths: Vec<String>, app_path: &str) -> Result<()
     Ok(())
 }
 
+/// Picasa's Adjust Date and Time (LAP-049): `anchor_file_id` gets `new_taken_date` (Unix seconds) and
+/// every other file in `file_ids` moves by the same amount. Library only; the files are not touched.
+#[tauri::command]
+pub fn adjust_files_taken_date(file_ids: Vec<i64>, anchor_file_id: i64, new_taken_date: i64) -> Result<usize, String> {
+    AFile::shift_taken_dates(&file_ids, anchor_file_id, new_taken_date)
+}
+
+/// Picasa's Geotag / Clear Geotags (LAP-049): the files at `latitude`, `longitude` (with an
+/// optional place name), or with no coordinates their geotags cleared. Library only.
+#[tauri::command]
+pub fn set_files_location(file_ids: Vec<i64>, latitude: Option<f64>, longitude: Option<f64>, location_name: Option<String>) -> Result<usize, String> {
+    AFile::set_location(&file_ids, latitude, longitude, location_name.as_deref())
+}
+
+/// Picasa's Create Picture Collage (LAP-049): `layout` "grid" (Contact Sheet) or "mosaic"; the
+/// collage is saved beside the first photo and added to the library. Returns its path.
+#[tauri::command]
+pub async fn create_picture_collage(file_ids: Vec<i64>, layout: String, width: u32, height: u32, spacing: u32, bg_color: String, include_captions: bool) -> Result<String, String> {
+    crate::t_collage::create(file_ids, &layout, width, height, spacing, &bg_color, include_captions).await
+}
+
+/// Tools > Make a Poster (LAP-049): the photo, as shown, enlarged and cut into grid_cols x
+/// grid_rows JPEG tiles with overlap_px of overlap. Returns the tiles' paths.
+#[tauri::command]
+pub async fn create_poster_tiles(file_id: i64, grid_cols: u32, grid_rows: u32, overlap_px: u32) -> Result<Vec<String>, String> {
+    crate::t_collage::create_poster(file_id, grid_cols, grid_rows, overlap_px).await
+}
+
+/// File > Export Picture to Folder (LAP-049): each photo as LapCasa shows it (its saved edits,
+/// auto-enhance or view rotation), its longest edge brought down to max_dimension when it is
+/// larger (never enlarged), saved as <its name>.jpg at JPEG `quality` in dest_folder. The folder is
+/// created when missing and no existing file is overwritten: a taken name becomes "<name> (2).jpg".
+/// Returns the exported files' paths.
+#[tauri::command]
+pub async fn export_pictures_to_folder(file_ids: Vec<i64>, dest_folder: String, max_dimension: Option<u32>, quality: u8) -> Result<Vec<String>, String> {
+    let dest = PathBuf::from(dest_folder.trim());
+    if !dest.is_absolute() { return Err("Choose a folder to export to".to_string()); }
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create {}: {e}", dest.display()))?;
+    let quality = quality.clamp(1, 100);
+    let mut taken = std::collections::HashSet::new();
+    let (mut exported, mut failed) = (Vec::new(), None);
+    for file_id in file_ids {
+        let Some(file) = AFile::get_file_info(file_id)? else { continue };
+        if !matches!(file.file_type, Some(1) | Some(3)) { continue; }
+        let img = match crate::t_edit_recipe::image_as_shown(file_id).await {
+            Ok(img) => img,
+            Err(e) => { failed.get_or_insert(format!("{}: {e}", file.name)); continue; }
+        };
+        let name = unique_jpg_name(&file.name, &mut taken, |n| dest.join(n).exists());
+        let jpeg = tauri::async_runtime::spawn_blocking(move || {
+            let img = match max_dimension.and_then(|m| fit_within(img.width(), img.height(), m)) {
+                Some((w, h)) => img.resize_exact(w, h, image::imageops::FilterType::Lanczos3),
+                None => img,
+            };
+            crate::t_jpeg::encode_rgb8(&img.to_rgb8(), quality)
+        }).await.map_err(|e| e.to_string())??;
+        let path = dest.join(name);
+        std::fs::write(&path, jpeg).map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+        exported.push(path.to_string_lossy().into_owned());
+    }
+    if exported.is_empty() { return Err(failed.unwrap_or_else(|| "No photos to export".to_string())); }
+    Ok(exported)
+}
+
+/// The size a w x h photo is brought down to so its longest edge is `max`; None when it already fits.
+fn fit_within(w: u32, h: u32, max: u32) -> Option<(u32, u32)> {
+    let long = w.max(h);
+    if max == 0 || long <= max { return None; }
+    let scale = max as f64 / long as f64;
+    Some((((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1)))
+}
+
+// Open selected photos in the user's default email app. The app supplies no
+// sender or recipient, and always requires the mail client's review dialog.
+#[tauri::command]
+pub async fn email_files_draft(file_ids: Vec<i64>) -> Result<bool, String> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let dir = std::env::temp_dir().join("lapcasa-email").join(stamp.to_string());
+    let mut attachments = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for file_id in file_ids {
+        let Some(file) = AFile::get_file_info(file_id)? else { continue };
+        let Some(path) = file.file_path.clone().filter(|p| !p.is_empty()) else { continue };
+        match crate::t_edit_recipe::render_for_export(file_id).await? {
+            Some(jpeg) => {
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let rendered = dir.join(email_attachment_name(&file.name, &mut taken));
+                std::fs::write(&rendered, jpeg).map_err(|e| e.to_string())?;
+                attachments.push(rendered.to_string_lossy().into_owned());
+            }
+            None => attachments.push(path),
+        }
+    }
+    if attachments.is_empty() {
+        return Err("No files to email".to_string());
+    }
+    // Use a dedicated STA thread; the modal composer owns its attachments until
+    // it returns. Never launch the user's mail app as part of automated tests.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || { let _ = sender.send(crate::t_email::compose(&attachments)); });
+    let result = receiver.await.map_err(|e| e.to_string())?;
+
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// A rendered attachment's file name: the photo's own name as a .jpg, numbered when two photos in
+/// one draft share a name ("IMG_0001.jpg", "IMG_0001 (2).jpg").
+fn email_attachment_name(name: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    unique_jpg_name(name, taken, |_| false)
+}
+
+/// "<stem>.jpg" for a photo named `name`, or "<stem> (2).jpg" and so on when that name is already
+/// `taken` in this batch (case-insensitively) or `exists` says it is already on disk.
+fn unique_jpg_name(name: &str, taken: &mut std::collections::HashSet<String>, exists: impl Fn(&str) -> bool) -> String {
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "photo".to_string());
+    let mut candidate = format!("{stem}.jpg");
+    let mut n = 2;
+    while !taken.insert(candidate.to_lowercase()) || exists(&candidate) {
+        candidate = format!("{stem} ({n}).jpg");
+        n += 1;
+    }
+    candidate
+}
+
+#[cfg(test)]
+mod email_attachment_tests {
+    use super::email_attachment_name;
+
+    #[test]
+    fn rendered_attachments_keep_the_photo_name_as_jpg_and_never_collide() {
+        let mut taken = std::collections::HashSet::new();
+        assert_eq!(email_attachment_name("IMG_0001.JPG", &mut taken), "IMG_0001.jpg");
+        assert_eq!(email_attachment_name("img_0001.png", &mut taken), "img_0001 (2).jpg");
+        assert_eq!(email_attachment_name("IMG_0001.heic", &mut taken), "IMG_0001 (3).jpg");
+        assert_eq!(email_attachment_name("holiday.nef", &mut taken), "holiday.jpg");
+        assert_eq!(email_attachment_name("", &mut taken), "photo.jpg");
+    }
+
+    #[test]
+    fn export_names_skip_files_already_in_the_folder() {
+        let mut taken = std::collections::HashSet::new();
+        let on_disk = ["IMG_0001.jpg", "IMG_0001 (2).jpg"];
+        let exists = |n: &str| on_disk.iter().any(|d| d.eq_ignore_ascii_case(n));
+        assert_eq!(super::unique_jpg_name("IMG_0001.JPG", &mut taken, exists), "IMG_0001 (3).jpg");
+        assert_eq!(super::unique_jpg_name("img_0001.png", &mut taken, exists), "img_0001 (4).jpg");
+        assert_eq!(super::unique_jpg_name("beach.jpg", &mut taken, exists), "beach.jpg");
+    }
+
+    #[test]
+    fn export_downscales_the_longest_edge_and_never_enlarges() {
+        assert_eq!(super::fit_within(4000, 3000, 1600), Some((1600, 1200)));
+        assert_eq!(super::fit_within(3000, 4000, 1024), Some((768, 1024)));
+        assert_eq!(super::fit_within(800, 600, 1600), None);
+        assert_eq!(super::fit_within(1600, 900, 1600), None);
+        assert_eq!(super::fit_within(5000, 10, 640), Some((640, 1)));
+    }
+}
+
 // file
 
 /// get query count and sum
 #[tauri::command]
 pub async fn get_query_count_and_sum(params: QueryParams) -> Result<(i64, i64, Option<i64>, Option<i64>), String> {
-    AFile::get_query_count_and_sum(&params)
-        .map_err(|e| format!("Error while getting query files count: {}", e))
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_count_and_sum");
+    let result = AFile::get_query_count_and_sum(&params)
+        .map_err(|e| format!("Error while getting query files count: {}", e));
+    trace.mark("done", 0);
+    result
 }
 
 /// get query time line
@@ -1204,7 +1448,96 @@ pub async fn get_query_files(
         .map_err(|e| format!("Error while getting query files: {}", e))
 }
 
-/// Search files using unstructured query string and/or structured faceted search tokens
+/// Shared ordinary-word search, including metadata and visual descriptions.
+#[tauri::command]
+pub async fn search_plain_photos(app_handle: AppHandle, query: String, file_type: Option<i64>, model: Option<i64>, phase: Option<String>, generation: Option<u64>, exclude_ids: Option<Vec<i64>>, initial_limit: Option<usize>) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+    let _ = model; // Keep accepting legacy callers; description search always uses English.
+    let visual_only = phase.as_deref() == Some("visual");
+    let text_only = phase.as_deref() == Some("text");
+    let generation = if visual_only { generation.ok_or("Missing search generation")? }
+        else { PLAIN_SEARCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1 };
+    // SQLite scans and ONNX inference must never run on the async/UI executor.
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let cancelled = || PLAIN_SEARCH_GENERATION.load(Ordering::SeqCst) != generation;
+        if cancelled() { return Err("Search cancelled".into()); }
+        // Capture one library path and use its read snapshot for both ranking
+        // and hydration. Inference must not hold the library-switch lock.
+        let path = t_storage::get_current_db_path()?;
+        let mut options = crate::t_search::SearchOptions::parse(&["--".into(), query])?;
+        if let Some(mask) = file_type.filter(|mask| *mask > 0 && *mask & 7 != 0) {
+            options.filters.push(("file_mask".into(), mask.to_string()));
+        }
+        let models = crate::t_models::app_dir(&app_handle, "search");
+        let encode_ms = std::cell::Cell::new(0.0);
+        let model_load_ms = std::cell::Cell::new(0.0);
+        let mut encode = |query: &str| {
+            let start = std::time::Instant::now();
+            let result = crate::t_advanced_ai::encode_clip_text_query_cancellable(&models, query, &cancelled).map(|(vector,load_ms)| {
+                model_load_ms.set(load_ms);
+                vector
+            });
+            encode_ms.set(start.elapsed().as_secs_f64()*1000.0);
+            result
+        };
+        // Cold model loading and inference happen before the matrix mutex and
+        // read snapshot. Recheck name anchors inside the ranking snapshot.
+        let prepared_query = if visual_only {
+            let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;
+            crate::t_search::plain_visual_plan(&conn,&options)?.1
+        } else { None };
+        let mut prepared_vector = prepared_query.as_deref().map(&mut encode);
+        if cancelled() { return Err("Search cancelled".into()); }
+        let run = |tx: &rusqlite::Connection, cache: Option<&mut Option<crate::t_search::SearchRows>>| {
+        let mut matches = if text_only {
+            crate::t_search::PlainMatches { text_ids: crate::t_search::cached_plain_text_ids(&tx, &options)?, ..Default::default() }
+        } else if visual_only {
+            if crate::t_search::plain_visual_plan(tx,&options)?.1 != prepared_query { return Err("Search cancelled".into()); }
+            crate::t_search::plain_visual_matches(&tx, &options, |_| prepared_vector.take().ok_or("Missing prepared text embedding")?, cache.ok_or("Missing visual cache")?, &exclude_ids.unwrap_or_default(), &cancelled)?
+        } else { crate::t_search::plain_matches_with_encoder(&tx, &options, &mut encode)? };
+        if cancelled() { return Err("Search cancelled".into()); }
+        let inferred_ids = if text_only { crate::t_search::inferred_plain_text_ids(tx, &options, &matches.text_ids)? } else { vec![] };
+        let inferred: std::collections::HashSet<_> = inferred_ids.iter().copied().collect();
+        matches.text_ids.sort_by_key(|id| inferred.contains(id));
+        let rank_ms = started.elapsed().as_secs_f64()*1000.0;
+        let initial_limit = initial_limit.unwrap_or(usize::MAX).max(128);
+        let text_index = if text_only && matches.text_ids.len() > initial_limit {
+            Some(AFile::get_search_index_on(tx, &matches.text_ids)?)
+        } else { None };
+        let text_ids: Vec<_> = text_index.as_ref().map(|rows| rows.iter().filter(|row| row.6).take(initial_limit).map(|row| row.0).collect())
+            .unwrap_or_else(|| matches.text_ids.clone());
+        let ids: Vec<_> = text_ids.iter().copied().chain(matches.visual.iter().map(|(id,_)| *id)).collect();
+        let mut files: HashMap<_,_> = AFile::get_files_by_ids_on(&tx, &ids)?.into_iter().filter_map(|file| file.id.map(|id| (id,file))).collect();
+        let text: Vec<_> = text_ids.iter().filter_map(|id| files.remove(id)).collect();
+        let visual: Vec<_> = matches.visual.iter().filter_map(|(id,_)| files.remove(id)).collect();
+        Ok(serde_json::json!({"text_matches":text,"text_index":text_index,"inferred_ids":inferred_ids,"visual_matches":visual,"semantic_error":matches.semantic_error,
+            "generation":generation,"encode_ms":encode_ms.get(),"rank_ms":rank_ms,
+            "model_load_ms":model_load_ms.get(),"matrix_bytes":matches.matrix_bytes,
+            "matrix_load_ms":matches.matrix_load_ms,"scan_ms":matches.scan_ms,
+            "hydrate_ms":started.elapsed().as_secs_f64()*1000.0-rank_ms,
+            "elapsed_ms":started.elapsed().as_secs_f64()*1000.0}))
+        };
+        if visual_only {
+            crate::t_search::with_plain_search_snapshot(std::path::Path::new(&path), &cancelled, |tx,cache| run(tx,Some(cache)))
+        } else {
+            let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+            conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(|e| e.to_string())?;
+            conn.execute_batch("PRAGMA mmap_size=2147483648").map_err(|e| e.to_string())?;
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            run(&tx,None)
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+static PLAIN_SEARCH_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[tauri::command]
+pub fn cancel_plain_search() {
+    PLAIN_SEARCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Search files using structured faceted search tokens.
 #[tauri::command]
 pub async fn search_files(
     search_query: Option<String>,
@@ -1236,16 +1569,27 @@ pub async fn get_grouped_query_rows(
     offset: i64,
     limit: i64,
 ) -> Result<GroupedQueryResult, String> {
-    AFile::get_grouped_query_rows(&params, offset, limit)
-        .map_err(|e| format!("Error while getting grouped query rows: {}", e))
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(offset, "query_grouped_rows");
+    let result = AFile::get_grouped_query_rows(&params, offset, limit)
+        .map_err(|e| format!("Error while getting grouped query rows: {}", e));
+    trace.mark(match (params.people_all, params.folders_all) {
+        (true, true) => "library",
+        (true, false) => "people",
+        (false, true) => "folders",
+        _ => "other",
+    }, limit.max(0) as usize);
+    result
 }
 
-/// Flat Folders list: every folder that directly holds visible pictures,
+/// Picasa-style flat Folders list: every folder that directly holds visible pictures,
 /// with count and picture date range, in the order of the continuous Folders view.
 #[tauri::command]
 pub async fn get_folder_sections(params: QueryParams) -> Result<Vec<FolderSection>, String> {
-    AFile::get_folder_sections(&params)
-        .map_err(|e| format!("Error while getting folder sections: {}", e))
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_sidebar_folder_sections");
+    let result = AFile::get_folder_sections(&params)
+        .map_err(|e| format!("Error while getting folder sections: {}", e));
+    trace.mark("done", 0);
+    result
 }
 
 /// Get all file ids in one group for a normal query.
@@ -1275,7 +1619,7 @@ pub async fn get_query_file_ids(params: QueryParams) -> Result<Vec<i64>, String>
 }
 
 #[tauri::command]
-pub fn get_library_visible_counts() -> Result<t_sqlite::LibraryVisibleCounts, String> {
+pub async fn get_library_visible_counts() -> Result<t_sqlite::LibraryVisibleCounts, String> {
     AFile::get_library_visible_counts()
         .map_err(|e| format!("Error while getting library visible counts: {}", e))
 }
@@ -1292,12 +1636,12 @@ pub async fn get_query_file_position(
 // collection
 
 #[tauri::command]
-pub fn list_collections() -> Result<Vec<ACollection>, String> {
+pub async fn list_collections() -> Result<Vec<ACollection>, String> {
     ACollection::list().map_err(|e| format!("Error while listing collections: {}", e))
 }
 
 #[tauri::command]
-pub fn get_collection_counts() -> Result<HashMap<i64, i64>, String> {
+pub async fn get_collection_counts() -> Result<HashMap<i64, i64>, String> {
     ACollection::get_counts()
         .map_err(|e| format!("Error while getting collection counts: {}", e))
 }
@@ -1590,7 +1934,7 @@ pub async fn is_directory_empty(path: String) -> bool {
 
 /// get the thumbnail count of the folder
 #[tauri::command]
-pub fn get_folder_thumb_count(file_type: i64, folder_id: i64) -> i64 {
+pub async fn get_folder_thumb_count(file_type: i64, folder_id: i64) -> i64 {
     AThumb::get_folder_thumb_count(file_type, folder_id).unwrap_or_default()
 }
 
@@ -1601,6 +1945,25 @@ pub async fn edit_image(params: t_image::EditParams, confirm_overwrite: Option<b
         return Err("Overwriting an existing file requires explicit confirmation".into());
     }
     Ok(t_image::edit_image(params).await)
+}
+
+/// Calculate maximum auto-inscribed crop rectangle for straighten rotation using closed-form trigonometric formula
+#[tauri::command]
+pub fn calculate_inscribed_crop(
+    width: f64,
+    height: f64,
+    angle_deg: f64,
+    aspect_ratio: Option<f64>,
+) -> Result<crate::lap_render::geometry::InscribedCrop, String> {
+    if width <= 0.0 || height <= 0.0 {
+        return Err("Invalid image dimensions".into());
+    }
+    Ok(crate::lap_render::geometry::calculate_inscribed_crop_with_aspect(
+        width,
+        height,
+        angle_deg,
+        aspect_ratio,
+    ))
 }
 
 /// copy an edited image to clipboard
@@ -1615,7 +1978,7 @@ pub fn restore_image_recipe(file_id: i64, reset: bool, redo: Option<bool>) -> Re
 }
 
 #[tauri::command]
-pub fn get_rendered_faces(file_id:i64)->Result<Vec<t_sqlite::Face>,String> {
+pub async fn get_rendered_faces(file_id:i64)->Result<Vec<t_sqlite::Face>,String> {
     crate::t_edit_recipe::rendered_faces(file_id)
 }
 
@@ -2785,7 +3148,7 @@ pub async fn get_file_thumbs(
 
 /// get a file's info
 #[tauri::command]
-pub fn get_file_info(file_id: i64) -> Result<Option<AFile>, String> {
+pub async fn get_file_info(file_id: i64) -> Result<Option<AFile>, String> {
     AFile::get_file_info(file_id).map_err(|e| format!("Error while getting file info: {}", e))
 }
 
@@ -2948,6 +3311,56 @@ pub async fn refresh_selected_file_info(library_id: String, file_id: i64) -> Res
     }).await.map_err(|e| format!("File refresh task failed: {e}"))?
 }
 
+/// The Timeline ribbon's months for the view's query (LAP-091), oldest first.
+#[tauri::command]
+pub async fn get_date_histogram(params: QueryParams) -> Result<Vec<crate::t_sqlite::ADateHistogramBucket>, String> {
+    tauri::async_runtime::spawn_blocking(move || AFile::get_date_histogram(&params))
+        .await.map_err(|e| format!("Timeline task failed: {e}"))?
+}
+
+/// Whether a photo's saved edits leave it different from its original: a recipe or auto-enhance.
+fn has_saved_edits(edits: Option<&str>) -> bool {
+    let doc = crate::t_edit_recipe::state(edits);
+    doc["recipe"].is_object() || doc["auto_enhance"].as_bool().unwrap_or(false)
+}
+
+/// Revert to Original (LAP-RE-03): true when the photo has an original to go back to - its
+/// `.picasaoriginals/<filename>` copy on disk, or (with `file_id`) saved edits in the library.
+#[tauri::command]
+pub fn has_picasa_original(file_path: String, file_id: Option<i64>) -> Result<bool, String> {
+    if crate::t_image::has_picasaoriginals_backup(Path::new(&file_path))? { return Ok(true); }
+    Ok(match file_id {
+        Some(id) => AFile::get_file_info(id)?.is_some_and(|f| has_saved_edits(f.edits.as_deref())),
+        None => false,
+    })
+}
+
+/// Revert to Original: the photo's bytes come back from `.picasaoriginals/<filename>` when that copy
+/// exists (the file's info is re-read and its thumbnail and embedded preview dropped, as Refresh
+/// file info does), and its saved edits are reset as Undo All Edits does (still undoable).
+/// Returns whether anything changed.
+#[tauri::command]
+pub async fn revert_to_picasa_original(file_path: String, file_id: Option<i64>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let restored = crate::t_image::restore_from_picasaoriginals(Path::new(&file_path))?;
+        let mut changed = restored;
+        if let Some(id) = file_id {
+            if let Some(file) = AFile::get_file_info(id)? {
+                if has_saved_edits(file.edits.as_deref()) {
+                    crate::t_edit_recipe::restore(id, true)?;
+                    changed = true;
+                }
+                if restored {
+                    AFile::update_file_info(id, &file_path, chrono::Utc::now().timestamp_millis())?;
+                    AThumb::delete(id)?;
+                    AFile::update_column(id, "embeds", &Option::<Vec<u8>>::None)?;
+                }
+            }
+        }
+        Ok(changed)
+    }).await.map_err(|e| format!("Revert task failed: {e}"))?
+}
+
 /// add or refresh a file in db and return the indexed file info
 #[tauri::command]
 pub fn add_file_to_db(folder_id: i64, file_path: &str) -> Result<Option<AFile>, String> {
@@ -2973,7 +3386,7 @@ pub fn set_file_rotate(file_id: i64, rotate: i32) -> Result<usize, String> {
 
 /// get a file's has_tags status (true or false)
 #[tauri::command]
-pub fn get_file_has_tags(file_id: i64) -> Result<bool, String> {
+pub async fn get_file_has_tags(file_id: i64) -> Result<bool, String> {
     AFile::get_has_tags(file_id)
         .map_err(|e| format!("Error while getting file has_tags status: {}", e))
 }
@@ -2982,14 +3395,14 @@ pub fn get_file_has_tags(file_id: i64) -> Result<bool, String> {
 
 /// get all favorite folders
 #[tauri::command]
-pub fn get_favorite_folders() -> Result<Vec<AFolder>, String> {
+pub async fn get_favorite_folders() -> Result<Vec<AFolder>, String> {
     AFolder::get_favorite_folders()
         .map_err(|e| format!("Error while getting favorite folders: {}", e))
 }
 
 /// get a folder's favorite status (true or false)
 #[tauri::command]
-pub fn get_folder_favorite(folder_path: &str) -> Result<bool, String> {
+pub async fn get_folder_favorite(folder_path: &str) -> Result<bool, String> {
     let is_favorite_opt = AFolder::get_is_favorite(folder_path)
         .map_err(|e| format!("Error while getting folder favorite: {}", e))?;
 
@@ -3008,7 +3421,7 @@ pub fn set_folder_favorite(folder_id: i64, is_favorite: bool) -> Result<usize, S
 
 /// get a folder's search exclusion status (true or false)
 #[tauri::command]
-pub fn get_folder_search_excluded(folder_path: &str) -> Result<bool, String> {
+pub async fn get_folder_search_excluded(folder_path: &str) -> Result<bool, String> {
     let is_excluded_opt = AFolder::get_is_excluded_from_search(folder_path)
         .map_err(|e| format!("Error while getting folder search exclusion: {}", e))?;
 
@@ -3036,7 +3449,7 @@ pub fn set_folder_search_excluded(
 
 /// get a folder's face detection exclusion status (true or false)
 #[tauri::command]
-pub fn get_folder_faces_excluded(folder_path: &str) -> Result<bool, String> {
+pub async fn get_folder_faces_excluded(folder_path: &str) -> Result<bool, String> {
     let is_excluded_opt = AFolder::get_faces_excluded(folder_path)
         .map_err(|e| format!("Error while getting folder face exclusion: {}", e))?;
 
@@ -3064,7 +3477,7 @@ pub fn set_folder_faces_excluded(
 
 /// get a folder's AI detection exclusion status (true or false)
 #[tauri::command]
-pub fn get_folder_ai_excluded(folder_path: &str) -> Result<bool, String> {
+pub async fn get_folder_ai_excluded(folder_path: &str) -> Result<bool, String> {
     let is_excluded_opt = AFolder::get_ai_excluded(folder_path)
         .map_err(|e| format!("Error while getting folder AI exclusion: {}", e))?;
 
@@ -3097,6 +3510,17 @@ pub fn set_file_favorite(file_id: i64, is_favorite: bool) -> Result<usize, Strin
         .map_err(|e| format!("Error while setting file favorite: {}", e))
 }
 
+#[tauri::command]
+pub fn set_file_hidden(file_id: i64, is_hidden: bool) -> Result<usize, String> {
+    AFile::set_hidden(file_id, is_hidden)
+        .map_err(|e| format!("Error while setting file hidden: {}", e))
+}
+
+#[tauri::command]
+pub fn set_show_hidden_pictures(show: bool) {
+    crate::t_sqlite::set_show_hidden_pictures(show);
+}
+
 /// set a file's rating (0-5)
 #[tauri::command]
 pub fn set_file_rating(file_id: i64, rating: i32) -> Result<usize, String> {
@@ -3121,6 +3545,212 @@ pub fn toggle_auto_enhance(file_id: i64, enable: bool) -> Result<String, String>
     crate::t_edit_recipe::enhance(file_id, enable)
 }
 
+/// Set I'm Feeling Lucky to one style (1-5) or back to Original (0) as one undoable step.
+#[tauri::command]
+pub fn set_lucky_style(file_id: i64, style: u8) -> Result<String, String> {
+    crate::t_edit_recipe::lucky_style(file_id, style)
+}
+
+#[tauri::command]
+pub fn copy_all_effects(file_id: i64) -> Result<serde_json::Value, String> {
+    crate::t_edit_recipe::copy_effects(file_id)
+}
+
+#[tauri::command]
+pub fn paste_all_effects(file_ids: Vec<i64>, effects: serde_json::Value) -> Result<serde_json::Value, String> {
+    crate::t_edit_recipe::paste_effects(&file_ids, &effects)
+}
+
+#[tauri::command]
+pub fn batch_edit_images(file_ids: Vec<i64>, op: String) -> Result<serde_json::Value, String> {
+    crate::t_edit_recipe::batch_edit(&file_ids, &op)
+}
+
+/// Store a painted or gradient effect mask (a PNG data URL, white = full effect) for the photo
+/// under its `.lapcasa-ai` folder, at the photo's size; returns the id an effect step names it by.
+#[tauri::command]
+pub async fn save_effect_mask(file_id: i64, png: String, feather: f32, inverted: bool, info: serde_json::Value) -> Result<String, String> {
+    use base64::Engine;
+    let file = crate::t_sqlite::AFile::get_file_info(file_id)?.ok_or("Photo not found")?;
+    let path = file.file_path.filter(|p| !p.is_empty()).ok_or("Photo has no path")?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(png.split_once(',').map_or(png.as_str(), |(_, b)| b))
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let size = crate::t_image::get_image_dimensions(&path).unwrap_or((0, 0));
+        crate::t_edit_mask::save(Path::new(&path), &data, size, feather, inverted, info)
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Content selection for effect masks (LAP-103). The model files live with the other models.
+pub(crate) fn select_models_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let dir = crate::t_models::app_dir(app, "selection");
+    if dir.join(crate::t_edit_select::ENCODER_FILE).exists() { dir }
+    else { crate::t_models::resolve("selection", &t_advanced_ai::default_models_dir()) }
+}
+
+/// Whether Subject / Sky / People / Click to select can work here, and why not if they cannot.
+#[tauri::command]
+pub async fn select_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let dir = select_models_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || crate::t_edit_select::status(&dir)).await.map_err(|e| e.to_string())
+}
+
+/// Encode the photo's preview for selection (once per photo; called when mask mode opens so the
+/// first click is quick). Returns the preview size the selection points refer to.
+#[tauri::command]
+pub async fn select_prepare(app: tauri::AppHandle, file_id: i64) -> Result<serde_json::Value, String> {
+    let dir = select_models_dir(&app);
+    let file = crate::t_sqlite::AFile::get_file_info(file_id)?.ok_or("Photo not found")?;
+    let path = file.file_path.clone().filter(|p| !p.is_empty()).ok_or("Photo has no path")?;
+    let preview = t_image::get_or_create_preview_image(file_id, &path, file.e_orientation.unwrap_or(1) as i32).await?;
+    tauri::async_runtime::spawn_blocking(move || crate::t_edit_select::prepare(&dir, file_id, &preview)).await.map_err(|e| e.to_string())?
+}
+
+/// Click to select: a soft mask (PNG data URL) for the clicked points, 0..1 of the preview.
+#[tauri::command]
+pub async fn select_points(app: tauri::AppHandle, file_id: i64, points: Vec<crate::t_edit_select::Point>) -> Result<crate::t_edit_select::Selection, String> {
+    let dir = select_models_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || crate::t_edit_select::select_points(&dir, file_id, points)).await.map_err(|e| e.to_string())?
+}
+
+/// The library's face boxes for a photo, as fractions of its oriented frame.
+fn face_boxes_as_fractions(file_id: i64, raw: (u32, u32), orientation: i32) -> Vec<[f32; 4]> {
+    let Ok(conn) = crate::t_sqlite::open_conn() else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare("SELECT bbox FROM faces WHERE file_id = ?1 AND bbox IS NOT NULL AND id NOT IN (SELECT face_id FROM face_ignores)") else { return Vec::new() };
+    let rows: Vec<String> = stmt.query_map([file_id], |r| r.get::<_, String>(0)).map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default();
+    rows.iter().filter_map(|text| {
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let b = [v["x"].as_f64()?, v["y"].as_f64()?, v["width"].as_f64()?, v["height"].as_f64()?];
+        let (m, dims) = crate::t_edit_recipe::map_bbox(b, raw.0, raw.1, orientation, false, None)?;
+        if dims[0] == 0 || dims[1] == 0 { return None; }
+        Some([(m[0] / dims[0] as f64) as f32, (m[1] / dims[1] as f64) as f32, (m[2] / dims[0] as f64) as f32, (m[3] / dims[1] as f64) as f32])
+    }).collect()
+}
+
+/// One-click regions: `kind` is "subject", "sky" or "people" (Background is Subject, inverted).
+#[tauri::command]
+pub async fn select_region(app: tauri::AppHandle, file_id: i64, kind: String) -> Result<crate::t_edit_select::Selection, String> {
+    let dir = select_models_dir(&app);
+    let file = crate::t_sqlite::AFile::get_file_info(file_id)?.ok_or("Photo not found")?;
+    let path = file.file_path.clone().filter(|p| !p.is_empty()).ok_or("Photo has no path")?;
+    let orientation = file.e_orientation.unwrap_or(1) as i32;
+    let preview = t_image::get_or_create_preview_image(file_id, &path, orientation).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::t_edit_select::prepare(&dir, file_id, &preview)?;
+        let raw = t_image::get_image_dimensions(&path).unwrap_or((file.width.unwrap_or(0), file.height.unwrap_or(0)));
+        let faces = face_boxes_as_fractions(file_id, raw, orientation);
+        crate::t_edit_select::select_region(&dir, file_id, &kind, &faces)
+    }).await.map_err(|e| e.to_string())?
+}
+
+// ---- Automask Auto Balance (LAP-107) ----
+
+/// The photo as edited but without any Automask or curves, at most 1600 px: what Auto measures.
+async fn photo_without_automask(file_id: i64, picasa: &serde_json::Value) -> Result<image::RgbImage, String> {
+    let mut tools = picasa.clone();
+    if let Some(o) = tools.as_object_mut() { o.remove("local"); o.remove("curves"); }
+    let jpeg = crate::t_edit_recipe::render_draft(file_id, tools, Some(1600)).await?;
+    Ok(image::load_from_memory(&jpeg).map_err(|e| e.to_string())?.to_rgb8())
+}
+
+/// A selection's grey PNG (data URL) as a 0..1 map the size of `w` x `h`.
+fn selection_map(png: &str, w: u32, h: u32) -> Result<Vec<f32>, String> {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.decode(png.split_once(',').map_or(png, |(_, b)| b)).map_err(|e| e.to_string())?;
+    let grey = image::load_from_memory(&data).map_err(|e| e.to_string())?.to_luma8();
+    Ok(image::imageops::resize(&grey, w, h, image::imageops::FilterType::Triangle).pixels().map(|p| p[0] as f32 / 255.0).collect())
+}
+
+/// Auto Balance: the photo's own plan (t_edit_balance) as Automask entries, masks saved. `picasa` is the
+/// editor's current tool list (its Automask entries are left out of what is measured).
+/// Returns {"entries": [...], "mood": bool}.
+#[tauri::command]
+pub async fn automask_balance(app: tauri::AppHandle, face_state: State<'_, t_face::FaceState>, file_id: i64, picasa: serde_json::Value)
+    -> Result<serde_json::Value, String> {
+    let dir = select_models_dir(&app);
+    let file = crate::t_sqlite::AFile::get_file_info(file_id)?.ok_or("Photo not found")?;
+    let path = file.file_path.clone().filter(|p| !p.is_empty()).ok_or("Photo has no path")?;
+    let orientation = file.e_orientation.unwrap_or(1) as i32;
+    let img = photo_without_automask(file_id, &picasa).await?;
+    let (w, h) = img.dimensions();
+    let raw = t_image::get_image_dimensions(&path).unwrap_or((file.width.unwrap_or(0), file.height.unwrap_or(0)));
+    let library = face_boxes_as_fractions(file_id, raw, orientation);
+    // Faces the library does not have yet (a folder not face-scanned, a turned head): the face finder.
+    let found: Vec<[f32; 4]> = {
+        let mut engine = face_state.0.lock().map_err(|e| e.to_string())?;
+        if !engine.is_loaded() { let _ = engine.load_models(&app); }
+        if engine.is_loaded() {
+            engine.detect_boxes(&image::DynamicImage::ImageRgb8(img.clone())).unwrap_or_default().iter()
+                .map(|b| [b.x / w as f32, b.y / h as f32, b.width / w as f32, b.height / h as f32]).collect()
+        } else { Vec::new() }
+    };
+    let faces = crate::t_edit_balance::merge_faces(&library, &found);
+    let preview = t_image::get_or_create_preview_image(file_id, &path, orientation).await?;
+    let photo = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // The selection model's sky and people (none when it is not installed: the brightness map still works).
+        let (sky, people) = match crate::t_edit_select::prepare(&dir, file_id, &preview) {
+            Ok(_) => {
+                let sky = crate::t_edit_select::select_region(&dir, file_id, "sky", &library).ok()
+                    .and_then(|s| selection_map(&s.png, w, h).ok());
+                let people = if faces.is_empty() { None } else {
+                    let points = crate::t_edit_balance::people_points(&faces).into_iter()
+                        .map(|(x, y)| crate::t_edit_select::Point { x, y, label: 1 }).collect();
+                    crate::t_edit_select::select_points(&dir, file_id, points).ok().and_then(|s| selection_map(&s.png, w, h).ok())
+                };
+                (sky, people)
+            }
+            Err(_) => (None, None),
+        };
+        let (planned, mood) = crate::t_edit_balance::plan(&img, sky.as_deref(), people.as_deref(), &faces);
+        let mut entries = Vec::new();
+        for p in planned {
+            let mask = if p.region == "whole" { None } else {
+                let png = crate::t_edit_balance::mask_png(&p.mask, w, h)?;
+                Some(crate::t_edit_mask::save(Path::new(&photo), &png, raw, 0.0, false, serde_json::json!({"kind": "auto-balance", "region": p.region}))?)
+            };
+            entries.push(p.values.entry(p.region, mask.as_deref()));
+        }
+        Ok(serde_json::json!({"entries": entries, "mood": mood}))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Auto for the area being picked: slider values by Auto Balance's rules. `png` is the mask layer
+/// (grey, any size; none = the whole photo), `region` what was picked (sky, people, subject, ...).
+#[tauri::command]
+pub async fn automask_auto(file_id: i64, picasa: serde_json::Value, png: Option<String>, inverted: bool, region: String)
+    -> Result<serde_json::Value, String> {
+    let img = photo_without_automask(file_id, &picasa).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (w, h) = img.dimensions();
+        let mut m = match png { Some(p) => selection_map(&p, w, h)?, None => vec![1.0; (w * h) as usize] };
+        if inverted { for v in m.iter_mut() { *v = 1.0 - *v; } }
+        let l: Vec<f32> = img.pixels().map(|p| (p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114) / 255.0).collect();
+        let base = crate::t_edit_local::base_layer(&l, w as usize, h as usize);
+        let kind = match region.as_str() {
+            "sky" => "sky",
+            "people" | "subject" => "people",
+            _ => {
+                let med = base.iter().zip(&m).filter(|(_, w)| **w > 0.5).map(|(b, _)| *b).sum::<f32>()
+                    / m.iter().filter(|w| **w > 0.5).count().max(1) as f32;
+                if med < 0.45 { "dark" } else { "bright" }
+            }
+        };
+        let v = crate::t_edit_balance::auto_values(&base, &l, &m, kind);
+        Ok(serde_json::json!({"shadows": v.shadows, "highlights": v.highlights, "whites": v.whites, "blacks": v.blacks}))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// The editor's live preview of an unsaved Picasa tool list (an effect's Amount slider), as a
+/// JPEG data URL; nothing is saved (LAP-087).
+#[tauri::command]
+pub async fn render_edit_draft(file_id: i64, picasa: serde_json::Value, preview_size: Option<u32>) -> Result<String, String> {
+    use base64::Engine;
+    let data = crate::t_edit_recipe::render_draft(file_id, picasa, preview_size).await?;
+    Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(data)))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchFileMetadataUpdate {
@@ -3130,11 +3760,12 @@ pub struct BatchFileMetadataUpdate {
     pub culling_flag: Option<i32>,
     pub rotate_delta: Option<i32>,
     pub comment: Option<String>,
+    pub is_hidden: Option<bool>,
 }
 
 #[tauri::command]
 pub fn batch_update_file_metadata(params: BatchFileMetadataUpdate) -> Result<usize, String> {
-    let res = AFile::batch_update_metadata(
+    let mut res = AFile::batch_update_metadata(
         &params.file_ids,
         params.is_favorite,
         params.rating,
@@ -3143,6 +3774,10 @@ pub fn batch_update_file_metadata(params: BatchFileMetadataUpdate) -> Result<usi
         params.comment.as_deref(),
     )
     .map_err(|e| format!("Error while updating file metadata: {}", e))?;
+    if let Some(is_hidden) = params.is_hidden {
+        res += AFile::set_hidden_batch(&params.file_ids, is_hidden)
+            .map_err(|e| format!("Error while updating file hidden state: {}", e))?;
+    }
     if params.rating.is_some() || params.comment.is_some() {
         for file_id in &params.file_ids {
             let _ = crate::t_xmp::sync_file_xmp(*file_id);
@@ -3159,7 +3794,7 @@ pub fn get_tag_group_name(id: i64) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn get_tag_groups() -> Result<Vec<crate::t_tag_groups::TagGroup>, String> {
+pub async fn get_tag_groups() -> Result<Vec<crate::t_tag_groups::TagGroup>, String> {
     crate::t_tag_groups::get_all()
 }
 
@@ -3185,13 +3820,13 @@ pub fn move_tags_to_group(tag_ids: Vec<i64>, group_id: i64) -> Result<(), String
 
 /// get all tags
 #[tauri::command]
-pub fn get_all_tags(sort: i64) -> Result<Vec<ATag>, String> {
+pub async fn get_all_tags(sort: i64) -> Result<Vec<ATag>, String> {
     ATag::get_all(sort)
         .map_err(|e| format!("Error while getting all tags: {}", e))
 }
 
 #[tauri::command]
-pub fn get_tag_counts() -> Result<HashMap<i64, i64>, String> {
+pub async fn get_tag_counts() -> Result<HashMap<i64, i64>, String> {
     ATag::get_counts()
         .map_err(|e| format!("Error while getting tag counts: {}", e))
 }
@@ -3222,7 +3857,7 @@ pub fn delete_tag(tag_id: i64) -> Result<usize, String> {
 
 /// get all tags for a specific file
 #[tauri::command]
-pub fn get_tags_for_file(file_id: i64) -> Result<Vec<ATag>, String> {
+pub async fn get_tags_for_file(file_id: i64) -> Result<Vec<ATag>, String> {
     ATag::get_tags_for_file(file_id)
         .map_err(|e| format!("Error while getting tags for file: {}", e))
 }
@@ -3269,7 +3904,7 @@ pub fn apply_tags_to_files(
 
 /// get camera's taken dates
 #[tauri::command]
-pub fn get_taken_dates(sort: i64) -> Result<Vec<(String, i64)>, String> {
+pub async fn get_taken_dates(sort: i64) -> Result<Vec<(String, i64)>, String> {
     AFile::get_taken_dates(sort)
         .map_err(|e| format!("Error while getting taken dates: {}", e))
 }
@@ -3278,13 +3913,13 @@ pub fn get_taken_dates(sort: i64) -> Result<Vec<(String, i64)>, String> {
 
 /// get a file's camera make and model info
 #[tauri::command]
-pub fn get_camera_info(sort: i64) -> Result<Vec<ACamera>, String> {
+pub async fn get_camera_info(sort: i64) -> Result<Vec<ACamera>, String> {
     ACamera::get_from_db(sort).map_err(|e| format!("Error while getting camera info: {}", e))
 }
 
 /// get a file's lens make and model info
 #[tauri::command]
-pub fn get_lens_info(sort: i64) -> Result<Vec<ALens>, String> {
+pub async fn get_lens_info(sort: i64) -> Result<Vec<ALens>, String> {
     ALens::get_from_db(sort).map_err(|e| format!("Error while getting lens info: {}", e))
 }
 
@@ -3292,7 +3927,7 @@ pub fn get_lens_info(sort: i64) -> Result<Vec<ALens>, String> {
 
 /// get a file's location info
 #[tauri::command]
-pub fn get_location_info(sort: i64) -> Result<Vec<ALocation>, String> {
+pub async fn get_location_info(sort: i64) -> Result<Vec<ALocation>, String> {
     ALocation::get_from_db(sort).map_err(|e| format!("Error while getting location info: {}", e))
 }
 
@@ -3309,7 +3944,7 @@ pub fn get_gps_map_points(
 /// get package info
 #[tauri::command]
 pub fn get_package_info() -> t_utils::PackageInfo {
-    t_utils::PackageInfo::new(GIT_COMMIT_HASH)
+    t_utils::PackageInfo::new(GIT_COMMIT_HASH, BUILD_UNIX_TIME)
 }
 
 /// get the build time
@@ -3351,27 +3986,17 @@ pub fn get_image_search_model_status(
 #[tauri::command]
 pub async fn set_image_search_model(
     app_handle: AppHandle,
-    state: State<'_, t_ai::AiState>,
     model: i64,
 ) -> Result<t_ai::ImageSearchModelStatus, String> {
-    if !t_advanced_ai::background_enabled() {
-        return Err("Enable Process library in background to load search models".to_string());
+    if model != 0 {
+        return Err("Only English photo search is supported".into());
     }
-    let mut ai_engine = state.0.lock().unwrap();
-    ai_engine.set_text_model(&app_handle, t_ai::ImageSearchTextModel::from_i64(model))?;
-    Ok(ai_engine.model_status(&app_handle))
-}
-
-#[tauri::command]
-pub async fn download_multilingual_image_search_model(app_handle: AppHandle) -> Result<(), String> {
-    t_ai::download_multilingual_text_model(app_handle).await
-}
-
-#[tauri::command]
-pub async fn cancel_multilingual_image_search_model_download(
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    t_ai::cancel_multilingual_text_model_download(app_handle).await
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<t_ai::AiState>();
+        let mut ai_engine = state.0.lock().map_err(|e| e.to_string())?;
+        ai_engine.set_text_model(&app_handle, t_ai::ImageSearchTextModel::from_i64(model))?;
+        Ok(ai_engine.model_status(&app_handle))
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// generate embedding for a file
@@ -3486,9 +4111,11 @@ pub fn index_faces(
 
 /// get face indexing stats
 #[tauri::command]
-pub fn get_face_stats() -> Result<t_face::FaceStats, String> {
+pub async fn get_face_stats() -> Result<t_face::FaceStats, String> {
+    let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_face_stats");
     let (total, processed, unprocessed, faces) = t_sqlite::Face::get_stats_full()
         .map_err(|e| format!("Error while getting face stats: {}", e))?;
+    trace.mark("done", 0);
 
     Ok(t_face::FaceStats {
         total,
@@ -3514,9 +4141,9 @@ pub fn reset_faces() -> Result<(), String> {
 
 /// check if face indexing is running, return (is_running, progress)
 #[tauri::command]
-pub fn is_face_indexing(
-    status_state: State<t_face::FaceIndexingStatus>,
-    progress_state: State<t_face::FaceIndexProgressState>,
+pub async fn is_face_indexing(
+    status_state: State<'_, t_face::FaceIndexingStatus>,
+    progress_state: State<'_, t_face::FaceIndexProgressState>,
 ) -> Result<(bool, Option<t_face::FaceIndexProgress>), String> {
     let is_running = *status_state.0.lock().unwrap();
     let progress = if is_running {
@@ -3529,7 +4156,7 @@ pub fn is_face_indexing(
 
 /// get all persons with face counts
 #[tauri::command]
-pub fn get_persons(sort: i64) -> Result<Vec<Person>, String> {
+pub async fn get_persons(sort: i64) -> Result<Vec<Person>, String> {
     Person::get_all(sort).map_err(|e| format!("Error while getting persons: {}", e))
 }
 
@@ -3563,19 +4190,19 @@ pub fn merge_person(target_id: i64, source_id: i64) -> Result<(), String> {
 
 /// get faces for a file
 #[tauri::command]
-pub fn get_faces_for_file(file_id: i64) -> Result<Vec<t_sqlite::Face>, String> {
+pub async fn get_faces_for_file(file_id: i64) -> Result<Vec<t_sqlite::Face>, String> {
     t_sqlite::Face::get_for_file(file_id)
         .map_err(|e| format!("Error while getting faces for file: {}", e))
 }
 
 /// Face box per photo for a person, as (file_id, bbox_json) pairs.
 #[tauri::command]
-pub fn get_person_face_boxes(person_id: i64) -> Result<Vec<(i64, String, i64, bool)>, String> {
+pub async fn get_person_face_boxes(person_id: i64) -> Result<Vec<(i64, String, i64, bool)>, String> {
     t_sqlite::Face::boxes_for_person(person_id)
         .map_err(|e| format!("Error while getting person face boxes: {}", e))
 }
 
-/// Suggestions: give named people embeddings, then match unconfirmed faces.
+/// Picasa-style suggestions: give named people embeddings, then match unconfirmed faces.
 #[tauri::command]
 pub async fn compute_face_suggestions(
     app_handle: tauri::AppHandle,
@@ -3600,7 +4227,7 @@ pub async fn compute_face_suggestions(
 }
 
 /// Confirm a person's pending face suggestions (all when face_ids is omitted).
-/// Confirming a face also confirms near-identical suggestions (cascade).
+/// Picasa-style: confirming a face also confirms near-identical suggestions (cascade).
 /// Learning from the new faces runs separately (refresh_person_suggestions) so a tick
 /// returns at once. Returns { files: file ids of every face confirmed, added: 0 }.
 #[tauri::command]
@@ -3660,7 +4287,7 @@ pub async fn confirm_ignored_faces(person_id: i64, face_ids: Vec<i64>) -> Result
 
 /// A person's ignored faces as (file_id, face_id, bbox json).
 #[tauri::command]
-pub fn get_person_ignored_faces(person_id: i64) -> Result<Vec<(i64, i64, String)>, String> {
+pub async fn get_person_ignored_faces(person_id: i64) -> Result<Vec<(i64, i64, String)>, String> {
     let conn = t_sqlite::open_conn()?;
     if person_id == -1 {
         return conn.prepare("SELECT f.file_id,f.id,f.bbox FROM faces f JOIN face_ignores i ON i.face_id=f.id WHERE f.bbox IS NOT NULL ORDER BY f.file_id,f.id")
@@ -3672,7 +4299,7 @@ pub fn get_person_ignored_faces(person_id: i64) -> Result<Vec<(i64, i64, String)
     crate::t_face_suggest::ignored_for_person(&conn, person_id)
 }
 
-/// Undo a global ignore without changing the face's person or suggestion.
+/// Undo a global Picasa ignore without changing the face's person or suggestion.
 #[tauri::command]
 pub async fn restore_globally_ignored_faces(face_ids: Vec<i64>) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -3698,7 +4325,7 @@ pub async fn reject_face_suggestions(person_id: i64, face_ids: Option<Vec<i64>>)
     .map_err(|e| e.to_string())?
 }
 
-/// "Not this person" on a confirmed face (right-click): take it off the person
+/// "Not this person" on a confirmed face (Picasa's right-click): take it off the person
 /// and remember the rejection so it is never suggested for them again.
 #[tauri::command]
 pub async fn exclude_faces_from_person(person_id: i64, face_ids: Vec<i64>) -> Result<usize, String> {
@@ -3712,7 +4339,7 @@ pub async fn exclude_faces_from_person(person_id: i64, face_ids: Vec<i64>) -> Re
 
 /// Get a single person's face thumbnail (Base64 encoded).
 #[tauri::command]
-pub fn get_person_thumbnail(person_id: i64) -> Result<Option<String>, String> {
+pub async fn get_person_thumbnail(person_id: i64) -> Result<Option<String>, String> {
     t_sqlite::Person::get_thumbnail(person_id)
         .map_err(|e| format!("Error while getting person thumbnail: {}", e))
 }
@@ -3808,4 +4435,66 @@ pub fn restore_databases(
     selections: Vec<t_storage::RestoreSelection>,
 ) -> Result<t_storage::RestoreResult, String> {
     t_storage::restore_databases(&backup_path, &selections)
+}
+
+// ----------------------------------------------------------------------------
+// Scheduler / Cooperative Yielding Commands
+// ----------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn report_ui_interaction(source: Option<String>) {
+    let src = match source.as_deref() {
+        Some("scroll") | Some("wheel") => crate::scheduler::InteractionSource::Scroll,
+        Some("mouse") | Some("mousemove") | Some("pointermove") | Some("drag") => {
+            crate::scheduler::InteractionSource::Mouse
+        }
+        Some("key") | Some("keydown") | Some("keypress") => crate::scheduler::InteractionSource::Key,
+        Some("touch") | Some("touchmove") => crate::scheduler::InteractionSource::Touch,
+        Some("window") => crate::scheduler::InteractionSource::Window,
+        _ => crate::scheduler::InteractionSource::Custom,
+    };
+    crate::scheduler::record_interaction(src);
+}
+
+#[tauri::command]
+pub fn set_ui_interaction_active(active: bool) {
+    crate::scheduler::set_interaction_active(active);
+}
+
+#[tauri::command]
+pub fn is_ui_interacting() -> bool {
+    crate::scheduler::is_ui_active()
+}
+
+#[cfg(test)]
+mod revert_tests {
+    use super::has_saved_edits;
+
+    #[test]
+    fn picasaoriginals_copy_brings_back_the_original_bytes() {
+        let dir = std::env::temp_dir().join(format!("lap-revert-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("IMG_0001.jpg");
+        std::fs::write(&photo, b"original bytes").unwrap();
+        assert!(!crate::t_image::has_picasaoriginals_backup(&photo).unwrap());
+        assert!(!crate::t_image::restore_from_picasaoriginals(&photo).unwrap(), "nothing to restore yet");
+        crate::t_image::ensure_picasaoriginals_backup(&photo).unwrap();
+        std::fs::write(&photo, b"edited bytes, saved over the photo").unwrap();
+        assert!(crate::t_image::has_picasaoriginals_backup(&photo).unwrap());
+        assert!(crate::t_image::restore_from_picasaoriginals(&photo).unwrap());
+        assert_eq!(std::fs::read(&photo).unwrap(), b"original bytes");
+        // the copy stays, so a later edit and revert still finds it
+        assert!(dir.join(".picasaoriginals").join("IMG_0001.jpg").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_recipe_or_auto_enhance_counts_as_saved_edits() {
+        assert!(!has_saved_edits(None));
+        assert!(!has_saved_edits(Some("")));
+        assert!(!has_saved_edits(Some(r#"{"recipe":null,"auto_enhance":false,"history":[{"step":"Crop"}]}"#)));
+        assert!(has_saved_edits(Some(r#"{"recipe":{"rotate":90}}"#)));
+        assert!(has_saved_edits(Some(r#"{"auto_enhance":true,"auto_enhance_preset":2}"#)));
+    }
 }

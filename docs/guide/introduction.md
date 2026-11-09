@@ -15,7 +15,6 @@ It works directly with your existing folders, keeps your library on your own dev
 - **Local First**: Your photos stay on your own disk. No mandatory cloud upload, no cloud indexing.
 - **Fast Browsing**: Built with Rust and Tauri, with a rebuilt scanner and optimized local database for large libraries.
 - **AI Search on Device**: Search with natural language, similar-image search, face clustering, and smart tags, all processed locally.
-- **Multilingual Search**: Search in 50+ languages with optional multilingual models, available as an additional download when needed.
 - **Interactive Map View**: Explore geotagged photos and videos in clusters that follow your current filters.
 - **Live and Motion Photos**: Play Apple Live Photos and supported Google Motion Photos, with a unified Smart Album filter.
 - **Practical Organization**: Use Smart Albums, collections, tags, ratings, and bulk duplicate cleanup to organize your library.

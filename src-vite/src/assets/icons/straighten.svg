@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <!-- Straighten: a tilted photo over a level horizon and grid -->
+    <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4.5" y="6" width="15" height="12" rx="1.5" stroke-width="1.6" transform="rotate(-12 12 12)"/>
+        <path d="M1.5 12h21" stroke-width="1.6"/>
+        <path d="M3 8.25h18M3 15.75h18M8.25 3v18M15.75 3v18" stroke-width="0.8" stroke-dasharray="1.2 1.6" opacity="0.65"/>
+    </g>
+</svg>

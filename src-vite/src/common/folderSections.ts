@@ -1,4 +1,4 @@
-// Folders view: one flat, always-open list of every folder that directly
+// Picasa-style Folders view: one flat, always-open list of every folder that directly
 // holds pictures (no tree), and a grid that scrolls through all of them in the same
 // order, a section per folder. The sidebar (AlbumList) shows this list; Content.vue
 // loads the grid with QueryParams.foldersAll and reads folder dates / ids from here.
@@ -19,7 +19,7 @@ export type FolderSection = {
 };
 
 // Folders in disk order: each top-level folder, then its subfolders, as on disk
-// (backend folder_sort 4). Chosen over a by-date order.
+// (backend folder_sort 4). The user chose this over Picasa's by-date order.
 export const FOLDER_VIEW_SORT = 4;
 
 export const folderSections = reactive({
@@ -61,6 +61,7 @@ export function folderViewQueryParams(overrides: Record<string, any> = {}) {
     tagGroupId: 0,
     personId: 0,
     foldersAll: true,
+    showHidden: Boolean(config.settings?.showHiddenPictures),
     ...overrides,
   };
 }

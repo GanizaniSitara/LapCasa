@@ -263,7 +263,9 @@ fn get_db_conn() -> Result<Connection, String> {
 }
 
 fn get_files_by_sizes(conn: &Connection) -> Result<Vec<AFile>, String> {
-    let mut stmt = conn.prepare(
+    let hidden_outer = AFile::hidden_filter_predicate("a");
+    let hidden_inner = if crate::t_sqlite::show_hidden_pictures() { "1=1" } else { "COALESCE(is_hidden, 0) = 0" };
+    let query = format!(
         "SELECT a.id, a.folder_id, a.name, a.name_pinyin, a.size, a.file_type, a.format_label,
                 a.created_at, a.modified_at, a.inode, a.taken_date, a.width, a.height, a.duration,
                 a.is_favorite, a.rating, a.rotate, a.comments, a.has_tags, a.has_faces, 
@@ -278,16 +280,19 @@ fn get_files_by_sizes(conn: &Connection) -> Result<Vec<AFile>, String> {
          WHERE a.id NOT IN (
              SELECT live_photo_video_id FROM afiles WHERE live_photo_video_id IS NOT NULL
          )
+         AND {hidden_outer}
          AND a.size IN (
              SELECT size FROM afiles
              WHERE id NOT IN (
                  SELECT live_photo_video_id FROM afiles WHERE live_photo_video_id IS NOT NULL
              )
+             AND {hidden_inner}
              GROUP BY size
              HAVING COUNT(size) > 1 AND size > 0
          )
          ORDER BY a.size DESC"
-    ).map_err(|e| e.to_string())?;
+    );
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
 
     let iter = stmt
         .query_map([], |row| {
@@ -351,6 +356,7 @@ fn get_files_by_sizes(conn: &Connection) -> Result<Vec<AFile>, String> {
                 album_visible: true,
                 proxy_path: None,
                 edits: None,
+                is_hidden: None,
             })
         })
         .map_err(|e| e.to_string())?;

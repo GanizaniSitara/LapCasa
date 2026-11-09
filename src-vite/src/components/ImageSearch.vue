@@ -193,7 +193,7 @@ function handleSearch(tokens: SearchToken[]) {
     libConfig.search.searchHistoryIndex = -1;
     return;
   }
-  const labels: Record<string, string> = { person: 'Person', object: 'Object', tag: 'Tag', text: 'Text (OCR)' };
+  const labels: Record<string, string> = { person: 'Person', object: 'Object', scene: 'Scene', tag: 'Tag', text: 'Text (OCR)' };
   const query = tokens.map(token => token.type === 'raw'
     ? token.value : `${labels[token.type] || token.type}: ${token.value}`).join(' · ');
   const history = libConfig.search.searchHistory as any[];

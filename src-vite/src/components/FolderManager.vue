@@ -196,7 +196,7 @@
 </template>
 
 <script setup lang="ts">
-// Folder Manager (also File > Add Folder).
+// Picasa 3 style Folder Manager (also Picasa's File > Add Folder).
 // The tree shows the folders already in LapCasa and the whole computer.
 // - A folder outside LapCasa: Scan Always / Scan Once adds it as a new album
 //   root (albums nested inside it are merged into it) and scans it right away.

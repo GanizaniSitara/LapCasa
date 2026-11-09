@@ -26,7 +26,8 @@
 
     <!-- Section body (hidden while the stacked pane's Albums section is closed) -->
     <div v-show="!(stacked && collapsed)" class="contents">
-    <div class="mx-1 mb-2 px-1 shrink-0">
+    <!-- Picasa's left pane has no per-section search; keep it only for long lists. -->
+    <div v-if="!stacked || customSmartAlbums.length > 10" class="mx-1 mb-2 px-1 shrink-0">
       <div
         :class="[
           'h-8 flex items-center rounded-box transition-colors bg-base-100/40',
@@ -118,7 +119,7 @@
     <div v-else-if="customSmartAlbums.length > 0" class="sidebar-empty text-sm">
       <span class="text-center">{{ $t('album.no_smart_albums_found') }}</span>
     </div>
-    <div v-else class="mt-2 px-2 flex flex-col items-center justify-center text-base-content/30">
+    <div v-else-if="!stacked" class="mt-2 px-2 flex flex-col items-center justify-center text-base-content/30">
       <span class="text-sm text-center">{{ $t('album.no_smart_albums.description') }}</span>
     </div>
     </div>
@@ -157,7 +158,7 @@ import ContextMenu from '@/components/ContextMenu.vue';
 import SmartAlbumEdit from '@/components/SmartAlbumEdit.vue';
 import MessageBox from '@/components/MessageBox.vue';
 
-// In the stacked left pane this is the Albums section (Albums, People, Folders).
+// In the stacked left pane this is the Albums section (Picasa's Albums, People, Folders).
 defineProps({
   stacked: { type: Boolean, default: false },
   collapsed: { type: Boolean, default: false },

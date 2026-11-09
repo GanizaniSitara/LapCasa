@@ -260,6 +260,7 @@ pub static GEOCODER: Lazy<ReverseGeocoder> = Lazy::new(|| {
 pub struct PackageInfo {
     name: String,
     version: String,
+    build_number: String,
     commit_hash: Option<String>,
     description: String,
     authors: Vec<String>,
@@ -269,10 +270,14 @@ pub struct PackageInfo {
 }
 
 impl PackageInfo {
-    pub fn new(commit_hash: &str) -> Self {
+    pub fn new(commit_hash: &str, build_unix_time: u64) -> Self {
+        let build_number = DateTime::from_timestamp(build_unix_time as i64, 0)
+            .expect("valid compile timestamp")
+            .format("%Y%m%d.%H%M%S").to_string();
         Self {
             name: "LapCasa".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number,
             commit_hash: (!commit_hash.is_empty()).then(|| commit_hash.to_string()),
             description: env!("CARGO_PKG_DESCRIPTION").to_string(),
             authors: env!("CARGO_PKG_AUTHORS")
@@ -646,6 +651,14 @@ mod win32_imports {
     }
 
     pub const INVALID_HANDLE_VALUE: HANDLE = -1isize;
+    pub const FILE_LIST_DIRECTORY: u32 = 0x0001;
+    pub const FILE_SHARE_READ_WRITE_DELETE: u32 = 0x7;
+    pub const OPEN_EXISTING: u32 = 3;
+    pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    pub const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0000_0001;
+    pub const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x0000_0002;
+    pub const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x0000_0008;
+    pub const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x0000_0010;
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -665,6 +678,22 @@ mod win32_imports {
         ) -> i32;
 
         pub fn CloseHandle(hObject: HANDLE) -> i32;
+
+        pub fn ReadDirectoryChangesW(
+            hDirectory: HANDLE,
+            lpBuffer: *mut core::ffi::c_void,
+            nBufferLength: u32,
+            bWatchSubtree: i32,
+            dwNotifyFilter: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut core::ffi::c_void,
+            lpCompletionRoutine: *mut core::ffi::c_void,
+        ) -> i32;
+
+        pub fn CancelIoEx(
+            hFile: HANDLE,
+            lpOverlapped: *mut core::ffi::c_void,
+        ) -> i32;
     }
 }
 
@@ -1984,7 +2013,7 @@ pub fn get_folder_files(
     (files, new_count, updated_count)
 }
 
-#[derive(serde::Serialize, Default)]
+#[derive(serde::Serialize, Default, Clone)]
 pub struct FolderMtimeSyncResult {
     pub dirty_folder_count: u32,
     pub new_folder_count: u32,
@@ -2112,7 +2141,247 @@ pub fn album_sync_lock(album_id: i64) -> Arc<Mutex<()>> {
 /// revalidates the album before writing and exits safely.
 pub fn release_album_sync_lock(album_id: i64) {
     ALBUM_SYNC_LOCKS.lock().unwrap().remove(&album_id);
+    stop_album_watcher(album_id);
 }
+
+fn normalize_path_for_watch(path: &str) -> String {
+    let s = path.replace('/', "\\").to_lowercase();
+    s.trim_end_matches('\\').to_string()
+}
+
+#[derive(Default)]
+struct WatchDirtyState {
+    dirty_folders: HashSet<String>,
+    dirty_albums: HashSet<i64>,
+    last_event_time: Option<Instant>,
+    pending_sync: bool,
+}
+
+static WATCH_DIRTY_STATE: Lazy<Mutex<WatchDirtyState>> =
+    Lazy::new(|| Mutex::new(WatchDirtyState::default()));
+static WATCH_WAKE_NOTIFY: Lazy<tokio::sync::Notify> =
+    Lazy::new(|| tokio::sync::Notify::new());
+
+fn mark_folder_dirty_for_watch(_album_id: i64, folder_path: &str) {
+    if let Ok(mut state) = WATCH_DIRTY_STATE.lock() {
+        state.dirty_folders.insert(normalize_path_for_watch(folder_path));
+        state.last_event_time = Some(Instant::now());
+        state.pending_sync = true;
+    }
+}
+
+fn mark_album_dirty_for_watch(album_id: i64) {
+    if let Ok(mut state) = WATCH_DIRTY_STATE.lock() {
+        state.dirty_albums.insert(album_id);
+        state.last_event_time = Some(Instant::now());
+        state.pending_sync = true;
+    }
+}
+
+fn trigger_watch_sync() {
+    WATCH_WAKE_NOTIFY.notify_one();
+}
+
+#[cfg(windows)]
+static ACTIVE_ALBUM_WATCHERS: Lazy<Mutex<HashMap<i64, win32_imports::HANDLE>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(windows)]
+fn open_directory_for_watching(dir_path: &Path) -> Option<win32_imports::HANDLE> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use win32_imports::*;
+
+    let path_wide: Vec<u16> = OsStr::new(dir_path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let handle = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ_WRITE_DELETE,
+            core::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            core::ptr::null_mut(),
+        )
+    };
+
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        None
+    } else {
+        Some(handle)
+    }
+}
+
+#[cfg(windows)]
+fn run_album_watcher(
+    album_id: i64,
+    album_path: String,
+    dir_handle: win32_imports::HANDLE,
+    generation: u64,
+) {
+    use win32_imports::*;
+
+    let notify_filter = FILE_NOTIFY_CHANGE_FILE_NAME
+        | FILE_NOTIFY_CHANGE_DIR_NAME
+        | FILE_NOTIFY_CHANGE_SIZE
+        | FILE_NOTIFY_CHANGE_LAST_WRITE;
+
+    #[repr(C, align(4))]
+    struct AlignedBuffer([u8; 8192]);
+    let mut buf = AlignedBuffer([0u8; 8192]);
+
+    while sync_generation_valid(generation) {
+        let mut bytes_returned = 0u32;
+        let success = unsafe {
+            ReadDirectoryChangesW(
+                dir_handle,
+                buf.0.as_mut_ptr() as *mut core::ffi::c_void,
+                buf.0.len() as u32,
+                1, // bWatchSubtree = TRUE
+                notify_filter,
+                &mut bytes_returned,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        if success == 0 {
+            break;
+        }
+
+        if !sync_generation_valid(generation) {
+            break;
+        }
+
+        let root_path = PathBuf::from(&album_path);
+
+        if bytes_returned == 0 {
+            mark_album_dirty_for_watch(album_id);
+            mark_folder_dirty_for_watch(album_id, &album_path);
+        } else {
+            let mut offset = 0usize;
+            let total_len = bytes_returned as usize;
+
+            while offset + 12 <= total_len {
+                let next_entry_offset =
+                    u32::from_ne_bytes(buf.0[offset..offset + 4].try_into().unwrap()) as usize;
+                let action =
+                    u32::from_ne_bytes(buf.0[offset + 4..offset + 8].try_into().unwrap());
+                let file_name_len =
+                    u32::from_ne_bytes(buf.0[offset + 8..offset + 12].try_into().unwrap()) as usize;
+
+                if offset + 12 + file_name_len <= total_len && file_name_len >= 2 {
+                    let u16_len = file_name_len / 2;
+                    let u16_ptr = buf.0[offset + 12..].as_ptr() as *const u16;
+                    let u16_slice = unsafe { std::slice::from_raw_parts(u16_ptr, u16_len) };
+                    let rel_name = String::from_utf16_lossy(u16_slice);
+                    let full_changed = root_path.join(&rel_name);
+
+                    if full_changed.is_dir() {
+                        mark_folder_dirty_for_watch(album_id, &full_changed.to_string_lossy());
+                        if full_changed != root_path {
+                            if let Some(parent) = full_changed.parent() {
+                                mark_folder_dirty_for_watch(album_id, &parent.to_string_lossy());
+                                if parent != root_path {
+                                    if let Some(grandparent) = parent.parent() {
+                                        mark_folder_dirty_for_watch(album_id, &grandparent.to_string_lossy());
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        mark_folder_dirty_for_watch(album_id, &full_changed.to_string_lossy());
+                        if let Some(parent) = full_changed.parent() {
+                            mark_folder_dirty_for_watch(album_id, &parent.to_string_lossy());
+                            if action == 1 || action == 2 || action == 4 || action == 5 {
+                                if parent != root_path {
+                                    if let Some(grandparent) = parent.parent() {
+                                        mark_folder_dirty_for_watch(album_id, &grandparent.to_string_lossy());
+                                    }
+                                }
+                            }
+                        } else {
+                            mark_folder_dirty_for_watch(album_id, &album_path);
+                        }
+                    }
+                }
+
+                if next_entry_offset == 0 || offset + next_entry_offset > total_len {
+                    break;
+                }
+                offset += next_entry_offset;
+            }
+        }
+
+        trigger_watch_sync();
+    }
+}
+
+#[cfg(windows)]
+fn refresh_album_watchers(generation: u64) {
+    if !sync_generation_valid(generation) {
+        return;
+    }
+    let albums = match Album::get_all_albums() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    let mut current_watchers = ACTIVE_ALBUM_WATCHERS.lock().unwrap();
+    let current_ids: HashSet<i64> = current_watchers.keys().copied().collect();
+    let target_ids: HashSet<i64> = albums.iter().filter_map(|a| a.id).collect();
+
+    for removed_id in current_ids.difference(&target_ids) {
+        if let Some(handle) = current_watchers.remove(removed_id) {
+            unsafe {
+                win32_imports::CancelIoEx(handle, core::ptr::null_mut());
+                win32_imports::CloseHandle(handle);
+            }
+        }
+    }
+
+    for album in albums {
+        let Some(album_id) = album.id else { continue; };
+        if current_watchers.contains_key(&album_id) {
+            continue;
+        }
+        if !directory_accessible(&album.path) {
+            continue;
+        }
+        let dir_path = Path::new(&album.path);
+        let Some(handle) = open_directory_for_watching(dir_path) else {
+            continue;
+        };
+
+        current_watchers.insert(album_id, handle);
+
+        let album_path = album.path.clone();
+        std::thread::spawn(move || {
+            run_album_watcher(album_id, album_path, handle, generation);
+        });
+    }
+}
+
+#[cfg(not(windows))]
+fn refresh_album_watchers(_generation: u64) {}
+
+#[cfg(windows)]
+pub fn stop_album_watcher(album_id: i64) {
+    let mut watchers = ACTIVE_ALBUM_WATCHERS.lock().unwrap();
+    if let Some(handle) = watchers.remove(&album_id) {
+        unsafe {
+            win32_imports::CancelIoEx(handle, core::ptr::null_mut());
+            win32_imports::CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn stop_album_watcher(_album_id: i64) {}
 
 pub async fn wait_for_album_scan_end(album_id: i64) -> Result<(), String> {
     // Bounded wait: the scan honors the cancellation flag, so it should finish
@@ -2135,47 +2404,185 @@ fn sync_generation_valid(generation: u64) -> bool {
     FOLDER_SYNC_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation
 }
 
-pub fn start_folder_mtime_sync(app_handle: tauri::AppHandle) {
-    if !crate::t_advanced_ai::background_enabled() {
+fn run_post_folder_sync_tasks(app_handle: &tauri::AppHandle, tasks: Vec<SyncedFileTask>) {
+    for task in tasks {
+        crate::scheduler::cooperative_yield_blocking();
+        schedule_synced_file_processing(app_handle.clone(), task);
+    }
+}
+
+async fn run_folder_mtime_sync_pass(app_handle: &tauri::AppHandle, generation: u64) {
+    let (dirty_folders, dirty_albums) = {
+        let mut state = WATCH_DIRTY_STATE.lock().unwrap();
+        state.pending_sync = false;
+        state.last_event_time = None;
+        (
+            std::mem::take(&mut state.dirty_folders),
+            std::mem::take(&mut state.dirty_albums),
+        )
+    };
+
+    let app_handle_clone = app_handle.clone();
+    let sync_res = tauri::async_runtime::spawn_blocking(move || {
+        let res = sync_dirty_folders_by_mtime(generation, &dirty_folders, &dirty_albums);
+        match res {
+            Ok((result, tasks)) => {
+                if !sync_generation_valid(generation) {
+                    return None;
+                }
+                run_post_folder_sync_tasks(&app_handle_clone, tasks);
+                Some(result)
+            }
+            Err(e) => {
+                eprintln!("folder mtime sync failed: {}", e);
+                None
+            }
+        }
+    })
+    .await;
+
+    let Ok(Some(result)) = sync_res else {
+        return;
+    };
+
+    if !sync_generation_valid(generation) {
         return;
     }
+
+    if !result.folder_path_migrations.is_empty() {
+        let _ = app_handle.emit(
+            "album-folder-paths-migrated",
+            &result.folder_path_migrations,
+        );
+    }
+
+    if result.new_file_count > 0
+        || result.updated_file_count > 0
+        || result.deleted_file_count > 0
+        || result.rename_count > 0
+        || result.new_folder_count > 0
+        || result.deleted_folder_count > 0
+    {
+        let _ = app_handle.emit("folder-mtime-synced", &result);
+        let _ = app_handle.emit("library-folder-sync-finished", &result);
+        let _ = app_handle.emit(
+            "library-total-refreshed",
+            serde_json::json!({ "source": "folder-watch" }),
+        );
+    }
+}
+
+pub fn start_folder_mtime_sync(app_handle: tauri::AppHandle) {
     let generation = FOLDER_SYNC_GENERATION
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         .wrapping_add(1);
 
+    #[cfg(windows)]
+    {
+        let mut watchers = ACTIVE_ALBUM_WATCHERS.lock().unwrap();
+        for (_, handle) in watchers.drain() {
+            unsafe {
+                win32_imports::CancelIoEx(handle, core::ptr::null_mut());
+                win32_imports::CloseHandle(handle);
+            }
+        }
+    }
+    WATCH_WAKE_NOTIFY.notify_waiters();
+
     tauri::async_runtime::spawn(async move {
-        match sync_dirty_folders_by_mtime(generation) {
-            Ok((result, tasks)) => {
+        // Run initial full sync pass
+        if crate::t_advanced_ai::background_enabled() {
+            run_folder_mtime_sync_pass(&app_handle, generation).await;
+        }
+
+        // Start watchers for all current album roots
+        refresh_album_watchers(generation);
+
+        // Continuous debounced watch loop
+        while sync_generation_valid(generation) {
+            tokio::select! {
+                _ = WATCH_WAKE_NOTIFY.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            }
+
+            if !sync_generation_valid(generation) {
+                break;
+            }
+
+            refresh_album_watchers(generation);
+
+            let should_sync = {
+                let state = WATCH_DIRTY_STATE.lock().unwrap();
+                state.pending_sync
+            };
+
+            if should_sync {
+                // Debounce ~500ms
+                loop {
+                    let wait_time = {
+                        let state = WATCH_DIRTY_STATE.lock().unwrap();
+                        if let Some(last) = state.last_event_time {
+                            let elapsed = last.elapsed();
+                            if elapsed < Duration::from_millis(500) {
+                                Some(Duration::from_millis(500) - elapsed)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    match wait_time {
+                        Some(dur) => {
+                            tokio::time::sleep(dur).await;
+                        }
+                        None => break,
+                    }
+                }
+
                 if !sync_generation_valid(generation) {
-                    return;
+                    break;
                 }
-                if !result.folder_path_migrations.is_empty() {
-                    let _ = app_handle.emit(
-                        "album-folder-paths-migrated",
-                        &result.folder_path_migrations,
-                    );
-                }
-                for task in tasks {
-                    schedule_synced_file_processing(app_handle.clone(), task);
-                }
-                if result.dirty_folder_count > 0 || result.new_folder_count > 0 {
-                    let _ = app_handle.emit("library-folder-sync-finished", &result);
-                    let _ = app_handle.emit("library-total-refreshed", ());
+
+                run_folder_mtime_sync_pass(&app_handle, generation).await;
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            let mut watchers = ACTIVE_ALBUM_WATCHERS.lock().unwrap();
+            for (_, handle) in watchers.drain() {
+                unsafe {
+                    win32_imports::CancelIoEx(handle, core::ptr::null_mut());
+                    win32_imports::CloseHandle(handle);
                 }
             }
-            Err(e) => eprintln!("folder mtime sync failed: {}", e),
         }
     });
 }
 
 pub fn stop_folder_mtime_sync() {
     FOLDER_SYNC_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(windows)]
+    {
+        let mut watchers = ACTIVE_ALBUM_WATCHERS.lock().unwrap();
+        for (_, handle) in watchers.drain() {
+            unsafe {
+                win32_imports::CancelIoEx(handle, core::ptr::null_mut());
+                win32_imports::CloseHandle(handle);
+            }
+        }
+    }
+    WATCH_WAKE_NOTIFY.notify_waiters();
 }
 
 /// Check every known folder in the current library using directory mtime.
 /// Dirty folders are synced in the background without touching unrelated views.
 fn sync_dirty_folders_by_mtime(
     generation: u64,
+    dirty_folders: &HashSet<String>,
+    dirty_albums: &HashSet<i64>,
 ) -> Result<(FolderMtimeSyncResult, Vec<SyncedFileTask>), String> {
     let mut dirty_folder_count = 0u32;
     let mut new_folder_count = 0u32;
@@ -2193,11 +2600,21 @@ fn sync_dirty_folders_by_mtime(
         FolderScanState::LIVE_PHOTO_PAIRING_VERSION,
     )?;
     // Folder Manager: excluded and scan-once folders are not kept in sync.
+    let is_watch_pass = !dirty_folders.is_empty() || !dirty_albums.is_empty();
+    if !is_watch_pass && !crate::t_advanced_ai::background_enabled() {
+        return Ok((FolderMtimeSyncResult::default(), Vec::new()));
+    }
     let folder_rules = crate::t_folder_rules::current_rules();
 
     for folder in AFolder::get_all()? {
         if !sync_generation_valid(generation) {
             return Ok((FolderMtimeSyncResult::default(), Vec::new()));
+        }
+        let norm_path = normalize_path_for_watch(&folder.path);
+        let is_watched_dirty =
+            dirty_folders.contains(&norm_path) || dirty_albums.contains(&folder.album_id);
+        if is_watch_pass && !is_watched_dirty {
+            continue;
         }
         if album_scan_active(folder.album_id) {
             continue;
@@ -2235,12 +2652,13 @@ fn sync_dirty_folders_by_mtime(
             .id
             .map(|id| pending_live_photo_folders.contains(&id))
             .unwrap_or(true);
-        if info.modified != folder.modified_at || needs_live_photo_reindex {
+        if info.modified != folder.modified_at || needs_live_photo_reindex || is_watched_dirty {
             queue.push((folder, info.modified, needs_live_photo_reindex));
         }
     }
 
     while let Some((folder, latest_mtime, needs_live_photo_reindex)) = queue.pop() {
+        crate::scheduler::cooperative_yield_blocking();
         if !sync_generation_valid(generation) {
             return Ok((FolderMtimeSyncResult::default(), Vec::new()));
         }
@@ -2431,8 +2849,7 @@ fn sync_folder_direct_files(
     let mut live_photo_affected_names = HashSet::new();
 
     // Helper to check background cancellation (generation 0 = foreground, never cancels).
-    let is_cancelled = || !crate::t_advanced_ai::background_enabled()
-        || generation != 0 && (!sync_generation_valid(generation) || album_scan_active(album_id));
+    let is_cancelled = || generation != 0 && (!sync_generation_valid(generation) || album_scan_active(album_id));
 
     // Build a map of file_id → (db_id, db_name) for rename detection.
     // Use the stored inode from the DB record — this works even when the
@@ -2460,6 +2877,11 @@ fn sync_folder_direct_files(
         let entry = entry.map_err(|e| e.to_string())?;
         if !entry.file_type().is_file() {
             continue;
+        }
+
+        crate::scheduler::cooperative_yield_blocking_cancellable(is_cancelled);
+        if is_cancelled() {
+            return Ok(FolderSyncOutcome::default());
         }
         let path = entry.path();
         let file_path_str = match path.to_str() {
@@ -2921,12 +3343,15 @@ fn should_process_synced_file(file: &AFile, file_type: i64, threshold: i64) -> b
 
 fn schedule_synced_file_processing(app_handle: tauri::AppHandle, task: SyncedFileTask) {
     tauri::async_runtime::spawn(async move {
-        if !crate::t_advanced_ai::background_enabled() {
-            return;
-        }
         if album_removal_pending(task.album_id) {
             return;
         }
+
+        crate::scheduler::cooperative_yield().await;
+        if album_removal_pending(task.album_id) {
+            return;
+        }
+
         let file_path_for_thumb = task.file_path.clone();
         let file_type = task.file_type;
         let orientation = task.orientation;
@@ -2958,8 +3383,7 @@ fn schedule_synced_file_processing(app_handle: tauri::AppHandle, task: SyncedFil
         })
         .await;
 
-        if !matches!(thumb_result, Ok(Ok(Some(_)))) || album_removal_pending(task.album_id)
-            || !crate::t_advanced_ai::background_enabled() {
+        if !matches!(thumb_result, Ok(Ok(Some(_)))) || album_removal_pending(task.album_id) {
             return;
         }
 
@@ -2972,7 +3396,7 @@ fn schedule_synced_file_processing(app_handle: tauri::AppHandle, task: SyncedFil
             }),
         );
 
-        if !matches!(task.file_type, 1 | 3) {
+        if !matches!(task.file_type, 1 | 3) || !crate::t_advanced_ai::background_enabled() {
             return;
         }
 
@@ -3446,6 +3870,11 @@ struct ProgressPayload {
     failed_size: u64,
     scan_total: u64,
     scan_total_size: u64,
+    // LAP-064: the photo whose thumbnail was made last (0 / "" before the first), for the page's
+    // Picasa-style card of photos flying in while a folder is scanned.
+    latest_file_id: i64,
+    latest_name: String,
+    latest_folder: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -3612,6 +4041,7 @@ impl ProcessingBudget {
 
 #[derive(Clone, Default)]
 struct ProgressSnapshot {
+    latest: Option<(i64, String, String)>,   // LAP-064: file id, name, folder path of the latest thumbnail
     discovered: u64,
     processed: u64,
     search_ready: u64,
@@ -3656,6 +4086,9 @@ impl ProgressSnapshot {
             failed_size: self.failed_size,
             scan_total: self.scan_total,
             scan_total_size: self.scan_total_size,
+            latest_file_id: self.latest.as_ref().map(|l| l.0).unwrap_or(0),
+            latest_name: self.latest.as_ref().map(|l| l.1.clone()).unwrap_or_default(),
+            latest_folder: self.latest.as_ref().map(|l| l.2.clone()).unwrap_or_default(),
         }
     }
 }
@@ -3680,6 +4113,7 @@ impl ProgressTracker {
         scan_total_size: u64,
     ) -> Self {
         let snapshot = ProgressSnapshot {
+            latest: None,
             discovered,
             processed: discovered,
             search_ready: discovered,
@@ -3903,6 +4337,9 @@ async fn process_thumbnail_task(
         .await
         .map_err(|e| format!("Failed to acquire thumbnail permit: {}", e))?;
 
+    // Yield CPU and I/O execution during active UI interaction
+    crate::scheduler::cooperative_yield().await;
+
     let task_for_thumb = task.clone();
     let thumb_ok = tauri::async_runtime::spawn_blocking(move || {
         let (actual_path, actual_type) = if let Some(ref p) = task_for_thumb.proxy_path {
@@ -3951,11 +4388,24 @@ async fn process_thumbnail_task(
         },
     );
 
+    // LAP-064: photos and videos with a fresh thumbnail are what the page shows flying in.
+    let latest = matches!(task.file_type, 1 | 3).then(|| {
+        let path = std::path::Path::new(&task.file_path);
+        (task.file_id,
+         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+         path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())
+    });
     if !task.processed_already_ready {
         with_progress_tracker(&tracker, |tracker| {
             tracker.modify(|snapshot| {
                 snapshot.processed += 1;
+                if latest.is_some() { snapshot.latest = latest; }
             });
+            tracker.maybe_emit();
+        });
+    } else if latest.is_some() {
+        with_progress_tracker(&tracker, |tracker| {
+            tracker.modify(|snapshot| snapshot.latest = latest);
             tracker.maybe_emit();
         });
     }
@@ -3969,6 +4419,9 @@ async fn process_thumbnail_task(
         .acquire()
         .await
         .map_err(|e| format!("Failed to acquire embedding permit: {}", e))?;
+
+    // Yield CPU and I/O execution during active UI interaction
+    crate::scheduler::cooperative_yield().await;
 
     let app_handle_for_embedding = app_handle.clone();
     let file_id = task.file_id;
@@ -4170,6 +4623,17 @@ pub async fn index_album_worker(
             let path_str = entry.path().to_string_lossy().to_string();
             if let Some(ftype) = get_file_type(&path_str) {
                 if !album.allows_file_type(ftype) || skip_excluded_image(&album, &path_str, ftype)? { continue; }
+
+                // Cooperative yield before processing each scanned item
+                crate::scheduler::cooperative_yield_cancellable(|| {
+                    cancellation_token.lock().map(|flags| flags.get(&album_id) == Some(&true)).unwrap_or(true)
+                }).await;
+                if cancellation_token.lock().map(|flags| flags.get(&album_id) == Some(&true)).unwrap_or(true) {
+                    println!("Indexing cancelled for album {}", album_id);
+                    is_cancelled = true;
+                    thumbnail_join_set.abort_all();
+                    break;
+                }
                 // Resume mode: skip already-indexed prefix files, but mark them seen
                 // so mark-and-sweep does not delete them upon scan completion.
                 if traversed_count < resume_from {
@@ -4608,4 +5072,105 @@ mod album_scan_filter_tests {
         assert_eq!((counts.1,counts.3,counts.5),(4,1,5));
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn package_info_distinct_compilation_times_produce_distinct_utc_build_numbers() {
+        let info1 = PackageInfo::new("hash1", 1_700_000_000);
+        let info2 = PackageInfo::new("hash1", 1_700_000_001);
+        assert_eq!(info1.version, info2.version);
+        assert_ne!(info1.build_number, info2.build_number);
+        assert_eq!(info1.build_number, "20231114.221320");
+        assert_eq!(info2.build_number, "20231114.221321");
+    }
+
+    #[test]
+    fn test_folder_watcher_helpers_and_read_directory_changes() {
+        // 1. Verify path normalization
+        assert_eq!(
+            normalize_path_for_watch("C:/Photos/Holiday/"),
+            r"c:\photos\holiday"
+        );
+        assert_eq!(
+            normalize_path_for_watch(r"C:\Photos\Holiday\Sub"),
+            r"c:\photos\holiday\sub"
+        );
+
+        // 2. Verify mark_folder_dirty_for_watch updates WATCH_DIRTY_STATE
+        let test_folder = r"C:/Test/Watch/Folder";
+        mark_folder_dirty_for_watch(42, test_folder);
+        {
+            let mut state = WATCH_DIRTY_STATE.lock().unwrap();
+            assert!(state.pending_sync);
+            assert!(state.dirty_folders.contains(&normalize_path_for_watch(test_folder)));
+            assert!(state.last_event_time.is_some());
+            // Clean up state
+            state.dirty_folders.remove(&normalize_path_for_watch(test_folder));
+            state.pending_sync = false;
+        }
+
+        // 3. On Windows: test open_directory_for_watching + ReadDirectoryChangesW detecting a file creation
+        #[cfg(windows)]
+        {
+            use super::win32_imports::*;
+
+            let temp_dir = std::env::temp_dir().join(format!("lap-watch-test-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&temp_dir).unwrap();
+
+            let handle = open_directory_for_watching(&temp_dir)
+                .expect("open_directory_for_watching must succeed on a valid directory");
+
+            let temp_dir_clone = temp_dir.clone();
+            let watcher_thread = std::thread::spawn(move || {
+                let notify_filter = FILE_NOTIFY_CHANGE_FILE_NAME
+                    | FILE_NOTIFY_CHANGE_DIR_NAME
+                    | FILE_NOTIFY_CHANGE_SIZE
+                    | FILE_NOTIFY_CHANGE_LAST_WRITE;
+                #[repr(C, align(4))]
+                struct AlignedBuffer([u8; 8192]);
+                let mut buf = AlignedBuffer([0u8; 8192]);
+                let mut bytes_returned = 0u32;
+                let success = unsafe {
+                    ReadDirectoryChangesW(
+                        handle,
+                        buf.0.as_mut_ptr() as *mut core::ffi::c_void,
+                        buf.0.len() as u32,
+                        1,
+                        notify_filter,
+                        &mut bytes_returned,
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                    )
+                };
+                if success != 0 && bytes_returned > 0 {
+                    mark_folder_dirty_for_watch(100, &temp_dir_clone.to_string_lossy());
+                }
+                unsafe {
+                    CloseHandle(handle);
+                }
+            });
+
+            // Allow watcher thread to enter ReadDirectoryChangesW
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // Create a file in temp_dir to trigger notification
+            let new_file = temp_dir.join("photo.jpg");
+            fs::write(&new_file, b"test photo data").unwrap();
+
+            watcher_thread.join().expect("watcher thread should terminate upon receiving change");
+
+            // Verify folder was marked dirty
+            {
+                let mut state = WATCH_DIRTY_STATE.lock().unwrap();
+                let norm = normalize_path_for_watch(&temp_dir.to_string_lossy());
+                assert!(state.dirty_folders.contains(&norm));
+                assert!(state.pending_sync);
+                // Clean up state
+                state.dirty_folders.remove(&norm);
+                state.pending_sync = false;
+            }
+
+            let _ = fs::remove_dir_all(temp_dir);
+        }
+    }
 }
+

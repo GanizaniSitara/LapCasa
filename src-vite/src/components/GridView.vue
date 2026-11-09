@@ -3,7 +3,7 @@
     ref="containerRef"
     class="w-full h-full"
     :class="{ 
-      'pointer-events-none': uiStore.inputStack.length > 0,
+      'pointer-events-none': uiStore.inputStack.some((name: string) => !name.startsWith('SearchBox:')),
     }"
     @wheel="onWheel"
     @dragstart.capture.prevent
@@ -14,9 +14,8 @@
       class="w-full h-full no-scrollbar"
       :class="{
         'pt-12': !isFilmstripView,
-        'pb-8': !isFilmstripView && config.settings.showStatusBar,
-        'pb-1': !isFilmstripView && !config.settings.showStatusBar,
       }"
+      :style="isFilmstripView ? undefined : { paddingBottom: gridBottomPadding + 'px' }"
       :items="renderItems"
       :direction="isFilmstripView && config.settings.grid.previewPosition < 2 ? 'horizontal' : 'vertical'"
       :grid-items="isFilmstripView ? 1 : columnCount"
@@ -26,10 +25,11 @@
       :geometry="virtualScrollGeometry"
       :indexed-grid="indexedGrid"
       :content-height="virtualScrollContentHeight"
-      :transition="isLayoutTransitioning"
+      :transition="false"
       key-field="id"
       :emit-update="true"
-      :buffer="peopleView || albumView ? 0 : 4"
+      :buffer="peopleView && !isFilmstripView ? 4 : (peopleView || albumView ? 0 : 4)"
+      :initial-paint="initialPaint"
       v-slot="{ item, index }"
       @update="onUpdate"
       @scroll="onScroll"
@@ -50,8 +50,8 @@
         v-else-if="isGroupRow(item)"
         class="w-full h-full flex items-center"
       >
-        <div class="w-full h-8 px-1 flex items-center text-base-content/70 select-none bg-base-200/30 rounded-box">
-          <div class="group flex items-center gap-1">
+        <div class="w-full px-1 flex items-center text-base-content/70 select-none bg-base-200/30 rounded-box" :class="item.notice ? 'min-h-12 py-1' : 'h-8'">
+          <div class="group flex items-center gap-1" :class="{ 'min-w-0': item.notice }">
             <div
               class="flex shrink-0 items-center overflow-hidden transition-all duration-100 ease-out"
               :class="selectMode
@@ -75,6 +75,10 @@
               disabled
               class="min-w-0 flex-1 overflow-hidden"
             />
+            <div v-else-if="item.notice" class="min-w-0">
+              <span class="block truncate text-sm text-base-content/30">{{ item.label }}</span>
+              <span class="block text-xs leading-4 text-base-content/60">{{ item.notice }}</span>
+            </div>
             <span v-else class="min-w-0 truncate text-sm text-base-content/30">{{ item.label }}</span>
           </div>
           <span class="ml-auto badge badge-xs shrink-0 text-xs text-base-content/30">
@@ -107,7 +111,7 @@
           @action="(actionName) => $emit('item-action', { action: actionName, index: getFileIndex(item, index) })"
         />
         <div v-else class="w-full h-full" :class="!peopleView && !albumView ? 'bg-base-200/70 flex items-center justify-center text-base-content/10' : ''">
-          <IconPhoto v-if="!peopleView && !albumView" class="w-8 h-8 opacity-20 animate-pulse" />
+          <IconPhoto v-if="!peopleView && !albumView" class="w-8 h-8 opacity-20" />
         </div>
       </div>
     </VirtualScroll>
@@ -146,7 +150,9 @@ import PersonSectionHeader from '@/components/PersonSectionHeader.vue';
 import FolderSectionHeader from '@/components/FolderSectionHeader.vue';
 import { GROUP } from '@/common/constants';
 import { personFaces } from '@/common/personFaces';
-import { calculateJustifiedLayout, calculateMasonryLayout, type Geometry } from '@/common/layout';
+import { nativeGridPlace, nativeGridScrollTo } from '@/common/api';
+import { listen } from '@tauri-apps/api/event';
+import { calculateJustifiedLayout, calculateMasonryLayout, bottomChromePx, type Geometry } from '@/common/layout';
 import { buildFolderBreadcrumbs, formatFolderBreadcrumb, isWithinRootPath, isEditableTarget } from '@/common/utils';
 import Breadcrumb from '@/components/Breadcrumb.vue';
 import {
@@ -167,6 +173,9 @@ import {
   IconVideo,
 } from '@/common/icons';
 
+// Clear the status line and photo tray, plus the breathing room pb-8 used to give.
+const gridBottomPadding = computed(() => bottomChromePx(config.settings.showStatusBar) + 14);
+
 const props = withDefaults(defineProps<{
   selectedItemIndex: number;
   fileList: any[];
@@ -174,10 +183,11 @@ const props = withDefaults(defineProps<{
   sortType?: number;
   selectMode?: boolean;
   contentReady?: boolean;
+  initialPaint?: boolean;
   emptyMessage?: string;
   emptyHint?: string;
   layoutVersion?: number;
-  sectionHeaders?: Array<{ index: number; personHeader?: boolean; folderHeader?: boolean }>;
+  sectionHeaders?: Array<{ index: number; personHeader?: boolean; folderHeader?: boolean; notice?: boolean }>;
   groupBy?: number;
   groupSelectedCounts?: Record<string, number>;
   groupSelectionLoading?: Record<string, boolean>;
@@ -185,6 +195,8 @@ const props = withDefaults(defineProps<{
   querySource?: string;
   peopleView?: boolean;
   albumView?: boolean;
+  // The page shows this view through the native grid window (Content decides).
+  nativeGrid?: boolean;
   dedupStatuses?: Record<number, 'keep' | 'dup'>;
   draggedFileIds?: Set<number>;
   gridSize: number;
@@ -195,6 +207,7 @@ const props = withDefaults(defineProps<{
   sortType: 0,
   selectMode: false,
   contentReady: false,
+  initialPaint: false,
   emptyMessage: '',
   emptyHint: '',
   layoutVersion: 0,
@@ -206,6 +219,7 @@ const props = withDefaults(defineProps<{
   querySource: '',
   peopleView: false,
   albumView: false,
+  nativeGrid: false,
   dedupStatuses: () => ({}),
   draggedFileIds: () => new Set<number>(),
   gridSize: 120,
@@ -238,13 +252,14 @@ const columnCount = ref(4);
 const containerWidth = ref(0);
 const GROUP_HEADER_HEIGHT = 40;
 const groupHeaderHeight = computed(() => GROUP_HEADER_HEIGHT * Number(config.settings.scale || 1));
-// People view: a taller section header with the person's 60px face.
+// Picasa People view: a taller section header with the person's 60px face.
 const PERSON_HEADER_HEIGHT = 84;
-// Folders view: folder name, date range, picture count and path.
+// Picasa Folders view: folder name, date range, picture count and path.
 const FOLDER_HEADER_HEIGHT = 56;
 function headerHeightFor(item: any) {
   if (item?.personHeader) return PERSON_HEADER_HEIGHT;
   if (item?.folderHeader) return FOLDER_HEADER_HEIGHT;
+  if (item?.notice) return 64 * Number(config.settings.scale || 1);
   return groupHeaderHeight.value;
 }
 let pendingPointerDrag: {
@@ -525,7 +540,7 @@ const itemHeight = computed(() => {
   
   if (style === 0) {
     let labelHeight = cardLabelHeight.value;
-    if (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) labelHeight += 28 * Number(config.settings.scale || 1); // suggestion tick / x row
+    if (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) labelHeight += 28 * Number(config.settings.scale || 1); // Picasa suggestion tick / x row
     
     const height = props.gridColumns > 0 && config.settings.grid.personFaces !== false
       && (props.peopleView || personFaces.controlsRow || personFaces.ignoredMode) ? size : size * 3 / 4;
@@ -567,7 +582,7 @@ watch(() => [props.gridSize, props.gridColumns, config.settings.grid.style, isFi
   }
 
   const anchorVersion = ++layoutAnchorVersion;
-  isLayoutTransitioning.value = !isFilmstripView.value && !indexedGrid.value;
+  isLayoutTransitioning.value = false;
   updateColumnCount();
 
   await nextTick();
@@ -647,7 +662,160 @@ onMounted(() => {
   window.addEventListener('keydown', onKeyDown);
 });
 
+// LAP-062: in People/Folders the native grid window covers this grid's area (when enabled).
+const nativeGridActive = computed(() => props.nativeGrid && !isFilmstripView.value);
+let nativeGridObserver: ResizeObserver | null = null;
+// Only the grid that placed the native window may hide it (other grids on the page are inactive).
+let nativeGridPlaced = false;
+const nativeGridElement = () => containerRef.value?.querySelector('.virtual-scroller') as HTMLElement | null;
+function placeNativeGrid() {
+  const el = nativeGridElement();
+  if (!nativeGridActive.value || !el) {
+    nativeGridCovered = false;
+    if (nativeGridPlaced) { nativeGridPlaced = false; lastNativeGridPlacement = ''; void nativeGridPlace(null); }
+    return;
+  }
+  // The content box: the scroller's top padding lies under the toolbar. At the bottom the window
+  // reaches the status line itself; the rest of the bottom padding is the web grid's own margin,
+  // and the web grid showed through there as a strip of other tiles (LAP-074).
+  const box = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const top = parseFloat(style.paddingTop) || 0;
+  const r = new DOMRect(box.left, box.top + top, box.width,
+    Math.max(0, box.height - top - bottomChromePx(config.settings.showStatusBar)));
+  // Still covered (the photo view is open and changes the page all the time): a 9-point test
+  // is enough; the full scan cost about 650 ms a frame there and locked the app up (LAP-064).
+  if (nativeGridCovered && gridFullyCovered(el, r)) return;
+  const holes = nativeGridHoles(el, r);
+  // Something covers the whole grid (the photo view, a full-window dialog): hide the native
+  // window rather than leave it on top with an all-hole region; that state froze the app
+  // on the owner's desktop (arrow keys in the photo view, 23 Oct).
+  if (holes.some((h) => h.x <= 0 && h.y <= 0 && h.x + h.width >= r.width && h.y + h.height >= r.height)) {
+    if (nativeGridPlaced) { nativeGridPlaced = false; lastNativeGridPlacement = ''; void nativeGridPlace(null); }
+    nativeGridCovered = true;
+    return;
+  }
+  nativeGridCovered = false;
+  const placement = JSON.stringify([r.left, r.top, r.width, r.height, holes]);
+  if (nativeGridPlaced && placement === lastNativeGridPlacement) return;
+  lastNativeGridPlacement = placement;
+  nativeGridPlaced = true;
+  nativeGridRect = r;
+  void nativeGridPlace({ x: r.left, y: r.top, width: r.width, height: r.height }, holes);
+}
+let lastNativeGridPlacement = '';
+// Hidden because the page covers the whole grid; page changes may uncover it again.
+let nativeGridCovered = false;
+// Where the native window was last placed; page changes elsewhere cannot cover it.
+let nativeGridRect: DOMRect | null = null;
+// A page change that can put something over the grid, or take a cover away: an element
+// added (or restyled) over the grid, or anything removed while the grid had covers.
+// (Text and comment nodes are skipped: Vue's teleport anchors for tooltips come and go in
+// <body> on every hover, and treating them as covers stalled the left panel's wheel.)
+// Attributes written with the value they had are skipped too: Vue rewrites the content
+// pane's style on every render, and each rewrite cost a full hole scan (~200 ms) right
+// after a Timeline jump, delaying the native grid's paint (LAP-091).
+function recordMayCoverNativeGrid(r: MutationRecord) {
+  if (r.type === 'attributes') {
+    return r.oldValue !== (r.target as Element).getAttribute(r.attributeName ?? '') && overlapsNativeGrid(r.target);
+  }
+  for (const n of r.addedNodes) if (n instanceof Element && overlapsNativeGrid(n)) return true;
+  for (const n of r.removedNodes) {
+    if (n instanceof Element && nativeGridCoverEls.some((c) => c === n || n.contains(c))) return true;
+  }
+  return false;
+}
+// The page elements found over the grid at the last placement.
+let nativeGridCoverEls: Element[] = [];
+function overlapsNativeGrid(node: Node) {
+  const el = node instanceof Element ? node : node.parentElement;
+  if (!el) return false;
+  if (!nativeGridRect) return true;
+  const b = el.getBoundingClientRect();
+  const r = nativeGridRect;
+  return b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom;
+}
+// Clicks in the native grid act like clicks on the page's tiles.
+const nativeGridUnlisten: Array<() => void> = [];
+void listen<{ fileIndex: number; ctrl: boolean; shift: boolean }>('native-grid-click', ({ payload }) => {
+  if (nativeGridPlaced) emit('item-clicked', payload.fileIndex, { ctrlKey: payload.ctrl, metaKey: false, shiftKey: payload.shift });
+}).then((off) => nativeGridUnlisten.push(off));
+void listen<{ fileIndex: number }>('native-grid-dblclick', ({ payload }) => {
+  if (nativeGridPlaced) emit('item-dblclicked', payload.fileIndex, { ctrlKey: false, metaKey: false, shiftKey: false });
+}).then((off) => nativeGridUnlisten.push(off));
+// A press in the native grid is a press outside any open page menu, which then closes.
+void listen('native-grid-pointer', () => {
+  if (nativeGridPlaced) nativeGridElement()?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+}).then((off) => nativeGridUnlisten.push(off));
+// Right-click on a native tile: the page opens the tile's menu at that point.
+void listen<{ fileIndex: number; fileId: number; personId: number | null; select: boolean; x: number; y: number }>('native-grid-context', ({ payload }) => {
+  if (!nativeGridPlaced || !nativeGridRect) return;
+  emit('native-context', { ...payload, clientX: nativeGridRect.left + payload.x, clientY: nativeGridRect.top + payload.y });
+}).then((off) => nativeGridUnlisten.push(off));
+// Page elements drawn over the grid area (menus, dialogs, the status bar), relative to the
+// grid. The native window leaves these areas out so they stay visible above it.
+// True when page elements cover the grid at its centre, corners and edge midpoints.
+function gridFullyCovered(el: HTMLElement, r: DOMRect) {
+  for (const fy of [0.02, 0.5, 0.98]) {
+    for (const fx of [0.02, 0.5, 0.98]) {
+      const hit = document.elementFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+      if (!hit || el.contains(hit) || hit.contains(el)) return false;
+    }
+  }
+  return true;
+}
+function nativeGridHoles(el: HTMLElement, r: DOMRect) {
+  const covers = new Map<Element, DOMRect>();
+  // A 32 px sampling grid: menus, dialogs and bars are all larger than that.
+  for (let y = r.top + 2; y < r.bottom; y += 32) {
+    for (let x = r.left + 2; x < r.right; x += 32) {
+      let hit = document.elementFromPoint(x, y);
+      if (!hit || el.contains(hit) || hit.contains(el)) continue;
+      while (hit.parentElement && !hit.parentElement.contains(el)) hit = hit.parentElement;
+      if (!covers.has(hit)) covers.set(hit, hit.getBoundingClientRect());
+    }
+  }
+  nativeGridCoverEls = [...covers.keys()];
+  return [...covers.values()].map((c) => ({ x: c.left - r.left, y: c.top - r.top, width: c.width, height: c.height }));
+}
+let nativeGridFrame = 0;
+// Only changes outside this grid can put something over it.
+const nativeGridMutations = new MutationObserver((records) => {
+  if ((!nativeGridPlaced && !nativeGridCovered) || nativeGridFrame) return;
+  if (records.every((r) => containerRef.value?.contains(r.target))) return;
+  // The left panel's list rebuilds its rows while it scrolls; re-checking the covers for
+  // that stalled its wheel (LAP-064). Only changes over the grid matter.
+  if (!nativeGridCovered && !records.some(recordMayCoverNativeGrid)) return;
+  nativeGridFrame = requestAnimationFrame(() => { nativeGridFrame = 0; placeNativeGrid(); });
+});
+nativeGridMutations.observe(document.body, { subtree: true, childList: true, attributes: true, attributeOldValue: true, attributeFilter: ['class', 'style', 'open'] });
+// Re-place when the setting or view changes, and when the scroll area appears (it exists only with rows).
+watch([nativeGridActive, scroller], ([active]) => {
+  nativeGridObserver?.disconnect();
+  nativeGridObserver = null;
+  const el = nativeGridElement();
+  if (active && el) {
+    nativeGridObserver = new ResizeObserver(placeNativeGrid);
+    nativeGridObserver.observe(el);
+  }
+  placeNativeGrid();
+}, { flush: 'post' });
+onMounted(() => nextTick(() => {
+  if (!nativeGridActive.value) return;
+  const el = nativeGridElement();
+  nativeGridObserver = new ResizeObserver(placeNativeGrid);
+  if (el) nativeGridObserver.observe(el);
+  placeNativeGrid();
+}));
+window.addEventListener('resize', placeNativeGrid);
+
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', placeNativeGrid);
+  nativeGridObserver?.disconnect();
+  nativeGridMutations.disconnect();
+  nativeGridUnlisten.forEach((off) => off());
+  if (nativeGridFrame) cancelAnimationFrame(nativeGridFrame);
+  if (nativeGridPlaced) void nativeGridPlace(null);
   window.removeEventListener('keydown', onKeyDown);
   clearPointerDragListeners();
   pendingPointerDrag = null;
@@ -751,13 +919,13 @@ function scrollToItem(index: number, center = false) {
     
     // Account for top and bottom padding
     const topPadding = 48 * Number(config.settings.scale || 1);
-    const bottomPadding = config.settings.showStatusBar ? 32 : 4; // pb-8 = 32px, pb-1 = 4px
+    const bottomPadding = gridBottomPadding.value;
 
     if (center) {
-      el.scrollTop = Math.min(
+      scrollToPosition(Math.min(
         Math.max(0, topPadding + (itemTop + itemBottom) / 2 - clientHeight / 2),
         Math.max(0, el.scrollHeight - clientHeight),
-      );
+      ));
       return;
     }
     
@@ -770,10 +938,10 @@ function scrollToItem(index: number, center = false) {
     if (!isFullyVisible) {
       if (itemTop < viewportTop) {
         // Item is above viewport, scroll to show it at the top
-        el.scrollTop = itemTop;
+        scrollToPosition(itemTop);
       } else if (itemBottom > viewportBottom) {
         // Item is below viewport, scroll to show it at the bottom (accounting for bottom padding)
-        el.scrollTop = itemBottom - clientHeight + (topPadding + bottomPadding);
+        scrollToPosition(itemBottom - clientHeight + (topPadding + bottomPadding));
       }
     }
   } else {
@@ -812,11 +980,12 @@ function scrollToItem(index: number, center = false) {
 
 function scrollToPosition(scrollTop: number) {
   if (scroller.value && !isFilmstripView.value) {
-    scroller.value.$el.scrollTop = scrollTop;
+    scroller.value.scrollToPosition(scrollTop);
   }
 }
 
 function scrollToRowIndex(rowIndex: number) {
+  if (nativeGridPlaced) void nativeGridScrollTo(rowIndex);
   const box = boxAt(rowIndex);
   if (box) {
     scrollToPosition(box.y);
@@ -824,7 +993,7 @@ function scrollToRowIndex(rowIndex: number) {
   }
   if (!scroller.value || isFilmstripView.value) return;
   const nextScrollTop = Math.max(0, rowIndex) * itemHeight.value;
-  scroller.value.$el.scrollTop = nextScrollTop;
+  scrollToPosition(nextScrollTop);
 }
 
 // Top of a row in the grouped layout (e.g. a People section header), or -1.
@@ -874,7 +1043,7 @@ function centerItem(index: number) {
 
 function getNextItemIndex(currentIndex: number, direction: 'up' | 'down', page = false): number {
   const pageHeight = Math.max(1, (scroller.value?.$el.clientHeight ?? 0)
-    - 48 * Number(config.settings.scale || 1) - (config.settings.showStatusBar ? 32 : 4));
+    - 48 * Number(config.settings.scale || 1) - gridBottomPadding.value);
   const style = config.settings.grid.style;
   if (indexedGrid.value) {
     const grid = indexedGrid.value;
@@ -1006,6 +1175,7 @@ function getGroupIcon(item: any) {
     case GROUP.DAY:
       return IconCalendarDay;
     case GROUP.MONTH:
+    case GROUP.QUARTER:
     case GROUP.YEAR:
       return IconCalendarMonth;
     case GROUP.RATING:

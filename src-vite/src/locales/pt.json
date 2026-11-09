@@ -357,6 +357,7 @@
     "title": "Calendário",
     "tabs": {
       "years": "Anos",
+      "quarters": "Quarters",
       "months": "Meses",
       "days": "Dias"
     },
@@ -433,7 +434,8 @@
         "Lente",
         "Ano",
         "Tipo de arquivo",
-        "Seleção"
+        "Seleção",
+        "Quarter"
       ],
       "sort_type_options": [
         "Data de captura",
@@ -677,6 +679,27 @@
       "copy": "Copiar para área de transferência",
       "paste": "Colar",
       "edit_image": "Editar...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Abrir foto em {app}...",
       "open_video_in_app": "Abrir vídeo em {app}...",
       "open_selected_images_in_app": "Abrir fotos em {app}...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "Aceleração de IA",
+      "gpu_description": "Hardware gráfico, complemento de GPU e motores de IA.",
+      "open_gpu": "Abrir aceleração de IA",
+      "about_title": "Sobre o LapCasa",
+      "about_description": "Versão, compilação, licença e créditos.",
+      "open_about": "Abrir Sobre"
+    },
     "general": {
       "title": "Geral",
       "section_language": "Idioma",

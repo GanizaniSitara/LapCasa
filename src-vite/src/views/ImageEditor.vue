@@ -1,13 +1,16 @@
 <template>
 
-  <div ref="editorRoot" tabindex="-1" class="flex flex-col overflow-hidden outline-none bg-base-300 text-base-content/70"
+  <div ref="editorRoot" tabindex="-1" class="flex flex-col overflow-hidden outline-none bg-base-300 text-base-content/70 [contain:strict]"
     :class="embedded ? 'w-full h-full' : 'w-screen h-screen'"
     :data-inline-editor="embedded ? true : undefined" :data-file-id="fileInfo?.id">
     <div v-if="embedded" class="h-9 shrink-0 flex items-center gap-2 px-3">
-      <button class="btn btn-sm btn-ghost" @click="clickCancel">Back to Library</button>
-      <button class="btn btn-sm btn-ghost" aria-label="Previous photo" :disabled="folderIndex <= 0" @click="navigatePhoto(-1)">←</button>
-      <button class="btn btn-sm btn-ghost" aria-label="Next photo" :disabled="folderIndex >= folderFiles.length - 1" @click="navigatePhoto(1)">→</button>
       <span class="truncate">{{ fileInfo?.name }}</span>
+      <!-- Equal grid columns: A, A|B and A|A all take the widest button's size (LAP-105) -->
+      <div class="ml-auto grid grid-flow-col auto-cols-fr gap-1" role="group" aria-label="Photo comparison">
+        <button class="btn btn-xs" :class="comparisonMode === 'single' ? 'btn-active' : ''" aria-label="Single photo" :aria-pressed="comparisonMode === 'single'" @click="setComparisonMode('single')">A</button>
+        <button class="btn btn-xs" :class="comparisonMode === 'photos' ? 'btn-active' : ''" aria-label="Compare two photos" :aria-pressed="comparisonMode === 'photos'" @click="setComparisonMode('photos')">A|B</button>
+        <button class="btn btn-xs" :class="comparisonMode === 'original' ? 'btn-active' : ''" aria-label="Compare original and edited" :aria-pressed="comparisonMode === 'original'" @click="setComparisonMode('original')">A|A</button>
+      </div>
     </div>
     <!-- Title Bar -->
     <TitleBar
@@ -31,19 +34,73 @@
     <div v-if="fileInfo" class="flex-1 flex gap-3 p-3 min-h-0 select-none">
       <!-- Left: Image Preview -->
       <div class="flex-1 min-w-0 flex flex-col items-center justify-center gap-2">
-        <div
+        <div v-if="embedded" data-editor-filmstrip class="h-11 shrink-0 max-w-full flex items-center"
+          :style="{ width: `${Math.min(folderFiles.length * 42 + 48, 720)}px` }">
+          <button class="w-6 h-10 shrink-0 hover:bg-base-content/10 disabled:opacity-25"
+            aria-label="Previous photo" @click="navigatePhoto(-1)">‹</button>
+          <VirtualScroll ref="editorStrip" :items="folderFiles" :item-size="42" :grid-items="1"
+            class="min-w-0 flex-1 no-scrollbar" direction="horizontal" :buffer="3" :emit-update="true" @update="hydrateFilmstrip">
+            <template #default="{ item }">
+              <button class="w-10 h-10 p-0.5 border rounded-[2px] overflow-hidden"
+                :class="item.id === fileInfo?.id ? 'border-primary' : 'border-transparent'"
+                :data-file-id="item.id" :title="item.name || ''" @click="queuePhoto(item.id)">
+                <img v-if="item.file_path" :src="getThumbUrl(item.id, false, 0, item.modified_at, item.id === fileInfo?.id ? fileInfo.edits : item.edits)"
+                  class="w-full h-full object-contain" draggable="false" alt="" />
+              </button>
+            </template>
+          </VirtualScroll>
+          <button class="w-6 h-10 shrink-0 hover:bg-base-content/10 disabled:opacity-25"
+            aria-label="Next photo" @click="navigatePhoto(1)">›</button>
+        </div>
+        <div class="flex w-full flex-1 min-h-0 gap-2" :data-editor-comparison="comparisonMode !== 'single' ? comparisonMode : undefined">
+          <figure v-if="comparisonMode !== 'single'" class="relative flex-1 min-w-0 overflow-hidden rounded-box border border-base-content/5"
+            :class="comparisonMode === 'photos' ? 'cursor-pointer' : ''"
+            :style="{ order: comparisonMode === 'photos' && activeComparisonSide === 'left' ? 1 : 0 }"
+            :data-comparison-pane="comparisonMode === 'photos' && activeComparisonSide === 'left' ? 'right' : 'left'"
+            :data-file-id="comparisonMode === 'original' ? fileInfo.id : otherComparisonFile?.id"
+            :role="comparisonMode === 'photos' ? 'button' : undefined"
+            :tabindex="comparisonMode === 'photos' ? 0 : undefined"
+            :aria-label="comparisonMode === 'photos' ? 'Select other comparison photo' : 'Original photo'"
+            @click="selectOtherComparisonPhoto" @keydown.enter.prevent="selectOtherComparisonPhoto" @keydown.space.prevent="selectOtherComparisonPhoto">
+            <figcaption class="absolute left-2 top-2 z-10 bg-base-300/80 px-1 rounded">{{ comparisonMode === 'original' ? 'Original' : otherComparisonFile?.name }}</figcaption>
+            <span class="absolute left-2 top-8 z-10 bg-base-100/90 text-base-content px-1.5 rounded-full text-[10px] font-semibold pointer-events-none"
+              data-comparison-filter-pill="other">{{ otherPaneFilterPill }}</span>
+            <img :src="comparisonMode === 'original' ? originalComparisonSrc : otherComparisonSrc" class="block w-full h-full object-contain" :alt="comparisonMode === 'original' ? 'Original photo' : otherComparisonFile?.name" draggable="false" />
+          </figure>
+          <div
           ref="containerRef"
-          class="relative w-full flex-1 rounded-box overflow-hidden border border-base-content/5 bg-base-300/30 shadow-sm cursor-default"
+          data-editor-image-space
+          :data-comparison-pane="comparisonMode === 'single' ? undefined : comparisonMode === 'original' ? 'right' : activeComparisonSide"
+          :data-file-id="fileInfo.id"
+          :style="{ order: comparisonMode === 'original' || activeComparisonSide === 'right' ? 1 : 0 }"
+          class="relative min-w-0 flex-1 rounded-box overflow-hidden border bg-base-300/30 shadow-sm cursor-default"
+          :class="[
+            comparisonMode === 'single' ? 'border-base-content/5' : 'border-primary',
+            activeTool === 'Crop' && cropStatus === 1 && !isPreviewingCrop ? 'cursor-crosshair' : ''
+          ]"
+          @mousedown="onContainerMouseDown"
           @pointerdown="handlePreviewPointerDown"
           @pointerup="handlePreviewPointerUp"
           @pointerleave="handlePreviewPointerUp"
           @pointercancel="handlePreviewPointerUp"
         >
-            <transition name="fade">
-              <div v-if="isProcessing" class="absolute inset-0 z-50 flex items-center justify-center bg-base-100/55 backdrop-blur-sm">
-                <span class="loading loading-dots text-primary"></span>
-              </div>
-            </transition>
+
+            <!-- Filmstrip navigation: the previous picture stays exactly in place until the
+                 next one is decoded, then swaps in one frame (no stretched preview). -->
+            <div v-if="!imageReady && heldImage" ref="heldHostRef"
+              class="absolute inset-0 pointer-events-none"></div>
+
+
+            <span v-if="comparisonMode !== 'single'" class="absolute left-2 top-2 z-40 bg-base-300/80 px-1 rounded pointer-events-none">{{ comparisonMode === 'original' ? 'Edited' : 'Selected' }}</span>
+            <!-- Retouch: the blemish (target) and the area copied over it (source) -->
+            <template v-if="activeTool === 'Retouch'">
+              <div v-for="ring in retouchRings" :key="ring.kind" :data-retouch-ring="ring.kind"
+                class="absolute z-40 rounded-full pointer-events-none border-2"
+                :class="ring.kind === 'target' ? 'border-red-500' : 'border-dashed border-sky-400'"
+                :style="{ left: `${ring.x - ring.r}px`, top: `${ring.y - ring.r}px`, width: `${ring.r * 2}px`, height: `${ring.r * 2}px`, boxShadow: '0 0 0 1px rgba(0,0,0,0.5)' }"></div>
+            </template>
+            <span v-if="comparisonMode !== 'single'" class="absolute left-2 top-8 z-40 bg-base-100/90 text-base-content px-1.5 rounded-full text-[10px] font-semibold pointer-events-none"
+              data-comparison-filter-pill="selected">{{ selectedPaneFilterPill }}</span>
 
             <template v-if="imageSrc">
               <figure
@@ -95,13 +152,18 @@
                 @load="onImageLoad"
                 @click="pickEditorPoint"
               />
+              <EffectMask v-if="maskMode && imageReady" ref="effectMaskRef" :width="imageWidth" :height="imageHeight"
+                :layer-style="maskLayerStyle" :effect-src="effectPreviewSrc" :mode="maskTool" :brush="maskBrush"
+                :feather="maskFeather" :inverted="maskInverted" :show-overlay="maskOverlay" :scale="scale" :to-image="clientToImage"
+                :region="maskRegion" :points="selectPoints" :outline="activeTool === 'Automask'" :hover-src="hoverMaskSrc"
+                @select-click="onSelectClick" @select-hover="onSelectHover" @select-leave="onSelectLeave" />
             </template>
 
-            <div v-if="cropStatus === 1 || cropApplied"
+            <div v-if="(cropStatus === 1 && (activeTool === 'Crop' ? cropBoxDrawn : true)) || (!activeTool && cropApplied)"
               :class="[
-                cropStatus === 1 ? 'crop-box-active' : 'crop-box-done',
+                cropStatus === 1 ? (isPreviewingCrop ? 'crop-box-preview' : 'crop-box-active') : 'crop-box-done',
                 isResizing ? 'no-transition' : '',
-                cropStatus === 1
+                cropStatus === 1 && !isPreviewingCrop
                   ? (
                     cropBoxFixed
                       ? (isDragging ? 'cursor-grabbing no-transition' : 'cursor-grab')
@@ -113,21 +175,11 @@
                 cropBoxStyle,
                 activeEditorTab === 'adjust' ? { pointerEvents: 'none', zIndex: 30 } : { zIndex: 40 }
               ]"
-              @mousedown="cropStatus===1 ? startDrag('move', $event) : null"
+              @mousedown.stop="cropStatus===1 && !isPreviewingCrop ? startDrag('move', $event) : null"
               @dblclick="clickDoCrop"
             >
-              <template v-if="cropStatus===1 && (isDragging || isRotating)">
-                <div v-if="isDragging" class="crop-dimensions-display">
-                  {{ crop.width }} x {{ crop.height }}
-                </div>
-                <div class="grid-lines">
-                  <div class="grid-line-h grid-line-h-1"></div>
-                  <div class="grid-line-h grid-line-h-2"></div>
-                  <div class="grid-line-v grid-line-v-1"></div>
-                  <div class="grid-line-v grid-line-v-2"></div>
-                </div>
-              </template>
-              <template v-if="cropStatus===1 && !cropBoxFixed">
+              <div v-if="activeTool === 'Straighten' && cropStatus === 1" data-straighten-grid class="straighten-grid"></div>
+              <template v-if="cropStatus===1 && !cropBoxFixed && !isPreviewingCrop">
                 <div class="drag-handle top-left" @mousedown.stop="startDrag('top-left', $event)"></div>
                 <div class="drag-handle top" @mousedown.stop="startDrag('top', $event)"></div>
                 <div class="drag-handle top-right" @mousedown.stop="startDrag('top-right', $event)"></div>
@@ -140,106 +192,285 @@
             </div>
         </div>
 
-        <!-- straighten angle + crop confirm/cancel -->
-        <div
-          v-if="cropStatus === 1"
-          class="w-full max-w-2xl shrink-0 flex items-center gap-3 px-4"
-        >
-          <div
-            class="flex items-center gap-3 flex-1 min-w-0"
-            @pointerdown="isRotating = true"
-            @pointerup="isRotating = false"
-            @pointercancel="isRotating = false"
-          >
-            <span class="text-xs font-medium text-base-content/50 shrink-0">{{ $t('msgbox.image_editor.angle') }}</span>
-            <AngleSlider
-              v-model="cropAngleModel"
-              :min="-45"
-              :max="45"
-              :step="1"
-              class="flex-1 min-w-0"
-            />
-          </div>
+        </div>
 
-          <div class="w-px h-5 bg-base-content/10 shrink-0"></div>
-
-          <div class="flex items-center gap-1 shrink-0">
-            <TButton
-              buttonSize="small"
-              :icon="IconClose"
-              :tooltip="$t('msgbox.image_editor.cancel_crop')"
-              @click="clickCancelCrop"
+        <!-- Straighten: angle slider and Apply / Cancel right under the photo (LAP-102) -->
+        <div v-if="activeTool === 'Straighten'" data-straighten-bar class="shrink-0 w-full max-w-[720px] flex items-center gap-2 text-[11px]"
+          @pointerdown="isRotating = true" @pointerup="isRotating = false" @pointercancel="isRotating = false">
+          <AngleSlider v-model="cropAngleModel" :min="-20" :max="20" :step="0.1" :minor-step="1" :major-step="5" :snap-zero="0.05"
+            :aria-label="$t('msgbox.image_editor.angle')" class="flex-1 min-w-0" />
+          <div class="flex items-center gap-0.5 shrink-0">
+            <input
+              ref="straightenInputRef"
+              v-model="straightenAngleInput"
+              type="text"
+              inputmode="decimal"
+              class="input input-bordered input-xs w-14 text-right font-mono text-xs px-1 h-7"
+              placeholder="0.0"
+              aria-label="Straighten angle"
+              data-testid="straighten-angle-input"
+              @keydown.stop="onStraightenInputKeyDown"
+              @blur="onStraightenInputBlur"
+              @focus="onStraightenInputFocus"
             />
-            <TButton
-              buttonSize="small"
-              :icon="IconOk"
-              :selected="true"
-              :tooltip="$t('msgbox.image_editor.confirm_crop')"
-              @click="clickDoCrop"
-            />
+            <span class="text-xs font-mono text-base-content/70">°</span>
           </div>
+          <button class="btn btn-sm btn-primary w-20" data-testid="straighten-apply" @click="clickDoCrop();activeTool=''">Apply</button>
+          <button class="btn btn-sm btn-ghost w-20" data-testid="straighten-cancel" @click="cancelActiveTool">Cancel</button>
         </div>
 
       </div>
 
-      <aside class="order-first w-[278px] shrink-0 flex flex-col min-h-0 text-[11px]" data-testid="photo-editor">
+      <aside class="order-first w-[278px] shrink-0 flex flex-col min-h-0 text-[11px]" data-testid="picasa-editor">
+        <!-- Back to the library alone on the top row; Undo / Redo sit under the tools, away from it -->
+        <div v-if="embedded" class="flex items-center mb-1.5" data-editor-header>
+          <button class="btn btn-sm btn-ghost shrink-0 px-1.5 text-[11px] gap-0.5" data-testid="editor-back" @click="clickCancel"><span aria-hidden="true">‹</span><span>Back to Library</span></button>
+        </div>
         <div role="tablist" class="flex border-b border-base-content/15">
-          <button v-for="tab in editorTabs" :key="tab.key" role="tab" :aria-selected="editorTab===tab.key"
+          <button v-for="tab in editorTabs" :key="tab.key" role="tab" :aria-selected="editorTab===tab.key" :title="editorTabShortcut(tab.key)"
             class="flex-1 px-1 py-2 border border-base-content/10 rounded-t text-[11px]"
             :class="editorTab===tab.key ? 'bg-base-100 font-bold' : 'bg-base-300'"
             :disabled="cropStatus===1 || isProcessing" @click="editorTab=tab.key">{{ tab.label }}</button>
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto p-2" :class="isProcessing ? 'pointer-events-none opacity-60' : ''">
+          <!-- LAP-107: Automask step 1, where it applies: always the first row -->
+          <template v-if="activeTool && MASK_EFFECTS.includes(activeTool)">
+            <p class="font-bold" data-automask-step="1">1. Where it applies</p>
+            <p class="text-[10px] opacity-70 mb-1">Point at the photo and click an area, or pick one here.</p>
+            <div class="flex flex-wrap items-center gap-1" data-testid="effect-apply-to" role="group" aria-label="Where it applies">
+              <button class="btn btn-xs" :class="!maskMode && !lightKeepsMask ? 'btn-active' : ''" data-apply="whole" :aria-pressed="!maskMode && !lightKeepsMask"
+                :title="`The whole photo (${regionKey('whole')})`" @click="chooseWholePhoto()">Whole photo<span class="opacity-50 ml-0.5">{{ regionKey('whole') }}</span></button>
+              <button v-for="r in MASK_REGIONS" :key="r.key" class="btn btn-xs" :class="(maskMode && maskRegion === r.key) || (lightKeepsMask && lightDraft.region === r.key) ? 'btn-active' : ''"
+                :data-apply="r.key" :aria-pressed="maskMode && maskRegion === r.key" :disabled="!!selectDisabledReason || isProcessing"
+                :title="selectDisabledReason || `${r.title} (${regionKey(r.key)})`" @click="applyRegion(r.key)">{{ selectBusy && selectPreparing && maskRegion === r.key ? 'Preparing selection...' : r.label }}<span class="opacity-50 ml-0.5">{{ regionKey(r.key) }}</span></button>
+              <button class="btn btn-xs" :class="maskMode && maskTool === 'select' && !maskRegion ? 'btn-active' : ''" data-apply="select"
+                :aria-pressed="maskMode && maskTool === 'select' && !maskRegion" :disabled="!!selectDisabledReason || isProcessing"
+                :title="selectDisabledReason || 'Click an object in the photo to select it; Shift+click adds, Alt+click takes away (S)'" @click="startMaskTool('select')">Click to select<span class="opacity-50 ml-0.5">S</span></button>
+              <button class="btn btn-xs" :class="maskMode && maskTool === 'paint' ? 'btn-active' : ''" data-apply="brush" data-testid="effect-mask"
+                :aria-pressed="maskMode && maskTool === 'paint'" title="Brush: touch up the selection, right-drag or Alt erases (B)" @click="startMaskTool('paint')">Brush<span class="opacity-50 ml-0.5">B</span></button>
+              <button class="btn btn-xs" :class="maskMode && maskTool === 'gradient' ? 'btn-active' : ''" data-apply="gradient" data-testid="effect-mask-gradient"
+                :aria-pressed="maskMode && maskTool === 'gradient'" title="Linear gradient with two handles (G)" @click="startMaskTool('gradient')">Gradient<span class="opacity-50 ml-0.5">G</span></button>
+            </div>
+            <p v-if="!maskMode" class="text-[10px] opacity-70" data-light-hint>{{ lightKeepsMask ? `Applies to: ${lightLabel(lightDraft)} (kept). Pick another area to change it.` : 'Applies to the whole photo.' }}</p>
+            <p v-if="maskMode" class="text-[10px] opacity-70" data-mask-hint>
+              <template v-if="selectBusy && selectPreparing">Preparing selection...</template>
+              <template v-else-if="selectBusy">Selecting…</template>
+              <template v-else-if="selectError">{{ selectError }}</template>
+              <template v-else-if="maskTool === 'select'">The area under the pointer lights up; click to pick it. Shift+click adds, Alt+click takes away.</template>
+              <template v-else-if="maskTool === 'gradient'">Drag the two handles: full effect at the white one, none at the black one.</template>
+              <template v-else>Paint to add; right-drag or Alt erases. [&nbsp;]&nbsp;brush&nbsp;{{ Math.round(maskBrush * 100) }}%.</template>
+              Shift+[&nbsp;]&nbsp;feather&nbsp;{{ Math.round(maskFeather * 1000) / 10 }}% · I&nbsp;invert{{ maskInverted ? ' (on)' : '' }} · X&nbsp;show&nbsp;mask · Backspace&nbsp;clear
+            </p>
+          </template>
           <template v-if="!activeTool">
             <template v-if="editorTab==='basic'">
-              <div class="grid grid-cols-3 gap-x-1 gap-y-3 py-2">
-                <button v-for="tool in basicTools" :key="tool" class="flex flex-col items-center gap-1 hover:bg-base-100 rounded py-1"
-                  :data-editor-tool="tool" :disabled="cropStatus===1 || !imageReady" @click="selectEditTool(tool)">
-                  <span class="w-12 h-8 flex items-center justify-center text-base-content/70">
-                    <span v-if="tool==='Text'" class="font-serif font-bold text-3xl">T</span>
-                    <component v-else :is="basicToolIcons[tool]" class="w-7 h-7" />
-                  </span>
-                  <span class="leading-3 text-center">{{ tool }}</span>
-                </button>
+              <div class="grid grid-cols-3 gap-x-1 gap-y-2 pt-1 pb-2">
+                <template v-for="tool in basicTools" :key="tool">
+                  <button class="flex flex-col items-center gap-1 hover:bg-base-100 rounded py-1"
+                    :class="tool === &quot;I'm Feeling Lucky&quot; && savedEditState.auto_enhance ? 'bg-primary/15 ring-1 ring-primary/40' : ''"
+                    :data-editor-tool="tool" :disabled="cropStatus===1 || !imageReady" @click="selectPicasaTool(tool)">
+                    <span class="w-12 h-8 flex items-center justify-center text-base-content/70">
+                      <span v-if="tool==='Text'" class="font-serif font-bold text-3xl">T</span>
+                      <component v-else :is="basicToolIcons[tool]" class="w-7 h-7" />
+                    </span>
+                    <span class="leading-3 text-center">{{ tool }}</span>
+                  </button>
+                  <!-- I'm Feeling Lucky is a six-step cycle: each click moves one step (LAP-043 / LAP-085);
+                       each step is also its own button, one click and one undoable step (LAP-100).
+                       The styles sit straight under the Lucky row, a notch pointing up at Lucky (LAP-105). -->
+                  <div v-if="tool==='Auto Color'" class="col-span-3 relative -mt-1 rounded border border-base-content/20 bg-base-300/60 px-1.5 pt-1.5 pb-1"
+                    data-lucky-cycle title="I'm Feeling Lucky: 5 styles + Original. Click a style, or click I'm Feeling Lucky to move to the next one.">
+                    <span aria-hidden="true" class="absolute -top-[5px] left-[calc(16.67%-5px)] w-2.5 h-2.5 rotate-45 border-l border-t border-base-content/20 bg-base-300"></span>
+                    <div class="relative flex items-center gap-1">
+                      <button v-for="step in LUCKY_CYCLE" :key="step.index" type="button" :data-lucky-step="step.index"
+                        :data-active="step.index === activeLuckyStep ? 'true' : undefined" :aria-pressed="step.index === activeLuckyStep"
+                        class="flex-1 h-7 rounded border text-[11px]"
+                        :class="step.index === activeLuckyStep ? 'bg-primary text-primary-content border-primary font-bold' : 'border-base-content/25 text-base-content/80 hover:bg-base-100 hover:border-base-content/50'"
+                        :disabled="cropStatus===1 || !imageReady" :title="step.title" @click="selectLuckyStep(step.index)">{{ step.short }}</button>
+                    </div>
+                    <span class="block text-center text-[10px] text-primary font-medium mt-0.5" data-lucky-cycle-label>{{ luckyCycleLabel }}</span>
+                  </div>
+                </template>
+                <!-- Rotation in the third cell of the last row, each button labelled (LAP-105) -->
+                <div class="flex items-start justify-center gap-0.5" data-editor-rotation>
+                  <button v-for="r in ROTATE_BUTTONS" :key="r.degree" type="button" class="flex-1 flex flex-col items-center gap-1 hover:bg-base-100 rounded py-1"
+                    :data-editor-tool="r.degree > 0 ? 'Rotate right' : undefined" :data-rotate="r.degree"
+                    :aria-label="r.label" :title="`${r.label} (${getShortcutLabel(r.shortcut)})`"
+                    :disabled="cropStatus===1 || cropApplied" @click="clickRotate(r.degree)">
+                    <span class="h-8 flex items-center justify-center text-base-content/70"><component :is="r.icon" class="w-6 h-6" /></span>
+                    <span class="leading-3 text-center">{{ r.label }}</span>
+                  </button>
+                </div>
               </div>
-              <label class="block text-center mt-3">Fill Light
-                <input aria-label="Fill Light" type="range" min="0" max="100" v-model.number="editTools.fillLight"
-                  class="range range-xs w-48 mt-1" @input="editTools.lastStep='Fill Light'" />
+              <label class="relative block text-center mt-1">Fill Light
+                <input aria-label="Fill Light" type="range" min="0" max="100" v-model.number="picasaTools.fillLight"
+                  class="range range-xs w-48 mt-1" title="Double-click to reset" @input="picasaTools.lastStep='Fill Light'"
+                  @change="onSliderChange" @dblclick="resetFillLight" />
+                <span class="absolute right-1 -top-3.5 text-[10px] tabular-nums text-base-content/60 pointer-events-none" data-fill-light-value>{{ picasaTools.fillLight }}</span>
               </label>
+              <button class="btn btn-sm btn-ghost w-full mt-3" :disabled="cropStatus === 1 || isProcessing"
+                @click="exportDialog?.showModal()">Export…</button>
             </template>
             <template v-else-if="editorTab==='tuning'">
-              <label v-for="control in tuningTools" :key="control.key" class="block text-center my-4">{{ control.label }}
-                <input :aria-label="control.label" type="range" :min="control.min" max="100" v-model.number="editTools[control.key]"
-                  :title="control.key==='highlights' ? 'Brightens highlights or darkens blown areas; detail lost at capture cannot be restored.' : undefined"
-                  class="range range-xs w-48 mt-1" @input="editTools.lastStep=control.label" />
+              <label v-for="control in tuningTools" :key="control.key" class="relative block text-center my-4">{{ control.label }}
+                <input :aria-label="control.label" type="range" :min="control.min" max="100" v-model.number="picasaTools[control.key]"
+                  :title="control.key==='highlights' ? 'Brightens highlights or darkens blown areas; detail lost at capture cannot be restored.' : control.key==='fillLight' ? 'Double-click to reset' : undefined"
+                  class="range range-xs w-48 mt-1" @input="picasaTools.lastStep=control.label" @change="onSliderChange"
+                  @dblclick="control.key==='fillLight' && resetFillLight()" />
+                <span v-if="control.key==='fillLight'" class="absolute right-1 -top-3.5 text-[10px] tabular-nums text-base-content/60 pointer-events-none" data-fill-light-value>{{ picasaTools.fillLight }}</span>
+                <!-- Picasa's whitept (LAP-071): click a neutral area, the temperature follows -->
+                <button v-if="control.key==='temperature'" type="button" class="btn btn-xs btn-ghost btn-square align-middle ml-1"
+                  :class="activeTool==='Temperature Picker' ? 'btn-active' : ''" title="Pick neutral color" aria-label="Pick neutral color"
+                  data-temperature-eyedropper :disabled="!imageReady" @click.prevent.stop="activeTool='Temperature Picker'">
+                  <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14.5 4.5l5 5M17 2.5a2.1 2.1 0 0 1 3 3l-2 2-3-3z" /><path d="M15 7l-9.5 9.5L4 20l3.5-1.5L17 9" />
+                  </svg>
+                </button>
               </label>
               <div class="text-center mt-3">Neutral Color Picker<br />
                 <button class="btn btn-sm btn-ghost mt-1" :class="activeTool==='Neutral Color Picker' ? 'btn-active' : ''"
                   @click="activeTool='Neutral Color Picker'">Pick a neutral color</button>
               </div>
             </template>
-            <div v-else class="grid grid-cols-3 gap-1 py-2">
-              <button v-for="effect in effectTools" :key="effect" class="border border-base-content/15 p-1 hover:bg-base-100 rounded-sm"
-                :data-editor-tool="effect" :disabled="!imageReady" @click="selectEditTool(effect)">
-                <img :src="imageSrc" class="w-full h-12 object-cover" :style="{filter:toolPreview(effect)}" />
-                <span class="block leading-3 mt-1">{{ effect }}</span>
-              </button>
+            <div v-else data-effects-pages>
+              <!-- Three pages of up to twelve effects, so none needs scrolling (LAP-100) -->
+              <div role="tablist" aria-label="Effects pages" class="flex gap-1">
+                <button v-for="(page, i) in effectPages" :key="i" role="tab" :aria-selected="effectPage===i" :data-effects-page="i+1"
+                  class="flex-1 h-4 rounded-sm border text-[10px] leading-[14px]"
+                  :class="effectPage===i ? 'bg-base-100 border-base-content/30 font-bold' : 'border-base-content/15 text-base-content/60 hover:bg-base-100'"
+                  :title="`Effects ${i+1} of ${effectPages.length}`" @click="effectPage=i">{{ i+1 }}</button>
+              </div>
+              <div class="grid grid-cols-3 gap-1 py-1">
+                <button v-for="effect in effectPages[effectPage]" :key="effect" class="border border-base-content/15 p-1 hover:bg-base-100 rounded-sm"
+                  :data-editor-tool="effect" :disabled="!imageReady" @click="selectPicasaTool(effect)">
+                  <img :src="imageSrc" class="w-full h-11 object-cover" :style="{filter:toolPreview(effect)}" />
+                  <span class="block leading-3 mt-1">{{ effect }}</span>
+                </button>
+              </div>
             </div>
           </template>
-          <div v-else class="space-y-3 py-2">
-            <h3 class="font-bold text-center text-sm">{{ activeTool }}</h3>
-            <template v-if="activeTool==='Crop' || activeTool==='Straighten'">
-              <label class="block">Crop shape
-                <select v-model="config.imageEditor.cropShape" class="select select-xs w-full" @change="onChangeCropShape">
-                  <option v-for="option in cropShapeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
-              </label>
-              <p>Drag the frame to crop. Use the angle slider to straighten.</p>
-              <button class="btn btn-sm" @click="clickDoCrop();activeTool=''">Apply</button>
-              <button class="btn btn-sm btn-ghost" @click="restoreEditorControls();activeTool=''">Cancel</button>
+          <div v-else :class="activeTool === 'Crop' ? 'py-1' : 'space-y-3 py-2'">
+            <h3 v-if="activeTool !== 'Crop'" class="font-bold text-center text-sm flex items-center justify-center gap-1.5">
+              <component v-if="activeTool === 'Straighten'" :is="IconStraighten" class="w-5 h-5" data-straighten-title-icon />{{ activeTool }}
+            </h3>
+            <template v-if="activeTool==='Straighten'">
+              <p class="text-center px-1">Line the photo up with the grid using the slider under it. ← / → nudge 0.1°, Shift 1°.</p>
+            </template>
+            <template v-else-if="activeTool==='Crop'">
+              <div class="crop-panel-container">
+                <!-- Header: Icon + Heading -->
+                <div class="crop-panel-header">
+                  <img :src="picasaCropIcon" class="crop-header-icon" alt="" />
+                  <span class="crop-header-title">Crop Photo</span>
+                </div>
+
+                <!-- Instruction Text -->
+                <p class="crop-instruction-text">
+                  Select a dimension below and then click and drag on the image to select the portion of the image you wish to crop.
+                </p>
+
+                <!-- Dimension Dropdown -->
+                <div class="crop-dropdown-wrap">
+                  <select
+                    v-model="selectedAspectPresetId"
+                    class="crop-dimension-select"
+                    data-testid="crop-aspect-select"
+                    @change="onChangeCropPreset"
+                  >
+                    <option v-for="preset in picasaAspectPresets" :key="preset.id" :value="preset.id">
+                      {{ preset.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <!-- Row of 3 Suggested Crop Thumbnails -->
+                <div class="crop-thumbnails-row">
+                  <button
+                    v-for="(suggestion, idx) in cropSuggestions"
+                    :key="idx"
+                    type="button"
+                    class="crop-thumbnail-card"
+                    :class="{ 'crop-thumbnail-card-active': activeSuggestionIndex === idx }"
+                    :title="suggestion.label"
+                    @click="applyCropSuggestion(idx)"
+                  >
+                    <div class="crop-thumbnail-inner">
+                      <img
+                        :src="displayImageSrc || imageSrc"
+                        class="crop-thumbnail-img"
+                        :style="{ objectPosition: suggestion.objectPosition }"
+                        alt=""
+                      />
+                    </div>
+                  </button>
+                </div>
+
+                <!-- Rotate + Preview buttons side by side -->
+                <div class="crop-btn-row">
+                  <button
+                    type="button"
+                    class="picasa-btn flex-1"
+                    :disabled="!cropBoxDrawn || selectedAspectPresetId === '1:1'"
+                    data-testid="crop-rotate-aspect"
+                    @click="toggleCropOrientation"
+                  >
+                    Rotate
+                  </button>
+                  <button
+                    type="button"
+                    class="picasa-btn flex-1"
+                    :disabled="!cropBoxDrawn"
+                    data-testid="crop-preview"
+                    @click="toggleCropPreview"
+                  >
+                    {{ isPreviewingCrop ? 'Back' : 'Preview' }}
+                  </button>
+                </div>
+
+                <!-- Reset centered below -->
+                <div class="crop-btn-row-center">
+                  <button
+                    type="button"
+                    class="picasa-btn crop-btn-reset"
+                    :disabled="!cropBoxDrawn"
+                    data-testid="crop-reset"
+                    @click="resetCropBox"
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <!-- Apply + Cancel side by side -->
+                <div class="crop-btn-row">
+                  <button
+                    type="button"
+                    class="picasa-btn flex-1"
+                    data-testid="crop-apply"
+                    @click="clickDoCrop(); activeTool=''"
+                  >
+                    <span>Apply</span>
+                    <svg class="crop-btn-icon" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="7.5" :fill="cropBoxDrawn ? '#3da851' : '#b7d9bd'" />
+                      <path d="M4.5 8.2l2.5 2.5 4.5-5" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="picasa-btn flex-1"
+                    data-testid="crop-cancel"
+                    @click="clickCancelCrop(); restoreEditorControls(); activeTool=''"
+                  >
+                    <span>Cancel</span>
+                    <svg class="crop-btn-icon" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="7.5" fill="#cc3333" />
+                      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </template>
             <template v-else-if="activeTool==='Retouch'">
-              <p>{{ retouchTarget ? 'Click an area to copy over the blemish.' : 'Click the blemish you want to retouch.' }}</p>
+              <p>{{ retouchTarget ? (retouchSource ? 'The photo shows the result. Click again to pick another source area.' : 'Click an area to copy over the blemish.') : 'Click the blemish you want to retouch.' }}</p>
               <label>Brush size<input aria-label="Brush size" type="range" v-model.number="brushSize" min="1" max="20" class="range range-xs" /></label>
               <button class="btn btn-sm" :disabled="!retouchSource" @click="applyRetouch">Apply</button>
               <button class="btn btn-sm btn-ghost" @click="activeTool=''">Cancel</button>
@@ -249,80 +480,142 @@
               <input aria-label="Text" v-model="toolText" class="input input-sm w-full" />
               <label>Font<select aria-label="Font" v-model="toolFont" class="select select-sm w-full"><option>Arial</option><option>Helvetica</option><option>Consolas</option></select></label>
               <label>Size<input aria-label="Text size" v-model.number="textSize" type="number" min="12" max="96" class="input input-sm w-16" /></label>
+              <div class="flex gap-1" role="group" aria-label="Text style">
+                <button type="button" class="btn btn-xs font-bold" :class="textBold ? 'btn-active' : ''" aria-label="Bold" :aria-pressed="textBold" @click="textBold = !textBold">B</button>
+                <button type="button" class="btn btn-xs italic font-serif" :class="textItalic ? 'btn-active' : ''" aria-label="Italic" :aria-pressed="textItalic" @click="textItalic = !textItalic">I</button>
+                <button type="button" class="btn btn-xs" :class="textOutline ? 'btn-active' : ''" aria-label="Outline" :aria-pressed="textOutline" @click="textOutline = !textOutline">Outline</button>
+              </div>
               <label>Color<input aria-label="Text color" v-model="effectColor" type="color" /></label>
               <button class="btn btn-sm" :disabled="!toolText" @click="applyText">Apply</button>
               <button class="btn btn-sm btn-ghost" @click="activeTool=''">Cancel</button>
+            </template>
+            <template v-else-if="activeTool==='Automask'">
+              <div class="flex items-center justify-between mt-3">
+                <p class="font-bold" data-light-panel>2. Adjust{{ lightEditing >= 0 ? ` (Automask ${lightEditing + 1})` : '' }}</p>
+                <button class="btn btn-xs" data-testid="automask-auto" :disabled="lightAutoDisabled"
+                  :title="lightKeepsMask ? 'Pick the area again to use Auto' : 'Set the four sliders from the brightness of this area'" @click="autoLight">Auto</button>
+              </div>
+              <label v-for="sl in LIGHT_SLIDERS" :key="sl.key" class="block my-1.5" :title="sl.title">{{ sl.label }}
+                <span class="float-right tabular-nums">{{ lightDraft[sl.key] > 0 ? '+' : '' }}{{ lightDraft[sl.key] }}</span>
+                <span class="relative block">
+                  <span class="absolute left-1/2 top-0 bottom-0 w-px bg-base-content/50 pointer-events-none z-10" aria-hidden="true"></span>
+                  <input :aria-label="`Automask ${sl.label}`" :data-light-slider="sl.key" type="range" min="-100" max="100" step="1"
+                    v-model.number="lightDraft[sl.key]" class="range range-xs w-full [--range-fill:0]" @dblclick="lightDraft[sl.key] = 0" />
+                </span>
+              </label>
+              <p class="text-[10px] opacity-60">Left darker, right lighter. Double-click a slider to reset it.</p>
+              <div class="flex gap-1 mt-2" data-automask-actions>
+                <button class="btn btn-sm btn-primary flex-1" data-testid="light-apply" :disabled="selectBusy" @click="commitLight">Apply<span class="opacity-70 ml-1 text-[10px]">Enter</span></button>
+                <button class="btn btn-sm flex-1" data-testid="light-cancel" @click="cancelActiveTool">Cancel<span class="opacity-70 ml-1 text-[10px]">Esc</span></button>
+              </div>
+              <details class="mt-2" data-automask-curve :open="lightCurveBent">
+                <summary class="cursor-pointer text-[11px]">Curve (optional)</summary>
+                <PointCurves :model-value="lightCurveModel" :channels="['rgb']" :result="lightResult"
+                  @preview="lightCurvePreview = $event ? $event.rgb : null" @change="onLightCurve" />
+              </details>
             </template>
             <template v-else-if="activeTool==='Neutral Color Picker'">
               <p>Click a white or gray area of the photo.</p>
               <button class="btn btn-sm btn-ghost" @click="activeTool=''">Cancel</button>
             </template>
+            <template v-else-if="activeTool==='Temperature Picker'">
+              <p>Click something in the photo that should be white or gray: Color Temperature is set so it turns neutral.</p>
+              <button class="btn btn-sm btn-ghost" @click="activeTool=''">Cancel</button>
+            </template>
             <template v-else>
               <label>Amount<input aria-label="Effect amount" v-model.number="effectAmount" type="range" min="0" max="100" class="range range-xs w-full" /></label>
               <label v-if="['Tint','Filtered B&W','Graduated Tint'].includes(activeTool)">Color<input aria-label="Effect color" v-model="effectColor" type="color" /></label>
-              <p v-if="['Soft Focus','Focal B&W'].includes(activeTool)">Click the photo to choose the center.</p>
-              <button class="btn btn-sm" @click="applyEditEffect">Apply</button>
+              <p v-if="['Soft Focus','Focal B&W','Focal Zoom'].includes(activeTool)">Click the photo to choose the center.</p>
+              <button class="btn btn-sm" @click="maskMode ? commitMask() : applyPicasaEffect()">Apply</button>
               <button class="btn btn-sm btn-ghost" @click="activeTool=''">Cancel</button>
             </template>
           </div>
+          <!-- LAP-107: the Automask list - what is applied, each switchable, reopenable, removable -->
+          <div v-if="activeTool === 'Automask' || (!activeTool && editorTab === 'tuning')" class="mt-4 pt-2 border-t border-base-content/15" data-light-list>
+            <div class="flex items-center justify-between gap-1">
+              <span class="font-bold">{{ activeTool === 'Automask' ? '3. Your Automasks' : 'Automask' }}</span>
+              <span v-if="!activeTool" class="flex gap-1">
+                <button class="btn btn-xs" data-testid="automask-balance" :disabled="!imageReady || cropStatus===1 || isProcessing"
+                  title="Find the too-dark and too-bright areas and balance each one (one undo step)" @click="autoBalance">{{ balancing ? 'Balancing…' : 'Auto Balance' }}</button>
+                <button class="btn btn-xs" data-testid="light-add" :disabled="!imageReady || cropStatus===1"
+                  :title="`Add an Automask: pick an area, then lift or hold back its brightness (${getShortcutLabel('editor.automask')})`" @click="openLight(-1)">Add<span class="opacity-50 ml-0.5">{{ getShortcutLabel('editor.automask') }}</span></button>
+              </span>
+            </div>
+            <p v-if="lightStatus" class="text-[10px] mt-1" data-automask-status>{{ lightStatus }}</p>
+            <p v-if="!lightList.length" class="text-[10px] opacity-70 mt-1">None yet. Auto Balance finds the too-dark and too-bright areas; Add picks one yourself.</p>
+            <div v-for="(adj, i) in lightList" :key="i" class="flex items-center gap-1 mt-1 rounded px-0.5" :data-light-item="i"
+              :class="activeTool === 'Automask' && i === lightEditing ? 'bg-primary/15' : ''">
+              <input type="checkbox" class="checkbox checkbox-xs" :checked="adj.enabled !== false" :aria-label="`Use Automask ${i + 1}`"
+                :title="adj.enabled === false ? 'Off: switch it on' : 'On: switch it off'" @change="toggleLight(i)" />
+              <button class="flex-1 min-w-0 text-left truncate hover:underline" :class="adj.enabled === false ? 'opacity-50 line-through' : ''"
+                :title="`Change: ${lightSummary(adj)}`" @click="openLight(i)">{{ i + 1 }}. {{ lightLabel(adj) }}: {{ lightSummary(adj) }}</button>
+              <span class="text-[10px] opacity-60 shrink-0">{{ adj.enabled === false ? 'off' : 'on' }}</span>
+              <button class="btn btn-xs btn-ghost px-1" :aria-label="`Remove Automask ${i + 1}`" title="Remove" @click="removeLight(i)">×</button>
+            </div>
+          </div>
         </div>
         <div class="shrink-0 px-2 pb-2">
-          <div class="flex gap-1 mt-3">
-            <button class="btn btn-sm flex-1 text-[11px] px-1" :disabled="!savedEditState.history?.length || isProcessing"
-              data-testid="editor-undo" @click="queueHistory('undo')">{{ savedEditState.history?.length ? `Undo ${historyStepName(savedEditState)}` : 'Undo' }}</button>
-            <button class="btn btn-sm flex-1 text-[11px] px-1" :disabled="!savedEditState.redo?.length || isProcessing"
-              data-testid="editor-redo" @click="queueHistory('redo')">{{ savedEditState.redo?.length ? `Redo ${historyStepName(savedEditState.redo.at(-1))}` : 'Redo' }}</button>
+          <!-- A long step name wraps to a second line inside the button rather than being cut off;
+               normal weight keeps the usual ones ("Undo I'm Feeling Lucky") on one line (LAP-105) -->
+          <div class="flex gap-1 mt-3" data-editor-history>
+            <button class="btn btn-sm flex-1 min-w-0 text-[11px] px-1 relative" :disabled="!savedEditState.history?.length || isProcessing"
+              :title="savedEditState.history?.length ? `Undo ${historyStepName(savedEditState)}` : 'Undo'"
+              data-testid="editor-undo" @click="queueHistory('undo')"><span class="leading-3 break-words font-normal">{{ savedEditState.history?.length ? `Undo ${historyStepName(savedEditState)}` : 'Undo' }}</span><svg v-if="savedEditState.history?.length && stepMasked(savedEditState)" data-mask-badge class="absolute top-0.5 right-0.5" width="9" height="9" viewBox="0 0 10 10" aria-label="masked"><title>Applied through a mask</title><circle cx="5" cy="5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 .8A4.2 4.2 0 0 1 5 9.2Z" fill="currentColor"/></svg></button>
+            <button class="btn btn-sm flex-1 min-w-0 text-[11px] px-1 relative" :disabled="!savedEditState.redo?.length || isProcessing"
+              :title="savedEditState.redo?.length ? `Redo ${historyStepName(savedEditState.redo.at(-1))}` : 'Redo'"
+              data-testid="editor-redo" @click="queueHistory('redo')"><span class="leading-3 break-words font-normal">{{ savedEditState.redo?.length ? `Redo ${historyStepName(savedEditState.redo.at(-1))}` : 'Redo' }}</span><svg v-if="savedEditState.redo?.length && stepMasked(savedEditState.redo.at(-1))" data-mask-badge class="absolute top-0.5 right-0.5" width="9" height="9" viewBox="0 0 10 10" aria-label="masked"><title>Applied through a mask</title><circle cx="5" cy="5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 .8A4.2 4.2 0 0 1 5 9.2Z" fill="currentColor"/></svg></button>
           </div>
-          <button class="btn btn-sm btn-ghost w-full mt-1" :disabled="(!savedEditState.recipe && !savedEditState.auto_enhance) || isProcessing"
-            @click="saveRecipe('reset')">Undo All Edits</button>
+          <div class="flex gap-1 mt-1">
+            <button class="btn btn-sm btn-ghost flex-1 text-[11px] px-1" :disabled="(!savedEditState.recipe && !savedEditState.auto_enhance) || isProcessing"
+              @click="saveRecipe('reset')">Undo All Edits</button>
+            <button class="btn btn-sm btn-ghost flex-1 text-[11px] px-1" data-testid="editor-revert-original"
+              :title="hasOriginalCopy ? 'Bring back the original saved in .picasaoriginals and clear the edits' : 'Clear the edits and show the original photo'"
+              :disabled="!canRevertOriginal || isProcessing" @click="revertToOriginal">Revert to Original</button>
+          </div>
           <p v-if="historyError" role="alert" class="text-error">{{ historyError }}</p>
         </div>
         <div class="shrink-0 p-2 mt-2 border border-base-content/10 rounded" data-editor-histogram>
-          <ImageHistogram v-if="imageSrc" editor ref="histogramRef" :source="histogramSource" :adjustments="histogramAdjustments" :apply-adjustments="true" :crop="histogramCrop" :rotate="displayRotate" :flip-horizontal="isFlippedX" :flip-vertical="isFlippedY" />
-          <PointCurves :model-value="editTools.curves" :disabled="!imageReady || isProcessing || cropStatus===1"
+          <ImageHistogram v-if="histogramReady" editor ref="histogramRef" :source="histogramSource" :adjustments="histogramAdjustments" :apply-adjustments="true" :crop="histogramCrop" :rotate="displayRotate" :flip-horizontal="isFlippedX" :flip-vertical="isFlippedY" />
+          <!-- Curves fold away behind a toggle, closed by default; the choice is remembered (LAP-105) -->
+          <button type="button" class="flex items-center gap-1 mt-1 px-1 rounded hover:bg-base-100 text-[11px]" data-curves-toggle
+            :aria-expanded="config.imageEditor.curvesOpen" @click="config.imageEditor.curvesOpen = !config.imageEditor.curvesOpen">
+            <span aria-hidden="true" class="inline-block w-2.5 text-center">{{ config.imageEditor.curvesOpen ? '▾' : '▸' }}</span>Curves
+          </button>
+          <PointCurves v-if="config.imageEditor.curvesOpen" :model-value="picasaTools.curves" :disabled="!imageReady || isProcessing || cropStatus===1"
             @preview="curveDraft=$event" @change="commitCurves" />
           <p class="mt-1">{{ fileInfo?.e_model }} · {{ imageWidth }} × {{ imageHeight }}</p>
         </div>
       </aside>
     </div>
 
-    <div v-if="embedded" data-editor-filmstrip class="h-24 shrink-0 px-3">
-      <VirtualScroll ref="editorStrip" :items="folderFiles" :item-size="96" :grid-items="1"
-        direction="horizontal" :buffer="3" :emit-update="true" @update="hydrateFilmstrip">
-        <template #default="{ item }">
-          <button class="w-[88px] h-[88px] p-1 border-2 rounded-[2px] overflow-hidden"
-            :class="item.id === fileInfo?.id ? 'border-primary' : 'border-transparent'"
-            :data-file-id="item.id" :title="item.name || ''" @click="queuePhoto(item.id)">
-            <img v-if="item.file_path" :src="getThumbUrl(item.id, false, 0, item.modified_at, item.id === fileInfo?.id ? fileInfo.edits : item.edits)"
-              class="w-full h-full object-contain" draggable="false" alt="" />
-          </button>
-        </template>
-      </VirtualScroll>
-    </div>
+    <StatusBar v-if="fileInfo" is-embedded show-scale :show-position="embedded" class="shrink-0"
+      :selected-file="{ ...fileInfo, width: imageWidth || fileInfo.width, height: imageHeight || fileInfo.height }"
+      :selected-item-index="folderIndex" :total-file-count="folderFiles.length" :image-scale="scale" />
 
-    <!-- Bottom Bar -->
-    <div v-if="fileInfo" class="h-14 shrink-0 flex items-center justify-end px-4 gap-2">
+    <div v-if="fileInfo && !embedded" data-editor-toolbar class="h-10 shrink-0 flex items-center px-4 gap-2">
       <button
-        v-if="!embedded"
         class="px-4 py-1 rounded-box hover:bg-base-100 hover:text-base-content cursor-pointer text-sm mr-4"
         @click="clickCancel"
       >Back to Library</button>
-      <TButton :icon="IconRotateLeft" :disabled="cropStatus===1 || cropApplied" tooltip="Rotate left" @click="clickRotate(-90)" />
-      <TButton :icon="IconRotateRight" :disabled="cropStatus===1 || cropApplied" tooltip="Rotate right" data-editor-tool="Rotate right" @click="clickRotate(90)" />
-      <template v-if="fileInfo">
-        <select v-model="combinedFormatKey" class="select select-bordered select-xs" :disabled="cropStatus===1">
-          <option v-for="option in combinedFormatOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-        </select>
-      </template>
-
-        <div class="join">
-          <button
-            class="btn btn-sm btn-primary join-item px-4"
-            :disabled="cropStatus === 1 || isProcessing"
-            @click="clickExport"
-          >Save a Copy</button>
-        </div>
     </div>
+
+    <dialog ref="exportDialog" class="modal" aria-labelledby="editor-export-title">
+      <div class="modal-box max-w-sm bg-base-200 text-base-content">
+        <h2 id="editor-export-title" class="font-medium mb-3">Export a copy</h2>
+        <p class="text-sm mb-4">Create a separate image with your edits applied.</p>
+        <label class="flex items-center justify-between gap-3 text-sm">
+          Format and quality
+          <select v-model="combinedFormatKey" class="select select-bordered select-sm" aria-label="Format and quality">
+            <option v-for="option in combinedFormatOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
+        <form method="dialog" class="modal-action">
+          <button class="btn btn-sm" autofocus>Cancel</button>
+          <button type="button" class="btn btn-sm btn-primary" :disabled="cropStatus === 1 || isProcessing"
+            @click="exportDialog?.close(); clickExport()">Save a Copy</button>
+        </form>
+      </div>
+    </dialog>
   </div>
 
 
@@ -334,8 +627,11 @@ import { useRouter } from 'vue-router';
 import { useUIStore } from '@/stores/uiStore';
 import { useI18n } from 'vue-i18n';
 import { config } from '@/common/config';
-import { isWin, isLinux, setTheme, SCALE_VALUES, getFolderPath, getFileExtension, shortenFilename, getFullPath, combineFileName, getSelectOptions, getAssetSrc, getPreviewUrl, getThumbUrl, shouldUseBackendPreview, isEditableTarget, editHistoryAction } from '@/common/utils';
+import { isWin, isLinux, setTheme, SCALE_VALUES, getFolderPath, getFileExtension, shortenFilename, getFullPath, combineFileName, getSelectOptions, getAssetSrc, getPreviewUrl, getThumbUrl, getLapUrl, shouldUseBackendPreview, isEditableTarget, editHistoryAction, imageEditState } from '@/common/utils';
+import { getShortcutLabel, matchesShortcut } from '@/common/shortcuts';
+import { sliderSteps, latestDraft } from '@/common/sliderSteps';
 import { editImage, checkFileExists, getFileInfo, getQueryFileIds, getFilesByIds, saveImageRecipe, restoreImageRecipe } from '@/common/api';
+import { loadFolderSections } from '@/common/folderSections';
 import { getMaxInscribedRect, clampCenterInRotatedRect, maxResizeT } from '@/common/geometry';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit as tauriEmit, listen } from '@tauri-apps/api/event';
@@ -343,13 +639,16 @@ import { invoke } from '@tauri-apps/api/core';
 import { ask as askDialog } from '@tauri-apps/plugin-dialog';
 
 import TitleBar from '@/components/TitleBar.vue';
-import TButton from '@/components/TButton.vue';
+import StatusBar from '@/components/StatusBar.vue';
 import SliderInput from '@/components/SliderInput.vue';
 import AngleSlider from '@/components/AngleSlider.vue';
 import ImageHistogram from '@/components/ImageHistogram.vue';
 import PointCurves from '@/components/PointCurves.vue';
-import { applyCurves, identityCurves, type Curves, type CurveChannel } from '@/common/curves';
+import EffectMask, { type SelectPoint } from '@/components/EffectMask.vue';
+import { applyCurves, curveLut, identityCurves, type Curves, type CurveChannel, type CurvePoint } from '@/common/curves';
+import { bend as automaskBend } from '@/common/automask';
 import VirtualScroll from '@/components/VirtualScroll.vue';
+import picasaCropIcon from '@/assets/images/picasa_crop_icon.png';
 
 import {
   IconCrop,
@@ -357,6 +656,7 @@ import {
   IconZoomIn,
   IconZoomOut,
   IconRotateLeft,
+  IconStraighten,
   IconRotateRight,
   IconFlipVertical,
   IconFlipHorizontal,
@@ -374,9 +674,35 @@ import {
 } from '@/common/icons';
 
 const props = withDefaults(defineProps<{ embedded?: boolean; initialFile?: any; folderQuery?: any }>(), { embedded: false });
+const exportDialog = ref<HTMLDialogElement | null>(null);
 const emit = defineEmits(['back']);
 const router = useRouter();
 const fileInfo = ref<any>(props.initialFile ? { ...props.initialFile } : null);
+const comparisonMode = ref<'single' | 'photos' | 'original'>('single');
+const activeComparisonSide = ref<'left' | 'right'>('left');
+const otherComparisonFile = ref<any>(null);
+let otherComparisonFolder = '';
+let otherComparisonFiles: any[] = [];
+// A|A's Original: never edited (original=1), and no per-edit cache buster (no file path), so
+// edit steps neither change nor reload it (LAP-087).
+const originalComparisonSrc = computed(() => {
+  const file = fileInfo.value;
+  if (!file?.id) return '';
+  const src = getPreviewUrl(file.id, undefined, false, Number(file.modified_at || 0), config.settings.rawThumbnailSource);
+  return `${src}${src.includes('?') ? '&' : '?'}original=1`;
+});
+// A|B's other pane shows its photo as it was when it became the other pane: a snapshot. When both
+// panes are the same photo, edits to the selected pane must not reach it (LAP-087): its URL names
+// the snapshot's revision (er=, rendered as that revision), never the live cache buster, and a
+// snapshot without edits asks for the unedited photo.
+const otherComparisonSrc = computed(() => {
+  const file = otherComparisonFile.value;
+  if (!file?.id) return '';
+  const same = file.id === fileInfo.value?.id;
+  const src = getPreviewUrl(file.id, same ? undefined : file.file_path, false, Number(file.modified_at || 0), config.settings.rawThumbnailSource, file.edits);
+  const snapshot = imageEditState(file.edits);
+  return same && !snapshot.revision && !snapshot.auto_enhance ? `${src}${src.includes('?') ? '&' : '?'}original=1` : src;
+});
 const folderFiles = ref<any[]>(props.initialFile ? [{ ...props.initialFile }] : []);
 const folderIndex = computed(() => folderFiles.value.findIndex(file => file.id === fileInfo.value?.id));
 const editorStrip = ref<any>(null);
@@ -384,6 +710,14 @@ const editorRoot = ref<HTMLElement | null>(null);
 let editorUnmounted = false;
 const fetchingStripIds = new Set<number>();
 let photoNavigation: Promise<void> = Promise.resolve();
+
+function centerFilmstripSelection() {
+  const strip = editorStrip.value;
+  if (!strip?.$el) return;
+  const width = strip.$el.clientWidth;
+  const max = Math.max(0, folderFiles.value.length * 42 - width);
+  strip.scrollToPosition(Math.max(0, Math.min(max, (folderIndex.value + 0.5) * 42 - width / 2)));
+}
 
 async function hydrateFilmstrip(start: number, end: number) {
   const ids = folderFiles.value.slice(start, end + 1).filter(file => !file.file_path && !fetchingStripIds.has(file.id)).map(file => file.id);
@@ -400,12 +734,44 @@ async function hydrateFilmstrip(start: number, end: number) {
   } finally { ids.forEach(id => fetchingStripIds.delete(id)); }
 }
 
+// The folder the filmstrip shows; it moves on when navigation runs past an album's end.
+let stripFolder = String(props.folderQuery?.searchFolder || '');
+
+function setComparisonMode(mode: 'single' | 'photos' | 'original') {
+  photoNavigation = photoNavigation.then(() => {
+    if (mode === 'photos' && comparisonMode.value !== 'photos') {
+      otherComparisonFile.value = { ...fileInfo.value };
+      otherComparisonFolder = stripFolder;
+      otherComparisonFiles = folderFiles.value;
+      activeComparisonSide.value = 'left';
+    }
+    comparisonMode.value = mode;
+  }).catch(error => { historyError.value = String(error); });
+}
+
+function selectOtherComparisonPhoto() {
+  photoNavigation = photoNavigation.then(async () => {
+    if (comparisonMode.value !== 'photos' || !otherComparisonFile.value) return;
+    await historyNavigation;
+    await flushRecipeSteps();
+    if (editorUnmounted) return;
+    const otherId = otherComparisonFile.value.id;
+    otherComparisonFile.value = { ...fileInfo.value };
+    [stripFolder, otherComparisonFolder] = [otherComparisonFolder, stripFolder];
+    [folderFiles.value, otherComparisonFiles] = [otherComparisonFiles, folderFiles.value];
+    activeComparisonSide.value = activeComparisonSide.value === 'left' ? 'right' : 'left';
+    await switchPhoto(otherId);
+    await nextTick();
+    centerFilmstripSelection();
+  }).catch(error => { historyError.value = String(error); });
+}
+
 async function loadFolderFilmstrip() {
   const ids = await getQueryFileIds(props.folderQuery);
   if (editorUnmounted) return;
   folderFiles.value = (ids || [fileInfo.value.id]).map((id: number) => id === fileInfo.value.id ? { ...fileInfo.value } : { id });
   await nextTick();
-  editorStrip.value?.scrollToPosition(Math.max(0, folderIndex.value - 2) * 96);
+  centerFilmstripSelection();
   await hydrateFilmstrip(Math.max(0, folderIndex.value - 3), Math.min(folderFiles.value.length - 1, folderIndex.value + 20));
 }
 
@@ -414,6 +780,7 @@ async function switchPhoto(fileId: number) {
   await historyNavigation;
   await flushRecipeSteps();
   if (editorUnmounted) return;
+  if (otherComparisonFile.value?.id === fileInfo.value?.id) otherComparisonFile.value = { ...fileInfo.value };
   const previousIndex = folderIndex.value;
   if (previousIndex >= 0) folderFiles.value[previousIndex] = { ...fileInfo.value };
   restoringHistory = true;
@@ -423,6 +790,14 @@ async function switchPhoto(fileId: number) {
     showDiffPreview.value = false;
     uiStore.clearActiveAdjustments();
     isProcessing.value = true;
+    // Keep the decoded element itself (a fresh <img> would need a frame to decode).
+    heldElement = imageReady.value ? imageRef.value : null;
+    heldImage.value = heldElement ? true : null;
+    imageReady.value = false;
+    imageSrc.value = '';
+    initialImageSrc.value = '';
+    curvePreviewSrc.value = '';
+    fileInfo.value = { ...(folderFiles.value.find(file => file.id === fileId) || { id: fileId }) };
     await loadFileInfo(fileId);
     if (editorUnmounted) return;
     await nextTick();
@@ -430,7 +805,7 @@ async function switchPhoto(fileId: number) {
     await nextTick();
     const index = folderIndex.value;
     if (index >= 0) folderFiles.value[index] = { ...fileInfo.value };
-    editorStrip.value?.scrollToPosition(Math.max(0, index - 2) * 96);
+    centerFilmstripSelection();
   } finally { restoringHistory = false; }
 }
 
@@ -438,10 +813,48 @@ function queuePhoto(fileId: number) {
   photoNavigation = photoNavigation.then(() => switchPhoto(fileId)).catch(error => { historyError.value = String(error); });
 }
 
+// Past the first or last photo, continue into the neighbouring folder in the main
+// window's Folders order (as Up/Down does there), skipping folders without pictures.
+async function crossFolder(direction: number) {
+  if (!props.folderQuery || !stripFolder) return;
+  const sections = await loadFolderSections();
+  const start = sections.findIndex(section => section.path === stripFolder);
+  if (start < 0) return;
+  for (let i = start + direction; i >= 0 && i < sections.length; i += direction) {
+    const ids: number[] = (await getQueryFileIds({ ...props.folderQuery, searchFolder: sections[i].path })) || [];
+    if (editorUnmounted) return;
+    if (!ids.length) continue;
+    stripFolder = sections[i].path;
+    folderFiles.value = ids.map(id => ({ id }));
+    await switchPhoto(direction > 0 ? ids[0] : ids[ids.length - 1]);
+    await hydrateFilmstrip(Math.max(0, folderIndex.value - 20), Math.min(folderFiles.value.length - 1, folderIndex.value + 20));
+    return;
+  }
+}
+
+function waitForImageReady(timeoutMs = 3000) {
+  return new Promise<void>(resolve => {
+    if (imageReady.value) return resolve();
+    const timer = setTimeout(() => { stop(); resolve(); }, timeoutMs);
+    const stop = watch(imageReady, ready => { if (ready) { clearTimeout(timer); stop(); resolve(); } });
+  });
+}
+
+// Presses that arrive while a photo is loading add up into one jump, so a held arrow key
+// skips photos instead of queueing a full-size decode for each one.
+let pendingSteps = 0;
 function navigatePhoto(direction: number) {
+  pendingSteps += direction;
   photoNavigation = photoNavigation.then(async () => {
-    const file = folderFiles.value[folderIndex.value + direction];
-    if (file) await switchPhoto(file.id);
+    const steps = pendingSteps;
+    pendingSteps = 0;
+    if (!steps) return;
+    const last = folderFiles.value.length - 1;
+    const target = folderIndex.value + steps;
+    if (target >= 0 && target <= last) await switchPhoto(folderFiles.value[target].id);
+    else if (folderIndex.value === (steps > 0 ? last : 0)) await crossFolder(Math.sign(steps));
+    else await switchPhoto(folderFiles.value[steps > 0 ? last : 0].id);
+    await waitForImageReady();
   }).catch(error => { historyError.value = String(error); });
 }
 const initialImageSrc = ref('');
@@ -482,24 +895,20 @@ async function closeEditorWindow() {
   }
 }
 
+function applyFileInfo(file: any) {
+  fileInfo.value = { ...file, thumbnail: getLapUrl(file.id, false, config.settings.thumbnailSize, Number(file.modified_at || 0), file.edits) };
+  newFileName.value = file.name?.substring(0, file.name.lastIndexOf('.')) || file.name || '';
+  const src = getPreviewUrl(file.id, file.file_path, false, Number(file.modified_at || 0), config.settings.rawThumbnailSource);
+  initialImageSrc.value = `${src}${src.includes('?') ? '&' : '?'}original=1`;
+}
+
 async function loadFileInfo(fileId: number) {
   try {
     imageReady.value = false;
     const file = await getFileInfo(fileId);
     if (editorUnmounted) return;
     if (file) {
-      file.thumbnail = getThumbUrl(file.id);
-      fileInfo.value = file;
-      newFileName.value = file.name?.substring(0, file.name.lastIndexOf('.')) || file.name || '';
-      const src = getPreviewUrl(
-        file.id,
-        file.file_path,
-        false,
-        Number(file.modified_at || 0),
-        config.settings.rawThumbnailSource,
-      );
-      initialImageSrc.value = typeof src === 'string' ? src : '';
-      initialImageSrc.value += `${initialImageSrc.value.includes('?') ? '&' : '?'}original=1`;
+      applyFileInfo(file);
     }
   } catch {
     await closeEditorWindow();
@@ -508,34 +917,63 @@ async function loadFileInfo(fileId: number) {
 
 const isProcessing = ref(props.embedded);
 const imageReady = ref(false);
+const histogramReady = ref(false);
+watch(imageReady, ready => { if (!ready) histogramReady.value = false; }, { flush: 'sync' });
+// The picture shown while the next filmstrip photo loads (see template).
+const heldImage = ref<true | null>(null);
+const heldHostRef = ref<HTMLElement | null>(null);
+let heldElement: HTMLImageElement | null = null;
+watch(heldHostRef, host => {
+  if (!host || !heldElement) return;
+  heldElement.dataset.editorHeldImage = '';
+  host.appendChild(heldElement);
+}, { flush: 'post' });
 const activeEditorTab = ref<'edit' | 'adjust'>('edit');
 const editorTabs = [{key:'basic',label:'Basic Fixes'},{key:'tuning',label:'Tuning'},{key:'effects',label:'Effects'}];
 const editorTab = ref('basic');
 const basicTools = ['Crop','Straighten','Redeye',"I'm Feeling Lucky",'Auto Contrast','Auto Color','Retouch','Text'];
-const basicToolIcons:Record<string,any> = {Crop:IconCrop,Straighten:IconRotateLeft,Redeye:IconUnhide,
+const basicToolIcons:Record<string,any> = {Crop:IconCrop,Straighten:IconStraighten,Redeye:IconUnhide,
   "I'm Feeling Lucky":IconWand,'Auto Contrast':IconAdjustments,'Auto Color':IconPalette,Retouch:IconEdit};
-const effectTools = ['Sharpen','Sepia','B&W','Warmify','Film Grain','Tint','Saturation','Soft Focus','Glow','Filtered B&W','Focal B&W','Graduated Tint'];
+// LAP-049: after Picasa's first twelve, its 3.9 effects (recipes from Picasa's filterdesc.xml, in
+// t_edit_tools.rs), each with its Amount slider and live preview.
+const PICASA39_EFFECTS = ['Vignette','Pixelate','Focal Zoom','Lomo-ish','Holga-ish','HDR-ish','Cinemascope','Orton-ish','Infrared','Heat Map','Cross Process'];
+const effectTools = ['Sharpen','Sepia','B&W','Warmify','Film Grain','Tint','Saturation','Soft Focus','Glow','Filtered B&W','Focal B&W','Graduated Tint', ...PICASA39_EFFECTS];
+// LAP-100: three pages of up to twelve, in the classic three effect-tab groups, so nothing scrolls.
+const effectPages = [effectTools.slice(0, 12),
+  // LAP-107: HDR-ish is retired from the pages (Automask replaces it); its renderer stays so
+  // photos that already have an HDR-ish step render as before.
+  ['Infrared','Lomo-ish','Holga-ish','Cinemascope','Orton-ish','Heat Map','Cross Process'],
+  ['Vignette','Pixelate','Focal Zoom']];
+const effectPage = ref(0);
+// Amount where each 3.9 effect opens: Picasa's own default for its main slider (100 = no Fade).
+const PICASA39_DEFAULT_AMOUNT: Record<string, number> = {'Vignette':70,'Pixelate':37,'Focal Zoom':50,'Lomo-ish':50,'Holga-ish':70,
+  'HDR-ish':33,'Cinemascope':100,'Orton-ish':50,'Infrared':100,'Heat Map':100,'Cross Process':100};
 const tuningTools = [{key:'fillLight',label:'Fill Light',min:0},{key:'highlights',label:'Highlights',min:-100},
   {key:'shadows',label:'Shadows',min:0},{key:'temperature',label:'Color Temperature',min:-100}];
 const emptyTools = () => ({fillLight:0,highlights:0,shadows:0,temperature:0,neutral:null,effects:[],retouch:[],text:[],lastStep:''});
-const editTools = ref<any>(emptyTools());
+const picasaTools = ref<any>(emptyTools());
 const imageSrc = ref('');
 const curveDraft = ref<Curves | null>(null);
 const curvePreviewSrc = ref('');
-const curveNeedsPreview = computed(() => Object.values({...identityCurves(), ...(curveDraft.value || editTools.value.curves)} as Curves)
+const curveNeedsPreview = computed(() => Object.values({...identityCurves(), ...(curveDraft.value || picasaTools.value.curves)} as Curves)
   .some(points => points.some(([x,y]) => x!==y)));
-const displayImageSrc = computed(() => curvePreviewSrc.value || (curveNeedsPreview.value ? '' : imageSrc.value));
+// While an effect's Amount panel is open, its unsaved result (LAP-087); curves draw over it.
+const effectPreviewSrc = ref('');
+// Mask mode (LAP-098): the effect applies only where a painted or gradient mask says.
+const maskMode = ref(false);
+const curveSourceSrc = computed(() => (maskMode.value ? '' : effectPreviewSrc.value) || imageSrc.value);
+const displayImageSrc = computed(() => curvePreviewSrc.value || curveSourceSrc.value);
 function commitCurves(curves: Curves, channel: CurveChannel) {
-  editTools.value = {...editTools.value, curves, lastStep:`Curves: ${channel==='rgb' ? 'RGB' : channel[0].toUpperCase()+channel.slice(1)}`};
+  picasaTools.value = {...picasaTools.value, curves, lastStep:`Curves: ${channel==='rgb' ? 'RGB' : channel[0].toUpperCase()+channel.slice(1)}`};
 }
 let curveBaseSource = '', curveBase: Promise<ImageData> | null = null, curvePaintId = 0;
-watch([imageSrc, () => JSON.stringify(curveDraft.value || editTools.value.curves)], async () => {
-  const id=++curvePaintId, source=imageSrc.value;
-  const curves:Curves={...identityCurves(), ...(curveDraft.value || editTools.value.curves)};
+watch([curveSourceSrc, () => JSON.stringify(curveDraft.value || picasaTools.value.curves)], async () => {
+  const id=++curvePaintId, source=curveSourceSrc.value;
+  const curves:Curves={...identityCurves(), ...(curveDraft.value || picasaTools.value.curves)};
   const identity=Object.values(curves).every(points=>points.every(([x,y])=>x===y));
   if (source!==curveBaseSource) {
     curveBaseSource=source;curveBase=null;curvePreviewSrc.value='';
-    if (!identity) imageReady.value=false;
+    // Keep imageReady true so curves controls remain active and interactive
   }
   if (!source || identity) {curvePreviewSrc.value='';return;}
   try {
@@ -563,6 +1001,9 @@ const effectColor = ref('#4090cc');
 const toolText = ref('');
 const toolFont = ref('Arial');
 const textSize = ref(32);
+const textBold = ref(false);
+const textItalic = ref(false);
+const textOutline = ref(false);
 const brushSize = ref(3);
 const toolPoint = ref({x:0.5,y:0.5});
 const retouchTarget = ref<{x:number;y:number}|null>(null);
@@ -595,10 +1036,34 @@ const isFlippedX = ref(false);
 const isFlippedY = ref(false);
 const scale = ref(1);
 let wheelTransitionTimer: ReturnType<typeof setTimeout> | null = null;
+// The nearest panel under the pointer that has content to scroll; never one holding the photo.
+function scrollablePanelAt(target: Node) {
+  for (let el = target instanceof Element ? target : target.parentElement; el && el !== document.body; el = el.parentElement) {
+    if (el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY)
+      && !(containerRef.value && el.contains(containerRef.value))) return el;
+  }
+  return null;
+}
 function handleEditorWheel(event: WheelEvent) {
   const target=event.target as Node | null;
-  if (!target || !editorRoot.value?.contains(target)) return;
+  const browseAnywhere=props.embedded && comparisonMode.value === 'single';
+  if (!target || (!browseAnywhere && !editorRoot.value?.contains(target))) return;
   const overPhoto=containerRef.value?.contains(target);
+  const overFilmstrip=target instanceof Element && target.closest('[data-editor-filmstrip]');
+  // LAP-100 (owner exception): over a side panel that can scroll, the wheel scrolls that panel.
+  if (!event.ctrlKey && !overPhoto && !overFilmstrip && scrollablePanelAt(target)) {
+    event.stopImmediatePropagation();
+    return;
+  }
+  // In the Library's single-photo view, ordinary wheel movement browses photos.
+  // Ctrl+wheel over the photo retains explicit zoom control.
+  if (props.embedded && (browseAnywhere || overPhoto || overFilmstrip) && !event.ctrlKey) {
+    if (!event.deltaY) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void navigatePhoto(event.deltaY > 0 ? 1 : -1);
+    return;
+  }
   // Ctrl+wheel must never fall through to WebView2's page zoom.
   if (!overPhoto && !event.ctrlKey) return;
   event.preventDefault();
@@ -741,6 +1206,75 @@ const crop = ref({ left: 0, top: 0, width: 0, height: 0 });
 
 const cropAngle = ref(0);
 const isRotating = ref(false);
+
+const straightenAngleInput = ref('0.0');
+const isStraightenInputFocused = ref(false);
+const straightenInputRef = ref<HTMLInputElement | null>(null);
+
+const isPreviewingCrop = ref(false);
+const isCropLandscape = ref(true);
+const cropBoxDrawn = ref(false);
+const activeSuggestionIndex = ref(-1);
+const selectedAspectPresetId = ref('manual');
+const customCropW = ref(4);
+const customCropH = ref(3);
+
+const cropSuggestions = [
+  { label: 'Left Subject', objectPosition: '15% center' },
+  { label: 'Center Portrait', objectPosition: '50% center' },
+  { label: 'Wide Crop', objectPosition: '85% center' },
+];
+
+interface AspectPreset {
+  id: string;
+  label: string;
+  w?: number;
+  h?: number;
+  isSquare?: boolean;
+}
+
+const picasaAspectPresets: AspectPreset[] = [
+  { id: 'manual', label: 'Manual' },
+  { id: 'current', label: 'Current Aspect Ratio' },
+  { id: '1:1', label: 'Square (1 x 1)', isSquare: true },
+  { id: '4x6', label: '10 x 15', w: 6, h: 4 },
+  { id: '5x7', label: '13 x 18', w: 7, h: 5 },
+  { id: '8x10', label: '20 x 25', w: 10, h: 8 },
+  { id: '8.5x11', label: '8.5 x 11', w: 11, h: 8.5 },
+  { id: '4:3', label: '4:3', w: 4, h: 3 },
+  { id: '16:9', label: '16:9', w: 16, h: 9 },
+  { id: '16:10', label: '16:10', w: 16, h: 10 },
+  { id: 'custom', label: 'Custom…' },
+];
+
+function getActiveCropRatio(): number | undefined {
+  if (selectedAspectPresetId.value === 'manual') {
+    return undefined;
+  }
+  if (selectedAspectPresetId.value === 'current') {
+    const effectiveW = rotate.value % 180 === 0 ? imageWidth.value : imageHeight.value;
+    const effectiveH = rotate.value % 180 === 0 ? imageHeight.value : imageWidth.value;
+    if (effectiveH <= 0) return 1;
+    const maxDim = Math.max(effectiveW, effectiveH);
+    const minDim = Math.min(effectiveW, effectiveH);
+    return isCropLandscape.value ? maxDim / minDim : minDim / maxDim;
+  }
+  if (selectedAspectPresetId.value === '1:1') {
+    return 1.0;
+  }
+  if (selectedAspectPresetId.value === 'custom') {
+    const w = Number(customCropW.value) || 1;
+    const h = Number(customCropH.value) || 1;
+    const maxDim = Math.max(w, h);
+    const minDim = Math.min(w, h);
+    return isCropLandscape.value ? maxDim / minDim : minDim / maxDim;
+  }
+  const preset = picasaAspectPresets.find(p => p.id === selectedAspectPresetId.value);
+  if (preset && preset.w && preset.h) {
+    return isCropLandscape.value ? preset.w / preset.h : preset.h / preset.w;
+  }
+  return undefined;
+}
 
 // The rotation shown on screen: the fixed 90° orientation plus the arbitrary
 // crop-time straighten angle (only meaningful while cropping / after crop).
@@ -1065,8 +1599,60 @@ const combinedFormatOptions = computed(() => {
 });
 
 const savedEditState = computed(() => {
-  try { return JSON.parse(fileInfo.value?.edits || '{}'); } catch { return {}; }
+  try {
+    const doc = JSON.parse(fileInfo.value?.edits || '{}');
+    if (doc.recipe && !Object.prototype.hasOwnProperty.call(doc.recipe, 'picasa') && doc.recipe.tools !== undefined) {
+      doc.recipe.picasa = doc.recipe.tools;
+    }
+    return doc;
+  } catch { return {}; }
 });
+const IAUTO_PRESET_LABELS: Record<number, string> = {
+  1: 'Balanced',
+  2: 'Natural',
+  3: 'Landscape',
+  4: 'Portrait',
+  5: 'Vivid',
+};
+const activeIAutoPresetIndex = computed(() => {
+  const p = Number(savedEditState.value?.auto_enhance_preset || 1);
+  return p >= 1 && p <= 5 ? p : 1;
+});
+const activeIAutoPresetLabel = computed(() => IAUTO_PRESET_LABELS[activeIAutoPresetIndex.value] || 'Balanced');
+// I'm Feeling Lucky's cycle: Original (unfiltered), then styles 1-5, then back to Original.
+// The buttons show it in click order from the first style: 1 2 3 4 5 Orig (LAP-105).
+const LUCKY_CYCLE = [
+  ...[1, 2, 3, 4, 5].map(i => ({ index: i, short: String(i), title: `Style ${i}/5: ${IAUTO_PRESET_LABELS[i]}` })),
+  { index: 0, short: 'Orig', title: 'Unfiltered (original)' },
+];
+const activeLuckyStep = computed(() => savedEditState.value?.auto_enhance ? activeIAutoPresetIndex.value : 0);
+const luckyCycleLabel = computed(() => activeLuckyStep.value
+  ? `${activeLuckyStep.value}/5 ${activeIAutoPresetLabel.value}`
+  : 'Original');
+const ROTATE_BUTTONS = [
+  { degree: -90, label: 'Rotate left', shortcut: 'meta.rotateCounterclockwise', icon: IconRotateLeft },
+  { degree: 90, label: 'Rotate right', shortcut: 'meta.rotate', icon: IconRotateRight },
+];
+// What a comparison pane shows: 'Unfiltered', or its I'm Feeling Lucky style and effects.
+function filterPillLabel(edits: any, liveEffects?: any[]) {
+  const doc = imageEditState(edits);
+  const parts: string[] = [];
+  if (doc.auto_enhance) {
+    const p = Number(doc.auto_enhance_preset || 1);
+    const preset = p >= 1 && p <= 5 ? p : 1;
+    parts.push(`Lucky ${preset}/5: ${IAUTO_PRESET_LABELS[preset]}`);
+  }
+  const effects = liveEffects ?? doc.recipe?.picasa?.effects ?? [];
+  for (const e of effects) if (e?.name) parts.push(String(e.name));
+  return parts.length ? parts.join(' + ') : 'Unfiltered';
+}
+const selectedPaneFilterPill = computed(() => {
+  const label = filterPillLabel(fileInfo.value?.edits, picasaTools.value?.effects);
+  return comparisonMode.value === 'original' ? `Edited · ${label}` : label;
+});
+const otherPaneFilterPill = computed(() => comparisonMode.value === 'original'
+  ? 'Original · Unfiltered'
+  : filterPillLabel(otherComparisonFile.value?.edits));
 
 const handleResizeWidthInput = () => {
   const width = parsedResizeWidth.value;
@@ -1264,12 +1850,17 @@ onMounted(async () => {
   if (props.embedded) editorRoot.value?.focus({ preventScroll: true });
   window.addEventListener('keydown', handleKeyDown, true);
   window.addEventListener('wheel', handleEditorWheel, {capture:true,passive:false});
+  window.addEventListener('pointerdown', startRangeDrag, true);
+  window.addEventListener('pointerup', endRangeDrag, true);
+  window.addEventListener('pointercancel', endRangeDrag, true);
   uiStore.pushInputHandler('EditImage');
   activeEditorTab.value = config.imageEditor.tab === 'adjust' ? 'adjust' : 'edit';
 
   const query = router.currentRoute.value.query;
   const fileId = Number(props.initialFile?.id || query.fileId || 0);
-  if (fileId > 0) {
+  if (props.embedded && props.initialFile?.file_path) {
+    applyFileInfo(props.initialFile);
+  } else if (fileId > 0) {
     await loadFileInfo(fileId);
   }
   if (editorUnmounted) return;
@@ -1330,6 +1921,9 @@ onUnmounted(() => {
   editorUnmounted = true;
   window.removeEventListener('keydown', handleKeyDown, true);
   window.removeEventListener('wheel', handleEditorWheel, true);
+  window.removeEventListener('pointerdown', startRangeDrag, true);
+  window.removeEventListener('pointerup', endRangeDrag, true);
+  window.removeEventListener('pointercancel', endRangeDrag, true);
   if (wheelTransitionTimer) clearTimeout(wheelTransitionTimer);
   uiStore.removeInputHandler('EditImage');
   if (containerResizeObserver) {
@@ -1343,8 +1937,12 @@ onUnmounted(() => {
 });
 
 const onImageLoad = async () => {
+  const loadingId = initEditImageLoadingId.value;
   await nextTick();
+  if (editorUnmounted || loadingId !== initEditImageLoadingId.value) return;
   if (imageReady.value && curvePreviewSrc.value && imageRef.value?.currentSrc===curvePreviewSrc.value) return;
+  // An effect's live preview is the same picture at the same size: nothing to set up again.
+  if (imageReady.value && effectPreviewSrc.value && imageRef.value?.currentSrc===effectPreviewSrc.value) return;
 
   if (imageRef.value && imageRef.value.naturalWidth > 0 && imageRef.value.naturalHeight > 0) {
     imageWidth.value = imageRef.value.naturalWidth;
@@ -1371,13 +1969,19 @@ const onImageLoad = async () => {
     resizeHeightInput.value = String(saved.resize.height);
   }
 
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      enableTransition.value = true;
-      imageReady.value = true;
-      isProcessing.value = false;
-    });
-  });
+  // Decode before showing, and drop the held picture a frame later, so the swap has no blank frame.
+  try { await imageRef.value?.decode?.(); } catch { /* shown as soon as it loads */ }
+  if (editorUnmounted || loadingId !== initEditImageLoadingId.value) return;
+  enableTransition.value = true;
+  imageReady.value = true;
+  isProcessing.value = false;
+  // Give the photo a paint before canvas readback and histogram calculations.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (editorUnmounted || loadingId !== initEditImageLoadingId.value || !imageReady.value) return;
+    heldImage.value = null;
+    heldElement = null;
+    histogramReady.value = true;
+  }));
 };
 
 const initEditImageLoadingId = ref(0);
@@ -1434,7 +2038,7 @@ const initEditImage = async () => {
   crop.value = { left: 0, top: 0, width: 0, height: 0 };
   cropAngle.value = 0;
   const saved = savedEditState.value.recipe;
-  editTools.value = { ...emptyTools(), ...JSON.parse(JSON.stringify(saved?.tools || {})) };
+  picasaTools.value = { ...emptyTools(), ...JSON.parse(JSON.stringify(saved?.picasa || {})) };
   baseSignature=recipeBaseSignature(savedEditState.value);
   redEye.value = !!saved?.redEye;
   if (saved) {
@@ -1482,6 +2086,10 @@ const initEditImage = async () => {
 
 async function getAutoPresetValues() {
   if (autoPresetValues.value) return autoPresetValues.value;
+  if (!histogramReady.value) {
+    histogramReady.value = true;
+    await nextTick();
+  }
   autoPresetValues.value = await histogramRef.value?.getAutoPresetValues() || presets.natural;
   return autoPresetValues.value;
 }
@@ -1555,7 +2163,10 @@ const clickStartCrop = () => {
   cropApplied.value = false;
   cropBoxFixed.value = false;
   cropAngle.value = 0;
-  initCropBox();
+  cropBoxDrawn.value = false;
+  activeSuggestionIndex.value = -1;
+  crop.value = { left: 0, top: 0, width: 0, height: 0 };
+  cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
 };
 
 const toggleCropMode = () => {
@@ -1579,6 +2190,8 @@ const clearCrop = () => {
   cropStatus.value = 0;
   cropApplied.value = false;
   cropBoxFixed.value = false;
+  cropBoxDrawn.value = false;
+  activeSuggestionIndex.value = -1;
   crop.value = { left: 0, top: 0, width: 0, height: 0 };
   cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
   cropAngle.value = 0;
@@ -1598,9 +2211,13 @@ const clickRestoreAll = () => {
 const clickCancelCrop = () => {
   cropStatus.value = 0;
   cropApplied.value = false;
+  cropBoxDrawn.value = false;
+  activeSuggestionIndex.value = -1;
   crop.value = { left: 0, top: 0, width: 0, height: 0 };
   cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
   cropAngle.value = 0;
+  isPreviewingCrop.value = false;
+  activeTool.value = '';
   autoFitVisualArea();
 };
 
@@ -1619,13 +2236,146 @@ const autoFitVisualArea = () => {
 };
 
 const clickDoCrop = () => {
-  editTools.value.lastStep = activeTool.value === 'Straighten' ? 'Straighten' : 'Crop';
+  if (activeTool.value === 'Crop' && !cropBoxDrawn.value) {
+    initCropBox();
+    cropBoxDrawn.value = true;
+  }
+  picasaTools.value.lastStep = activeTool.value === 'Straighten' ? 'Straighten' : 'Crop';
   cropApplied.value = true;
   cropBoxFixed.value = false;
+  isPreviewingCrop.value = false;
   fitCropBoxToContainer();
 
   cropStatus.value = 0;
   activeTool.value = '';
+};
+
+const toggleCropPreview = () => {
+  isPreviewingCrop.value = !isPreviewingCrop.value;
+};
+
+const resetCropBox = () => {
+  cropBoxDrawn.value = false;
+  activeSuggestionIndex.value = -1;
+  cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
+  crop.value = { left: 0, top: 0, width: 0, height: 0 };
+  updateCropFromCropBox();
+};
+
+const onChangeCropPreset = () => {
+  const effectiveW = rotate.value % 180 === 0 ? imageWidth.value : imageHeight.value;
+  const effectiveH = rotate.value % 180 === 0 ? imageHeight.value : imageWidth.value;
+  if (selectedAspectPresetId.value === 'current') {
+    isCropLandscape.value = effectiveW >= effectiveH;
+  }
+  activeSuggestionIndex.value = -1;
+  initCropBox();
+  cropBoxDrawn.value = true;
+};
+
+const toggleCropOrientation = () => {
+  isCropLandscape.value = !isCropLandscape.value;
+  if (!cropBoxDrawn.value) return;
+  if (selectedAspectPresetId.value === 'manual') {
+    swapCropBoxDimensions();
+  } else {
+    initCropBox();
+  }
+};
+
+const applyCropSuggestion = (index: number) => {
+  containerRect.value = containerRef.value?.getBoundingClientRect() || null;
+  imageRect.value = imageRef.value?.getBoundingClientRect() || null;
+  if (!imageRect.value || !containerRect.value) return;
+
+  const imgLeft = imageRect.value.left - containerRect.value.left;
+  const imgTop = imageRect.value.top - containerRect.value.top;
+  const imgW = imageRect.value.width;
+  const imgH = imageRect.value.height;
+
+  let width = imgW;
+  let height = imgH;
+  let left = imgLeft;
+  let top = imgTop;
+
+  const aspectRatio = getActiveCropRatio();
+
+  if (index === 0) {
+    height = imgH * 0.75;
+    width = aspectRatio ? height * aspectRatio : imgW * 0.55;
+    if (width > imgW * 0.85) {
+      width = imgW * 0.85;
+      if (aspectRatio) height = width / aspectRatio;
+    }
+    left = imgLeft + imgW * 0.05;
+    top = imgTop + (imgH - height) / 2;
+  } else if (index === 1) {
+    height = imgH * 0.8;
+    width = aspectRatio ? height * aspectRatio : imgW * 0.45;
+    if (width > imgW * 0.7) {
+      width = imgW * 0.7;
+      if (aspectRatio) height = width / aspectRatio;
+    }
+    left = imgLeft + (imgW - width) / 2;
+    top = imgTop + (imgH - height) / 2;
+  } else {
+    width = imgW * 0.92;
+    height = aspectRatio ? width / aspectRatio : imgH * 0.92;
+    if (height > imgH * 0.92) {
+      height = imgH * 0.92;
+      if (aspectRatio) width = height * aspectRatio;
+    }
+    left = imgLeft + (imgW - width) / 2;
+    top = imgTop + (imgH - height) / 2;
+  }
+
+  cropBox.value = { left, top, width, height };
+  cropBoxDrawn.value = true;
+  activeSuggestionIndex.value = index;
+  updateCropFromCropBox();
+};
+
+const swapCropBoxDimensions = () => {
+  if (cropBox.value.width <= 0 || cropBox.value.height <= 0) return;
+  const initialRect = imageRef.value?.getBoundingClientRect() || null;
+  const cRect = containerRef.value?.getBoundingClientRect() || null;
+  if (!initialRect || !cRect) return;
+
+  const cx = cropBox.value.left + cropBox.value.width / 2;
+  const cy = cropBox.value.top + cropBox.value.height / 2;
+  const newW = cropBox.value.height;
+  const newH = cropBox.value.width;
+
+  const imgLeft = initialRect.left - cRect.left;
+  const imgTop = initialRect.top - cRect.top;
+  const imgRight = imgLeft + initialRect.width;
+  const imgBottom = imgTop + initialRect.height;
+
+  let finalW = newW;
+  let finalH = newH;
+  if (finalW > initialRect.width) {
+    const s = initialRect.width / finalW;
+    finalW *= s;
+    finalH *= s;
+  }
+  if (finalH > initialRect.height) {
+    const s = initialRect.height / finalH;
+    finalW *= s;
+    finalH *= s;
+  }
+
+  let finalLeft = cx - finalW / 2;
+  let finalTop = cy - finalH / 2;
+  finalLeft = Math.max(imgLeft, Math.min(imgRight - finalW, finalLeft));
+  finalTop = Math.max(imgTop, Math.min(imgBottom - finalH, finalTop));
+
+  cropBox.value = {
+    left: finalLeft,
+    top: finalTop,
+    width: finalW,
+    height: finalH,
+  };
+  updateCropFromCropBox();
 };
 
 const togglePortraitAndLandscape = () => {
@@ -1652,13 +2402,8 @@ const recomputeCropBoxForAngle = () => {
   // backend crops from (shared helper keeps all three mappings on one formula).
   const { imgWidth, imgHeight, bbW, bbH } = getCropSpaceDims();
 
-  // Selected crop aspect ratio (null when "custom" / free).
-  const selectedShape = cropShapeOptions.value.find(option => option.value === String(config.imageEditor.cropShape) && option.value !== '0');
-  let aspectRatio: number | undefined;
-  if (selectedShape && selectedShape.label) {
-    const parts = selectedShape.label.split(':');
-    aspectRatio = parseInt(parts[0], 10) / parseInt(parts[1], 10);
-  }
+  // Selected crop aspect ratio (null when "manual" / free).
+  const aspectRatio = getActiveCropRatio();
 
   // Largest axis-aligned rectangle inside the rotated image, expressed in the
   // rotated image's bounding-box pixel space (what the backend crops from).
@@ -1694,8 +2439,8 @@ let cropAngleRaf = 0;
 // solve per frame, avoiding forced-reflow-per-tick. Vue patches the DOM in a
 // microtask, so the rAF callback already sees the updated rotation.
 const applyCropAngle = (v: number) => {
-  const clamped = Math.min(45, Math.max(-45, Number.isFinite(v) ? v : 0));
-  cropAngle.value = clamped;
+  const clamped = Math.min(20, Math.max(-20, Number.isFinite(v) ? v : 0));
+  cropAngle.value = Math.round(clamped * 10) / 10;
   enableTransition.value = false;
   if (cropAngleRaf) cancelAnimationFrame(cropAngleRaf);
   cropAngleRaf = requestAnimationFrame(() => {
@@ -1712,28 +2457,83 @@ const cropAngleModel = computed({
   set: (v: number) => setCropAngle(v),
 });
 
+watch(cropAngle, (newVal) => {
+  if (!isStraightenInputFocused.value) {
+    straightenAngleInput.value = newVal.toFixed(1);
+  }
+}, { immediate: true });
+
+const commitStraightenInput = () => {
+  const raw = straightenAngleInput.value.trim();
+  if (!raw) {
+    straightenAngleInput.value = cropAngle.value.toFixed(1);
+    return;
+  }
+  const parsed = parseFloat(raw);
+  if (isNaN(parsed)) {
+    straightenAngleInput.value = cropAngle.value.toFixed(1);
+    return;
+  }
+  const clamped = Math.min(20, Math.max(-20, parsed));
+  const rounded = Math.round(clamped * 10) / 10;
+  applyCropAngle(rounded);
+  straightenAngleInput.value = rounded.toFixed(1);
+};
+
+const onStraightenInputFocus = () => {
+  isStraightenInputFocused.value = true;
+};
+
+const onStraightenInputBlur = () => {
+  isStraightenInputFocused.value = false;
+  commitStraightenInput();
+};
+
+const onStraightenInputKeyDown = (event: KeyboardEvent) => {
+  event.stopPropagation();
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    commitStraightenInput();
+    straightenInputRef.value?.blur();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    straightenAngleInput.value = cropAngle.value.toFixed(1);
+    straightenInputRef.value?.blur();
+  } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault();
+    const delta = event.key === 'ArrowDown' ? -0.1 : 0.1;
+    const step = event.shiftKey ? delta * 10 : delta;
+    const current = parseFloat(straightenAngleInput.value);
+    const base = Number.isFinite(current) ? current : cropAngle.value;
+    const clamped = Math.min(20, Math.max(-20, base + step));
+    const rounded = Math.round(clamped * 10) / 10;
+    applyCropAngle(rounded);
+    straightenAngleInput.value = rounded.toFixed(1);
+  }
+};
+
 const initCropBox = () => {
   containerRect.value = containerRef.value?.getBoundingClientRect() || null;
   imageRect.value = imageRef.value?.getBoundingClientRect() || null;
   if (!imageRect.value || !containerRect.value) return;
 
-  const selectedShape = cropShapeOptions.value.find(option => option.value === String(config.imageEditor.cropShape) && option.value !== '0');
-  if (selectedShape && selectedShape.label) {
-    const parts = selectedShape.label.split(':');
-    const aspectRatio = parseInt(parts[0]) / parseInt(parts[1]);
+  const insetFactor = activeTool.value === 'Crop' ? 0.8 : 1.0;
+  const maxW = imageRect.value.width * insetFactor;
+  const maxH = imageRect.value.height * insetFactor;
+  const imageLeft = imageRect.value.left - containerRect.value.left;
+  const imageTop = imageRect.value.top - containerRect.value.top;
 
+  const aspectRatio = getActiveCropRatio();
+  if (aspectRatio != null && aspectRatio > 0) {
     let newWidth;
     let newHeight;
-    if (imageRect.value.width / imageRect.value.height > aspectRatio) {
-      newHeight = imageRect.value.height;
+    if (maxW / maxH > aspectRatio) {
+      newHeight = maxH;
       newWidth = newHeight * aspectRatio;
     } else {
-      newWidth = imageRect.value.width;
+      newWidth = maxW;
       newHeight = newWidth / aspectRatio;
     }
-
-    const imageLeft = imageRect.value.left - containerRect.value.left;
-    const imageTop = imageRect.value.top - containerRect.value.top;
 
     cropBox.value = {
       left: imageLeft + (imageRect.value.width - newWidth) / 2,
@@ -1743,10 +2543,10 @@ const initCropBox = () => {
     };
   } else {
     cropBox.value = {
-      left: imageRect.value.left - containerRect.value.left,
-      top: imageRect.value.top - containerRect.value.top,
-      width: imageRect.value.width,
-      height: imageRect.value.height,
+      left: imageLeft + (imageRect.value.width - maxW) / 2,
+      top: imageTop + (imageRect.value.height - maxH) / 2,
+      width: maxW,
+      height: maxH,
     };
   }
 
@@ -1883,7 +2683,7 @@ const fitCropBoxToContainer = () => {
 };
 
 const clickRotate = (degree: number) => {
-  editTools.value.lastStep = 'Rotate';
+  picasaTools.value.lastStep = 'Rotate';
   rotate.value += degree;
   isPortrait.value = !isPortrait.value;
   scaleFit(
@@ -1904,11 +2704,179 @@ const clickFlipY = () => {
     : isFlippedY.value = !isFlippedY.value;
 };
 
-const startDrag = (handle: string, event: MouseEvent) => {
+const startNewCropDrag = (event: MouseEvent) => {
+  containerRect.value = containerRef.value?.getBoundingClientRect() || null;
+  imageRect.value = imageRef.value?.getBoundingClientRect() || null;
+  if (!imageRect.value || !containerRect.value) return;
+
   isDragging.value = true;
+  cropBoxDrawn.value = true;
+  activeSuggestionIndex.value = -1;
+  dragHandle.value = 'bottom-right';
+  document.body.style.cursor = 'crosshair';
+  document.body.style.userSelect = 'none';
+
+  const startX = Math.max(imageRect.value.left, Math.min(imageRect.value.right, event.clientX));
+  const startY = Math.max(imageRect.value.top, Math.min(imageRect.value.bottom, event.clientY));
+
+  const startContainerX = startX - containerRect.value.left;
+  const startContainerY = startY - containerRect.value.top;
+
+  cropBox.value = {
+    left: startContainerX,
+    top: startContainerY,
+    width: 1,
+    height: 1,
+  };
+
+  const initialBox = { ...cropBox.value };
+  const initialRect = imageRect.value;
+  const cRect = containerRect.value;
+
+  const geo = {
+    cx: initialRect.left - cRect.left + initialRect.width / 2,
+    cy: initialRect.top - cRect.top + initialRect.height / 2,
+    cos: Math.cos((displayRotate.value * Math.PI) / 180),
+    sin: Math.sin((displayRotate.value * Math.PI) / 180),
+    hw: (imageWidth.value * scale.value) / 2,
+    hh: (imageHeight.value * scale.value) / 2,
+  };
+
+  const doDrag = (e: MouseEvent) => {
+    if (!isDragging.value || !containerRect.value || !imageRect.value) return;
+    const curX = Math.max(initialRect.left, Math.min(initialRect.right, e.clientX)) - containerRect.value.left;
+    const curY = Math.max(initialRect.top, Math.min(initialRect.bottom, e.clientY)) - containerRect.value.top;
+
+    const imgLeft = initialRect.left - cRect.left;
+    const imgTop = initialRect.top - cRect.top;
+    const imgRight = imgLeft + initialRect.width;
+    const imgBottom = imgTop + initialRect.height;
+
+    const availW = curX >= startContainerX ? imgRight - startContainerX : startContainerX - imgLeft;
+    const availH = curY >= startContainerY ? imgBottom - startContainerY : startContainerY - imgTop;
+
+    let w = Math.min(availW, Math.max(10, Math.abs(curX - startContainerX)));
+    let h = Math.min(availH, Math.max(10, Math.abs(curY - startContainerY)));
+
+    const aspectRatio = getActiveCropRatio();
+    if (aspectRatio != null && aspectRatio > 0) {
+      // Choose the largest box with ratio `aspectRatio` driven by the user's drag
+      // that also fits within `(availW, availH)` from the anchor point.
+      let targetW = w;
+      let targetH = targetW / aspectRatio;
+      if (targetH < h) {
+        targetH = h;
+        targetW = targetH * aspectRatio;
+      }
+      if (targetW > availW) {
+        targetW = availW;
+        targetH = targetW / aspectRatio;
+      }
+      if (targetH > availH) {
+        targetH = availH;
+        targetW = targetH * aspectRatio;
+      }
+      w = Math.max(10, targetW);
+      h = Math.max(10, targetH);
+    }
+
+    const left = curX < startContainerX ? Math.max(imgLeft, startContainerX - w) : startContainerX;
+    const top = curY < startContainerY ? Math.max(imgTop, startContainerY - h) : startContainerY;
+
+    const proposed = { left, top, width: w, height: h };
+    const t = maxResizeT(
+      initialBox, proposed,
+      geo.cx, geo.cy, geo.cos, geo.sin, geo.hw, geo.hh, 10,
+    );
+    cropBox.value = {
+      left: initialBox.left + t * (proposed.left - initialBox.left),
+      top: initialBox.top + t * (proposed.top - initialBox.top),
+      width: Math.max(10, initialBox.width + t * (proposed.width - initialBox.width)),
+      height: Math.max(10, initialBox.height + t * (proposed.height - initialBox.height)),
+    };
+
+    updateCropFromCropBox({ imageRect: initialRect, containerRect: cRect });
+  };
+
+  let rafId = 0;
+  let lastEvent: MouseEvent | null = null;
+  const onMouseMove = (e: MouseEvent) => {
+    lastEvent = e;
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      if (lastEvent) doDrag(lastEvent);
+    });
+  };
+
+  const stopDrag = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (lastEvent) {
+      doDrag(lastEvent);
+      lastEvent = null;
+    }
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    isDragging.value = false;
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', stopDrag);
+
+    if (cropBox.value.width < 15 || cropBox.value.height < 15) {
+      cropBoxDrawn.value = false;
+      cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
+      crop.value = { left: 0, top: 0, width: 0, height: 0 };
+      updateCropFromCropBox();
+    } else {
+      cropBoxDrawn.value = true;
+    }
+  };
+
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', stopDrag);
+};
+
+const onContainerMouseDown = (event: MouseEvent) => {
+  if (activeTool.value !== 'Crop' || cropStatus.value !== 1 || isPreviewingCrop.value) return;
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (target && target.closest('.crop-box-active')) return;
+  event.preventDefault();
+  startNewCropDrag(event);
+};
+
+const startDrag = (handle: string, event: MouseEvent) => {
+  if (handle === 'move') {
+    const target = event.currentTarget as HTMLElement;
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      const clickInside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (!clickInside && activeTool.value === 'Crop') {
+        startNewCropDrag(event);
+        return;
+      }
+    }
+  }
+
+  isDragging.value = true;
+  activeSuggestionIndex.value = -1;
   dragHandle.value = handle;
   dragStartX.value = event.clientX;
   dragStartY.value = event.clientY;
+
+  let cursor = 'move';
+  if (handle === 'top-left' || handle === 'bottom-right') cursor = 'nwse-resize';
+  else if (handle === 'top-right' || handle === 'bottom-left') cursor = 'nesw-resize';
+  else if (handle === 'top' || handle === 'bottom') cursor = 'ns-resize';
+  else if (handle === 'left' || handle === 'right') cursor = 'ew-resize';
+  document.body.style.cursor = cursor;
+  document.body.style.userSelect = 'none';
 
   if (cropBoxFixed.value && dragHandle.value === 'move') {
     enableTransition.value = false;
@@ -1984,14 +2952,19 @@ const startDrag = (handle: string, event: MouseEvent) => {
         proposedBox.top += dy;
       }
 
-      const shape = String(config.imageEditor.cropShape);
-      if (shape !== '0') {
-        const selectedShape = cropShapeOptions.value.find(o => o.value === shape);
-        if (selectedShape && selectedShape.label) {
-          const parts = selectedShape.label.split(':');
-          const aspectRatio = parseInt(parts[0]) / parseInt(parts[1]);
-
-          if (dragHandle.value.includes('left') || dragHandle.value.includes('right')) {
+      const aspectRatio = getActiveCropRatio();
+      if (aspectRatio != null && aspectRatio > 0) {
+        if (dragHandle.value === 'top' || dragHandle.value === 'bottom') {
+          proposedBox.width = proposedBox.height * aspectRatio;
+          proposedBox.left = initialCropBoxData.left + (initialCropBoxData.width - proposedBox.width) / 2;
+        } else if (dragHandle.value === 'left' || dragHandle.value === 'right') {
+          proposedBox.height = proposedBox.width / aspectRatio;
+          proposedBox.top = initialCropBoxData.top + (initialCropBoxData.height - proposedBox.height) / 2;
+        } else {
+          // Corner handles:
+          const ratioW = Math.abs(proposedBox.width - initialCropBoxData.width);
+          const ratioH = Math.abs(proposedBox.height - initialCropBoxData.height);
+          if (ratioW >= ratioH) {
             proposedBox.height = proposedBox.width / aspectRatio;
           } else {
             proposedBox.width = proposedBox.height * aspectRatio;
@@ -2051,6 +3024,8 @@ const startDrag = (handle: string, event: MouseEvent) => {
       doDrag(lastEvent);
       lastEvent = null;
     }
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
     if (cropBoxFixed.value && dragHandle.value === 'move') {
       enableTransition.value = true;
     }
@@ -2064,6 +3039,7 @@ const startDrag = (handle: string, event: MouseEvent) => {
 };
 
 function handleKeyDown(event: KeyboardEvent) {
+  if (exportDialog.value?.open) return;
   if (!uiStore.isInputActive('EditImage')) return;
   const historyAction = editHistoryAction(event);
   if (historyAction) {
@@ -2072,11 +3048,41 @@ function handleKeyDown(event: KeyboardEvent) {
     queueHistory(historyAction);
     return;
   }
-  if (isEditableTarget(event.target)) return;
-  if (props.embedded && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+  if (handleAutomaskKey(event) || handleMaskKey(event)) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  const inField = isEditableTarget(event.target) || (event.target instanceof Element && !!event.target.closest('[role="slider"], .angle-slider'));
+  // Esc in a field or slider, or with a tool open: leave the field and cancel the tool, history untouched.
+  // Only an Esc with nothing open leaves the editor.
+  if (event.key === 'Escape' && !showDiffPreview.value && (inField || cropStatus.value === 1 || activeTool.value)) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (inField && document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    if (cropStatus.value === 1 || activeTool.value) cancelActiveTool();
+    return;
+  }
+  if (inField) return;
+  if (cropStatus.value === 1 && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    if (activeTool.value === 'Straighten') {
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = (event.key === 'ArrowLeft' || event.key === 'ArrowDown') ? -0.1 : 0.1;
+      const step = event.shiftKey ? delta * 10 : delta;
+      applyCropAngle(Number(Math.min(20, Math.max(-20, cropAngle.value + step)).toFixed(1)));
+      return;
+    }
+  }
+  if (props.embedded && cropStatus.value !== 1 && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
     event.preventDefault();
     event.stopImmediatePropagation();
     navigatePhoto(event.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
+  if (handleEditorShortcut(event)) {
+    event.preventDefault();
+    event.stopPropagation();
     return;
   }
 
@@ -2108,8 +3114,6 @@ function handleKeyDown(event: KeyboardEvent) {
     case 'Escape':
       if (showDiffPreview.value) {
         showDiffPreview.value = false;
-      } else if (cropStatus.value === 1) {
-        clickCancelCrop();
       } else {
         clickCancel();
       }
@@ -2126,6 +3130,35 @@ function handleKeyDown(event: KeyboardEvent) {
     default:
       break;
   }
+}
+
+// Cancel the open tool or effect without a history step. A crop or straighten draft is dropped and
+// the controls come back from the saved recipe, as its Cancel button does.
+function cancelActiveTool() {
+  maskMode.value = false;
+  if (cropStatus.value === 1) {
+    clickCancelCrop();
+    void restoreEditorControls();
+  }
+  activeTool.value = '';
+}
+
+// Ctrl+1 / 2 / 3 switch the edit tabs, R / Shift+R rotate (LAP-101). Like the tab and rotate
+// buttons, they wait while a crop, tool or mask is open.
+const EDITOR_TAB_SHORTCUTS = [
+  { actionId: 'editor.tabBasic', tab: 'basic' },
+  { actionId: 'editor.tabTuning', tab: 'tuning' },
+  { actionId: 'editor.tabEffects', tab: 'effects' },
+] as const;
+const editorTabShortcut = (tab: string) => getShortcutLabel(EDITOR_TAB_SHORTCUTS.find(item => item.tab === tab)!.actionId);
+function handleEditorShortcut(event: KeyboardEvent): boolean {
+  const tab = EDITOR_TAB_SHORTCUTS.find(item => matchesShortcut(item.actionId, event))?.tab;
+  const degree = matchesShortcut('meta.rotate', event) ? 90 : matchesShortcut('meta.rotateCounterclockwise', event) ? -90 : 0;
+  if (!tab && !degree) return false;
+  if (cropStatus.value === 1 || isProcessing.value || activeTool.value || maskMode.value) return true;
+  if (tab) editorTab.value = tab;
+  else if (!cropApplied.value && imageReady.value) clickRotate(degree);
+  return true;
 }
 
 const clickCancel = async () => {
@@ -2183,7 +3216,7 @@ const setEditParams = (overrides: { fileName?: string; destFilePath?: string; ou
     sourceFileId: Number(fileInfo.value.id),
     autoEnhance: !!savedEditState.value.auto_enhance,
     redEye: redEye.value,
-    tools: JSON.parse(JSON.stringify(editTools.value)),
+    picasa: JSON.parse(JSON.stringify(picasaTools.value)),
   };
 };
 
@@ -2321,6 +3354,43 @@ function queueHistory(action:'undo'|'redo') {
   historyNavigation = historyNavigation.then(() => saveRecipe(action));
 }
 
+// Revert to Original (LAP-RE-03): back to the photo as it was - its .picasaoriginals copy when a
+// save wrote over the file, and no edits. Enabled when there is such a copy or there are edits.
+const hasOriginalCopy = ref(false);
+const canRevertOriginal = computed(() => hasOriginalCopy.value || !!savedEditState.value.recipe || !!savedEditState.value.auto_enhance);
+async function refreshOriginalCopy() {
+  const file = fileInfo.value;
+  if (!file?.id || !file.file_path) { hasOriginalCopy.value = false; return; }
+  try { hasOriginalCopy.value = await invoke<boolean>('has_picasa_original', { filePath: file.file_path, fileId: null }); }
+  catch { hasOriginalCopy.value = false; }
+}
+watch(() => [fileInfo.value?.id, fileInfo.value?.file_path, fileInfo.value?.modified_at], () => { void refreshOriginalCopy(); }, { immediate: true });
+
+async function revertToOriginal() {
+  if (isProcessing.value || cropStatus.value === 1 || !fileInfo.value?.id) return;
+  const fileId = Number(fileInfo.value.id);
+  const filePath = fileInfo.value.file_path;
+  if (hasOriginalCopy.value && !await askDialog('Replace this photo with its original from the .picasaoriginals folder? Changes saved into the file itself are lost; LapCasa\'s edits are cleared and can still be undone.',
+    { title: 'Revert to Original', kind: 'warning' })) return;
+  isProcessing.value = true;
+  try {
+    await historyNavigation;
+    await flushRecipeSteps();
+    const changed = await invoke<boolean>('revert_to_picasa_original', { filePath, fileId });
+    const file: any = await getFileInfo(fileId);
+    if (file && Number(fileInfo.value?.id) === fileId) fileInfo.value = { ...fileInfo.value, ...file };
+    uiStore.clearActiveAdjustments();
+    if (changed) {
+      uiStore.updateFileVersion(filePath);
+      sendToParent({ type: 'recipe-step', recipeSaved: true, sourceFileId: fileId, saveAsNew: false, filePath });
+    }
+  } catch (error) {
+    historyError.value = String(error);
+  } finally { isProcessing.value = false; }
+  await restoreEditorControls();
+  await refreshOriginalCopy();
+}
+
 function historyStepName(step:{step?:string}) {
   return step.step === 'Undo All Edits' ? 'All Edits' : step.step || 'Edit';
 }
@@ -2329,45 +3399,543 @@ function toolPreview(name:string) {
   return ({'Sepia':'sepia(1)','B&W':'grayscale(1)','Warmify':'sepia(.3) saturate(1.3)',
     'Tint':'sepia(.5) hue-rotate(150deg)','Saturation':'saturate(2)','Soft Focus':'blur(1px)',
     'Glow':'brightness(1.2)','Filtered B&W':'grayscale(1) contrast(1.2)','Focal B&W':'grayscale(.6)',
-    'Graduated Tint':'sepia(.4)','Sharpen':'contrast(1.2)'} as Record<string,string>)[name] || '';
+    'Graduated Tint':'sepia(.4)','Sharpen':'contrast(1.2)','Vignette':'brightness(.85)','Pixelate':'blur(.5px) contrast(1.1)',
+    'Focal Zoom':'blur(.7px)','Lomo-ish':'saturate(1.2) contrast(1.35)','Holga-ish':'grayscale(1) contrast(1.25)',
+    'HDR-ish':'contrast(1.3) saturate(1.2)','Cinemascope':'saturate(.75) contrast(1.1)','Orton-ish':'contrast(1.3) brightness(1.05)',
+    'Infrared':'grayscale(1) brightness(1.3)','Heat Map':'grayscale(1) sepia(1) hue-rotate(180deg) saturate(4)',
+    'Cross Process':'contrast(1.15) saturate(1.35) hue-rotate(-12deg)'} as Record<string,string>)[name] || '';
 }
 
-async function selectEditTool(tool:string) {
+async function selectPicasaTool(tool:string) {
   if (tool==='Crop' || tool==='Straighten') {
-    activeTool.value=tool;
-    toggleCropMode();
+    activeTool.value = tool;
+    isPreviewingCrop.value = false;
+    // Every crop starts free (Manual); a ratio picked last time is not carried over (LAP-102).
+    selectedAspectPresetId.value = 'manual';
+    if (tool === 'Crop') {
+      const effectiveW = rotate.value % 180 === 0 ? imageWidth.value : imageHeight.value;
+      const effectiveH = rotate.value % 180 === 0 ? imageHeight.value : imageWidth.value;
+      isCropLandscape.value = effectiveW >= effectiveH;
+      const hadAppliedCrop = cropApplied.value && crop.value.width > 0 && crop.value.height > 0;
+      cropStatus.value = 1;
+      cropApplied.value = false;
+      cropBoxFixed.value = false;
+      activeSuggestionIndex.value = -1;
+      if (hadAppliedCrop) {
+        fitImageToContainer();
+        cropBoxDrawn.value = true;
+      } else {
+        cropBoxDrawn.value = false;
+        cropAngle.value = 0;
+        cropBox.value = { left: 0, top: 0, width: 0, height: 0 };
+        crop.value = { left: 0, top: 0, width: 0, height: 0 };
+      }
+    } else if (tool === 'Straighten') {
+      cropStatus.value = 1;
+      cropBoxDrawn.value = true;
+      initCropBox();
+    }
   } else if (tool==="I'm Feeling Lucky") {
     await flushRecipeSteps();
     fileInfo.value.edits = await invoke<string>('toggle_auto_enhance',{fileId:Number(fileInfo.value.id),enable:true});
     refreshBasePreview();
     sendToParent({type:'recipe-step',recipeSaved:true,sourceFileId:Number(fileInfo.value.id),filePath:fileInfo.value.file_path});
   } else if (tool==='Redeye') {
-    redEye.value=true;editTools.value.lastStep='Redeye';
-  } else if (tool==='Auto Contrast') {
-    const values=await getAutoPresetValues();
-    brightness.value=values.brightness;contrast.value=values.contrast || 20;
-    editTools.value.lastStep=tool;
-  } else if (tool==='Auto Color') {
-    const image=imageRef.value;
-    if (!image) return;
-    const canvas=document.createElement('canvas');canvas.width=96;canvas.height=96;
-    const context=canvas.getContext('2d')!;context.drawImage(image,0,0,96,96);
-    const pixels=context.getImageData(0,0,96,96).data;
-    const sum=[0,0,0];for(let i=0;i<pixels.length;i+=4) for(let c=0;c<3;c++) sum[c]+=pixels[i+c];
-    const mean=(sum[0]+sum[1]+sum[2])/3;
-    editTools.value.neutral=sum.map(value=>mean/Math.max(1,value));editTools.value.lastStep=tool;
+    redEye.value=true;picasaTools.value.lastStep='Redeye';
+  } else if (tool==='Auto Contrast' || tool==='Auto Color') {
+    await flushRecipeSteps();
+    const result = await invoke<{failed:any[]}>('batch_edit_images', {fileIds:[Number(fileInfo.value.id)],
+      op:tool==='Auto Contrast' ? 'auto_contrast' : 'auto_color'});
+    if (result.failed.length) { historyError.value=result.failed[0].error; return; }
+    const updated = await getFileInfo(Number(fileInfo.value.id));
+    fileInfo.value.edits = updated.edits;
+    await restoreEditorControls();
+    sendToParent({type:'recipe-step',recipeSaved:true,sourceFileId:Number(fileInfo.value.id),filePath:fileInfo.value.file_path});
   } else if (['Sepia','B&W','Warmify','Film Grain'].includes(tool)) {
-    editTools.value.effects.push({name:tool,amount:0.5});editTools.value.lastStep=tool;
+    picasaTools.value.effects.push({name:tool,amount:0.5});picasaTools.value.lastStep=tool;
   } else {
-    activeTool.value=tool;effectAmount.value=tool==='Saturation'?75:50;
+    activeTool.value=tool;effectAmount.value=tool==='Saturation'?75:(PICASA39_DEFAULT_AMOUNT[tool] ?? 50);
     retouchTarget.value=null;retouchSource.value=null;
   }
 }
 
-function applyEditEffect() {
-  editTools.value.effects.push({name:activeTool.value,amount:effectAmount.value/100,color:effectColor.value,cx:toolPoint.value.x,cy:toolPoint.value.y});
-  editTools.value.lastStep=activeTool.value;activeTool.value='';
+// LAP-100: Orig or style 1-5 straight from its button, as one undoable step.
+async function selectLuckyStep(step:number) {
+  if (step===activeLuckyStep.value) return;
+  await flushRecipeSteps();
+  fileInfo.value.edits = await invoke<string>('set_lucky_style',{fileId:Number(fileInfo.value.id),style:step});
+  refreshBasePreview();
+  sendToParent({type:'recipe-step',recipeSaved:true,sourceFileId:Number(fileInfo.value.id),filePath:fileInfo.value.file_path});
 }
+
+function applyPicasaEffect() {
+  effectApplied = true;   // keep the live result up until the saved step's preview replaces it
+  picasaTools.value.effects.push({name:activeTool.value,amount:effectAmount.value/100,color:effectColor.value,cx:toolPoint.value.x,cy:toolPoint.value.y});
+  picasaTools.value.lastStep=activeTool.value;activeTool.value='';
+}
+
+// Masked effects (LAP-098). An effect listed here offers Mask (M) in its panel; add a name to give
+// another effect the same painted / gradient mask. The renderer applies any step's mask.
+const MASK_EFFECTS = ['Automask'];   // LAP-107: the masks belong to Automask
+// LAP-103: the photo offers its regions. Subject / Sky / People / Background and Click to select
+// come from the content selection model (select_* commands); Brush and Gradient are LAP-098's.
+const MASK_REGIONS = [
+  { key: 'subject', label: 'Subject', title: 'The main subject: the person (from their face) or what is in the middle' },
+  { key: 'sky', label: 'Sky', title: 'The sky' },
+  { key: 'people', label: 'People', title: 'Everyone whose face the library found' },
+  { key: 'background', label: 'Background', title: 'Everything but the subject' },
+] as const;
+type MaskRegion = '' | typeof MASK_REGIONS[number]['key'];
+const maskTool = ref<'paint' | 'gradient' | 'select'>('select');
+const maskRegion = ref<MaskRegion>('');
+const selectPoints = ref<SelectPoint[]>([]);
+const selectStatus = ref<{ available: boolean; reason: string; cuda?: boolean } | null>(null);
+const selectBusy = ref(false);
+const selectPreparing = ref(false);
+let preparedFileId = 0;
+let preparingFileId = 0;
+let preparePromise: Promise<void> | null = null;
+let unlistenGpu: (() => void) | null = null;
+onMounted(async () => {
+  const off = await listen('gpu-ready', () => {
+    preparedFileId = 0;
+    selectStatus.value = null;
+    void prepareSelect().catch(() => {});
+  });
+  if (editorUnmounted) off(); else unlistenGpu = off;
+});
+onUnmounted(() => { unlistenGpu?.(); });
+const selectError = ref('');
+const selectDisabledReason = computed(() => selectStatus.value && !selectStatus.value.available ? (selectStatus.value.reason || 'Content selection is not available') : '');
+let selectRequest = 0;
+const maskBrush = ref(0.05);      // brush radius, fraction of the photo's short side
+const maskFeather = ref(0.01);    // edge softening (Gaussian sigma), fraction of the short side
+const maskInverted = ref(false);
+const maskOverlay = ref(false);
+const effectMaskRef = ref<InstanceType<typeof EffectMask> | null>(null);
+const maskLayerStyle = computed((): CSSProperties => ({ ...imageStyle.value, transition: 'none', willChange: 'auto' }));
+
+function enterMaskMode(tool: 'paint' | 'gradient' | 'select' = 'select') {
+  if (!MASK_EFFECTS.includes(activeTool.value) || cropStatus.value === 1 || !imageReady.value) return;
+  maskTool.value = tool; maskInverted.value = false; maskOverlay.value = false;
+  maskRegion.value = ''; selectPoints.value = []; selectError.value = '';
+  maskMode.value = true;
+  void prepareSelect().catch(() => {});
+}
+function leaveMaskMode() { maskMode.value = false; }
+// Brush, Gradient or Click to select as the current tool; opens mask mode if it is not open.
+function startMaskTool(tool: 'paint' | 'gradient' | 'select') {
+  if (!maskMode.value) { enterMaskMode(tool); return; }
+  if (tool === 'select' && selectDisabledReason.value) return;
+  maskTool.value = tool;
+  if (tool === 'select') { maskRegion.value = ''; }
+  if (tool === 'gradient') { maskRegion.value = ''; selectPoints.value = []; }
+  selectError.value = '';
+}
+function toggleMaskGradient() { startMaskTool(maskTool.value === 'gradient' ? 'select' : 'gradient'); }
+watch(activeTool, tool => {
+  if (!MASK_EFFECTS.includes(tool)) maskMode.value = false;
+  else if (!selectStatus.value) void invoke<{ available: boolean; reason: string; cuda?: boolean }>('select_status').then(s => { selectStatus.value = s; }).catch(e => { selectStatus.value = { available: false, reason: String(e) }; });
+});
+watch(() => fileInfo.value?.id, () => { maskMode.value = false; preparedFileId = 0; ++selectRequest; selectBusy.value = false; });
+watch([imageReady, () => fileInfo.value?.id], ([ready, id]) => {
+  if (ready && id) void prepareSelect().catch(() => {});
+}, { immediate: true });
+
+// Start as soon as the editor photo is ready; clicks await the same in-flight preparation.
+async function prepareSelect() {
+  const fileId = Number(fileInfo.value?.id);
+  if (!fileId || selectDisabledReason.value) return;
+  if (preparedFileId === fileId) return;
+  if (preparePromise && preparingFileId === fileId) return preparePromise;
+  preparingFileId = fileId;
+  selectPreparing.value = true;
+  const promise = invoke('select_prepare', { fileId }).then(() => {
+    if (Number(fileInfo.value?.id) === fileId) preparedFileId = fileId;
+  }).catch(e => {
+    if (Number(fileInfo.value?.id) === fileId) selectError.value = String(e);
+    throw e;
+  }).finally(() => {
+    if (preparePromise === promise) { preparePromise = null; selectPreparing.value = false; }
+  });
+  preparePromise = promise;
+  return promise;
+}
+// A click in Click to select mode: a new selection, or Shift / Alt to add to or take from it.
+function onSelectClick(p: { x: number; y: number; add: boolean; subtract: boolean }) {
+  if (maskTool.value !== 'select' || isProcessing.value) return;
+  const point: SelectPoint = { x: p.x, y: p.y, label: p.subtract && selectPoints.value.length ? 0 : 1 };
+  selectPoints.value = (p.add || p.subtract) && selectPoints.value.length ? [...selectPoints.value, point] : [point];
+  maskRegion.value = '';
+  void runSelection('select_points', { points: selectPoints.value });
+}
+// Subject / Sky / People / Background: one click, the model's region; Background is Subject inverted.
+function applyRegion(kind: MaskRegion) {
+  if (!kind || selectDisabledReason.value) return;
+  if (!maskMode.value) enterMaskMode('select');
+  maskTool.value = 'select'; maskRegion.value = kind; selectPoints.value = [];
+  maskInverted.value = kind === 'background';
+  void runSelection('select_region', { kind: kind === 'background' ? 'subject' : kind });
+}
+async function runSelection(command: 'select_points' | 'select_region', args: Record<string, unknown>) {
+  const fileId = Number(fileInfo.value?.id);
+  if (!fileId) return;
+  const request = ++selectRequest;
+  selectBusy.value = true; selectError.value = '';
+  try {
+    await prepareSelect();
+    if (request !== selectRequest || Number(fileInfo.value?.id) !== fileId) return;
+    const r = await invoke<{ png: string; iou: number; ms: number }>(command, { fileId, ...args });
+    if (request !== selectRequest || Number(fileInfo.value?.id) !== fileId || !maskMode.value) return;
+    await effectMaskRef.value?.setSelection(r.png);
+  } catch (e) {
+    if (request === selectRequest) selectError.value = String(e);
+  } finally {
+    if (request === selectRequest) selectBusy.value = false;
+  }
+}
+
+// Where a pointer is on the photo, 0..1 of its width and height (as pickEditorPoint, unclamped).
+function clientToImage(clientX: number, clientY: number) {
+  const rect = imageRef.value!.getBoundingClientRect();
+  const dx = (clientX - rect.left - rect.width / 2) / scale.value;
+  const dy = (clientY - rect.top - rect.height / 2) / scale.value;
+  const a = displayRotate.value * Math.PI / 180;
+  const x = (dx * Math.cos(a) + dy * Math.sin(a)) * (isFlippedX.value ? -1 : 1) + imageWidth.value / 2;
+  const y = (-dx * Math.sin(a) + dy * Math.cos(a)) * (isFlippedY.value ? -1 : 1) + imageHeight.value / 2;
+  return { x: x / imageWidth.value, y: y / imageHeight.value };
+}
+
+// M opens mask mode for an effect that has it; in mask mode the keys below drive the mask and
+// nothing else (no photo navigation). Returns true when the key was used.
+function handleMaskKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || isProcessing.value) return false;
+  const target = event.target;
+  const slider = target instanceof HTMLInputElement && target.type === 'range';
+  if (isEditableTarget(target) && !slider) return false;
+  const key = event.key.toLowerCase();
+  if (!maskMode.value) {
+    if (!event.altKey && MASK_EFFECTS.includes(activeTool.value)) {
+      if (key === 'm' || key === 'b') { enterMaskMode('paint'); return maskMode.value; }
+      if (key === 's' && !selectDisabledReason.value) { enterMaskMode('select'); return maskMode.value; }
+      if (key === 'g') { enterMaskMode('gradient'); return maskMode.value; }
+    }
+    return false;
+  }
+  if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+    const up = event.code === 'BracketRight';
+    if (event.shiftKey) maskFeather.value = Math.min(0.1, up ? Math.max(0.002, maskFeather.value * 1.25) : (maskFeather.value < 0.0025 ? 0 : maskFeather.value / 1.25));
+    else maskBrush.value = Math.min(0.5, Math.max(0.005, up ? maskBrush.value * 1.2 : maskBrush.value / 1.2));
+    return true;
+  }
+  switch (key) {
+    case 'i': maskInverted.value = !maskInverted.value; return true;
+    case 'x': maskOverlay.value = !maskOverlay.value; return true;
+    case 'g': toggleMaskGradient(); return true;
+    case 'b': startMaskTool('paint'); return true;
+    case 's': startMaskTool('select'); return true;
+    case 'm': leaveMaskMode(); return true;
+    case 'backspace': case 'delete': maskRegion.value = ''; selectPoints.value = []; effectMaskRef.value?.clear(); return true;
+    case 'enter': void (activeTool.value === 'Automask' ? commitLight() : commitMask()); return true;
+    // Esc: no step, the photo back as it was.
+    case 'escape': maskMode.value = false; activeTool.value = ''; return true;
+    case 'arrowleft': case 'arrowright': case 'arrowup': case 'arrowdown': return !slider;
+    case ' ': return true;
+    default: return false;
+  }
+}
+
+async function commitMask() {
+  const layer = effectMaskRef.value;
+  if (!maskMode.value || !layer || isProcessing.value || !fileInfo.value?.id) return;
+  if (selectBusy.value) return;   // the selection is still being made: Enter then would commit the wrong mask
+  // Nothing painted: the effect applies to the whole photo, exactly as without a mask.
+  if (!maskInverted.value && layer.isEmpty()) { maskMode.value = false; applyPicasaEffect(); return; }
+  const fileId = Number(fileInfo.value.id);
+  const tool = activeTool.value;
+  isProcessing.value = true;
+  try {
+    const mask = await invoke<string>('save_effect_mask', { fileId, png: layer.exportPng(), feather: maskFeather.value,
+      inverted: maskInverted.value, info: layer.info() });
+    const step = { name: tool, amount: effectAmount.value / 100, color: effectColor.value, cx: toolPoint.value.x, cy: toolPoint.value.y, mask };
+    const tools = JSON.parse(JSON.stringify(picasaTools.value));
+    tools.effects = [...(tools.effects || []), step];
+    ++effectDraftId;
+    const preview = await invoke<string>('render_edit_draft', { fileId, picasa: tools });
+    if (Number(fileInfo.value?.id) !== fileId || activeTool.value !== tool) return;
+    // The masked result stays up until the saved step's preview replaces it.
+    effectPreviewSrc.value = preview;
+    effectApplied = true;
+    maskMode.value = false;
+    picasaTools.value.effects.push(step);
+    picasaTools.value.lastStep = tool; activeTool.value = '';
+  } catch (error) {
+    historyError.value = String(error);
+  } finally { isProcessing.value = false; }
+}
+
+// LAP-107: Automask - brightness by region (local curves). Each entry is a region (whole photo or a
+// saved mask) and a tone curve: Shadows / Highlights / Whites / Blacks bend it both ways, points
+// drawn in its curve apply on top. Kept in the recipe's local list as settings (t_edit_local.rs
+// renders them), so each can be reopened, switched off or removed later; they stack in order.
+type LightAdj = { region: string; mask: string | null; enabled?: boolean; detail?: boolean; shadows: number; highlights: number; whites: number; blacks: number; curve: CurvePoint[] };
+type LightSlider = 'shadows' | 'highlights' | 'whites' | 'blacks';
+const LIGHT_SLIDERS: { key: LightSlider; label: string; title: string }[] = [
+  { key: 'shadows', label: 'Shadows', title: 'Right lifts the dark tones, left deepens them' },
+  { key: 'highlights', label: 'Highlights', title: 'Left holds back the bright tones, right brightens them' },
+  { key: 'whites', label: 'Whites', title: 'Moves the white end' },
+  { key: 'blacks', label: 'Blacks', title: 'Moves the black end' },
+];
+const LIGHT_REGIONS: Record<string, string> = { whole: 'Whole photo', subject: 'Subject', sky: 'Sky', people: 'People', background: 'Background',
+  select: 'Selection', brush: 'Brushed area', gradient: 'Gradient', dark: 'Dark areas', bright: 'Bright areas' };
+// Number keys pick where it applies, in the row's own order.
+const AUTOMASK_KEYS = [
+  { actionId: 'editor.automaskWhole', region: 'whole' },
+  { actionId: 'editor.automaskSubject', region: 'subject' },
+  { actionId: 'editor.automaskSky', region: 'sky' },
+  { actionId: 'editor.automaskPeople', region: 'people' },
+  { actionId: 'editor.automaskBackground', region: 'background' },
+] as const;
+const regionKey = (region: string) => { const k = AUTOMASK_KEYS.find(item => item.region === region); return k ? getShortcutLabel(k.actionId) : ''; };
+const newLight = (): LightAdj => ({ region: 'whole', mask: null, enabled: true, detail: true, shadows: 0, highlights: 0, whites: 0, blacks: 0, curve: [[0, 0], [1, 1]] });
+const lightDraft = ref<LightAdj>(newLight());
+const lightEditing = ref(-1);
+const lightCurvePreview = ref<CurvePoint[] | null>(null);
+const lightStatus = ref('');
+const balancing = ref(false);
+const lightList = computed<LightAdj[]>(() => Array.isArray(picasaTools.value.local) ? picasaTools.value.local : []);
+const lightKeepsMask = computed(() => activeTool.value === 'Automask' && !maskMode.value && !!lightDraft.value.mask);
+const lightCurveModel = computed(() => ({ ...identityCurves(), rgb: lightDraft.value.curve }));
+const lightCurveBent = computed(() => lightDraft.value.curve.some(([x, y]) => x !== y));
+const clonePlain = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+function lightLabel(a: LightAdj) { return LIGHT_REGIONS[a.mask ? a.region : 'whole'] || 'Area'; }
+function lightSummary(a: LightAdj) {
+  const parts = LIGHT_SLIDERS.filter(sl => a[sl.key]).map(sl => `${sl.label} ${a[sl.key] > 0 ? '+' : ''}${a[sl.key]}`);
+  if (a.curve?.some(([x, y]) => x !== y)) parts.push('curve');
+  return parts.join(', ') || 'no change';
+}
+// The curve that applies (sliders' bend, then the points), drawn in blue under the editable points.
+const lightResult = computed(() => {
+  const lut = curveLut(lightCurvePreview.value || lightDraft.value.curve);
+  const a = lightDraft.value;
+  let last = 0;
+  return Array.from({ length: 129 }, (_, i) => {
+    // Detail mode: a negative Blacks is a black point (t_edit_local BLACK_POINT_MAX 0.25), not a bend.
+    const bp = a.detail && a.blacks < 0 ? -a.blacks / 100 * 0.25 : 0;
+    const bent = automaskBend(i / 128, a.shadows / 100, a.highlights / 100, a.whites / 100, bp ? 0 : a.blacks / 100);
+    const y = Math.max(last, Math.max(0, Math.min(1, bp ? (bent - bp) / (1 - bp) : bent)));
+    last = y;
+    const f = y * 255, i0 = Math.floor(f), i1 = Math.min(255, i0 + 1);
+    return (lut[i0] * (1 - (f - i0)) + lut[i1] * (f - i0)) / 255;
+  });
+});
+function onLightCurve(curves: Curves) { lightDraft.value = { ...lightDraft.value, curve: curves.rgb }; lightCurvePreview.value = null; }
+// Open Automask: a new one starts by picking where it applies (the photo answers to the pointer at
+// once); an existing one opens with its settings and keeps its area unless another is picked.
+function openLight(index: number) {
+  lightEditing.value = index >= 0 && index < lightList.value.length ? index : -1;
+  lightDraft.value = lightEditing.value >= 0 ? { ...newLight(), ...clonePlain(lightList.value[index]) } : newLight();
+  lightCurvePreview.value = null;
+  lightStatus.value = '';
+  maskMode.value = false;
+  activeTool.value = 'Automask';
+  if (lightEditing.value < 0) void nextTick(() => enterMaskMode('select'));
+}
+function chooseWholePhoto() {
+  leaveMaskMode();
+  if (activeTool.value === 'Automask') lightDraft.value = { ...lightDraft.value, region: 'whole', mask: null };
+}
+function setLightList(local: LightAdj[], step: string) {
+  effectApplied = false;
+  picasaTools.value = { ...picasaTools.value, local, lastStep: step };
+}
+function toggleLight(index: number) {
+  const local = clonePlain(lightList.value);
+  const on = local[index].enabled === false;
+  local[index].enabled = on;
+  setLightList(local, `Automask ${index + 1} ${on ? 'on' : 'off'}`);
+}
+function removeLight(index: number) {
+  const local = clonePlain(lightList.value);
+  const [gone] = local.splice(index, 1);
+  setLightList(local, `Remove Automask: ${lightLabel(gone)}`);
+}
+// The list as it would be with the draft in place.
+function lightListWithDraft(entry: LightAdj) {
+  const local = clonePlain(lightList.value);
+  if (lightEditing.value >= 0 && lightEditing.value < local.length) local[lightEditing.value] = entry; else local.push(entry);
+  return local;
+}
+// Live result while the sliders and curve move (an unsaved render, no history step). In mask mode the
+// draft is rendered for the whole photo and the mask layer shows it only where the selection is.
+let lightDraftTimer: ReturnType<typeof setTimeout> | null = null, lightDraftId = 0;
+watch([activeTool, () => JSON.stringify(lightDraft.value), () => JSON.stringify(lightCurvePreview.value), maskMode], () => {
+  if (activeTool.value !== 'Automask' || !fileInfo.value?.id) return;
+  if (lightDraftTimer) clearTimeout(lightDraftTimer);
+  const id = ++lightDraftId;
+  lightDraftTimer = setTimeout(async () => {
+    const fileId = Number(fileInfo.value.id);
+    const entry: LightAdj = { ...clonePlain(lightDraft.value), curve: clonePlain(lightCurvePreview.value || lightDraft.value.curve), enabled: true };
+    if (maskMode.value) { entry.mask = null; entry.region = 'whole'; }
+    const tools = clonePlain(picasaTools.value);
+    tools.local = lightListWithDraft(entry);
+    try {
+      const src = await invoke<string>('render_edit_draft', { fileId, picasa: tools });
+      if (id === lightDraftId && Number(fileInfo.value?.id) === fileId && activeTool.value === 'Automask') effectPreviewSrc.value = src;
+    } catch (error) { console.error('Automask preview failed:', error); }
+  }, 120);
+});
+// Apply (or Enter): the selection (if any) is saved as a mask, the adjustment goes into the list
+// (replacing the one being changed) as one history step, and the list shows it.
+async function commitLight() {
+  if (activeTool.value !== 'Automask' || isProcessing.value || !fileInfo.value?.id || selectBusy.value) return;
+  const fileId = Number(fileInfo.value.id);
+  const entry: LightAdj = { ...clonePlain(lightDraft.value), enabled: true };
+  isProcessing.value = true;
+  try {
+    const layer = effectMaskRef.value;
+    if (maskMode.value) {
+      if (layer && (maskInverted.value || !layer.isEmpty())) {
+        entry.mask = await invoke<string>('save_effect_mask', { fileId, png: layer.exportPng(), feather: maskFeather.value,
+          inverted: maskInverted.value, info: layer.info() });
+        entry.region = maskRegion.value || (maskTool.value === 'paint' ? 'brush' : maskTool.value);
+      } else { entry.mask = null; }
+    }
+    if (!entry.mask) entry.region = 'whole';
+    const local = lightListWithDraft(entry);
+    const tools = clonePlain(picasaTools.value);
+    tools.local = local;
+    ++lightDraftId;
+    // The result stays up until the saved step's preview replaces it.
+    const preview = await invoke<string>('render_edit_draft', { fileId, picasa: tools });
+    if (Number(fileInfo.value?.id) !== fileId || activeTool.value !== 'Automask') return;
+    effectPreviewSrc.value = preview;
+    effectApplied = true;
+    maskMode.value = false;
+    picasaTools.value = { ...picasaTools.value, local, lastStep: `Automask: ${lightLabel(entry)}` };
+    activeTool.value = '';
+    editorTab.value = 'tuning';
+  } catch (error) {
+    historyError.value = String(error);
+  } finally { isProcessing.value = false; }
+}
+
+// Pointing at the photo before anything is picked: the model's region under the pointer lights up;
+// a click picks it (Click to select).
+const hoverMaskSrc = ref('');
+let hoverRequest = 0;
+async function onSelectHover(p: { x: number; y: number }) {
+  if (activeTool.value !== 'Automask' || maskTool.value !== 'select' || maskRegion.value || selectPoints.value.length
+      || selectBusy.value || isProcessing.value || preparedFileId !== Number(fileInfo.value?.id)) return;
+  const id = ++hoverRequest, fileId = Number(fileInfo.value.id);
+  try {
+    const r = await invoke<{ png: string }>('select_points', { fileId, points: [{ x: p.x, y: p.y, label: 1 }] });
+    if (id === hoverRequest && !maskRegion.value && !selectPoints.value.length && maskMode.value) hoverMaskSrc.value = r.png;
+  } catch { /* the hover is a hint only */ }
+}
+function onSelectLeave() { ++hoverRequest; hoverMaskSrc.value = ''; }
+watch([maskRegion, () => selectPoints.value.length, maskMode, activeTool], () => { ++hoverRequest; hoverMaskSrc.value = ''; });
+
+// Auto for the area being picked: the sliders by Auto Balance's rules from that area of the photo
+// without any Automask (t_edit_balance), shown on the sliders to fine-tune.
+const lightAutoDisabled = computed(() => lightKeepsMask.value || selectBusy.value);
+async function autoLight() {
+  if (activeTool.value !== 'Automask' || !fileInfo.value?.id || lightAutoDisabled.value) return;
+  try {
+    const layer = effectMaskRef.value;
+    const png = maskMode.value && layer && (maskInverted.value || !layer.isEmpty()) ? layer.exportPng() : null;
+    const values = await invoke<Pick<LightAdj, LightSlider>>('automask_auto', { fileId: Number(fileInfo.value.id), picasa: clonePlain(picasaTools.value),
+      png, inverted: !!png && maskInverted.value, region: maskMode.value ? (maskRegion.value || 'select') : 'whole' });
+    lightDraft.value = { ...lightDraft.value, ...values, detail: true };
+  } catch (error) { historyError.value = String(error); }
+}
+// Auto Balance (round 3, t_edit_balance): the photo decides what needs masking - haze, sky, bright and
+// dark areas, people (whole faces only) - and each becomes an Automask entry, as one history step.
+// When the darkness of a scene is its mood, the shadows are left alone. Same photo, same result.
+async function autoBalance() {
+  if (!fileInfo.value?.id || isProcessing.value || !imageReady.value || cropStatus.value === 1 || activeTool.value) return;
+  const fileId = Number(fileInfo.value.id);
+  isProcessing.value = true; balancing.value = true; lightStatus.value = '';
+  try {
+    const r = await invoke<{ entries: LightAdj[]; mood: boolean }>('automask_balance', { fileId, picasa: clonePlain(picasaTools.value) });
+    if (Number(fileInfo.value?.id) !== fileId) return;
+    if (!r.entries.length) {
+      lightStatus.value = r.mood ? 'Auto Balance: the darkness here looks intended, so it is left as it is.' : 'Auto Balance: nothing in this photo needs balancing.';
+      return;
+    }
+    if (r.mood) lightStatus.value = 'Auto Balance: the darkness here looks intended, so the shadows are left alone.';
+    setLightList([...clonePlain(lightList.value), ...r.entries], 'Auto Balance');
+    editorTab.value = 'tuning';
+  } catch (error) {
+    historyError.value = String(error);
+  } finally { isProcessing.value = false; balancing.value = false; }
+}
+
+// Automask keys (registry: editor.automask*): M opens it; inside it 1-5 pick where it applies,
+// S click to select, X shows the mask, Delete removes the open Automask (or clears a selection),
+// Enter applies. Esc cancels as for every tool.
+function handleAutomaskKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey || isProcessing.value || cropStatus.value === 1) return false;
+  const target = event.target;
+  // A slider or a list checkbox with focus still takes these keys; text fields do not.
+  const control = target instanceof HTMLInputElement && (target.type === 'range' || target.type === 'checkbox');
+  if (isEditableTarget(target) && !control) return false;
+  if (activeTool.value !== 'Automask') {
+    if (!activeTool.value && imageReady.value && matchesShortcut('editor.automask', event)) { openLight(-1); return true; }
+    return false;
+  }
+  const region = AUTOMASK_KEYS.find(item => matchesShortcut(item.actionId, event));
+  if (region) {
+    if (region.region === 'whole') chooseWholePhoto(); else applyRegion(region.region);
+    return true;
+  }
+  if (matchesShortcut('editor.automaskSelect', event)) { startMaskTool('select'); return true; }
+  if (matchesShortcut('editor.automaskShowMask', event)) { if (maskMode.value) maskOverlay.value = !maskOverlay.value; return true; }
+  if (matchesShortcut('editor.automaskRemove', event)) {
+    if (lightEditing.value >= 0) {
+      const index = lightEditing.value;
+      maskMode.value = false; activeTool.value = '';
+      removeLight(index);
+      editorTab.value = 'tuning';
+    } else if (maskMode.value) { maskRegion.value = ''; selectPoints.value = []; effectMaskRef.value?.clear(); }
+    return true;
+  }
+  if (matchesShortcut('editor.automask', event)) return true;
+  if (event.key === 'Enter') { void commitLight(); return true; }
+  return false;
+}
+
+// A history step made by a masked effect (the badge on Undo / Redo).
+function stepMasked(state: any) {
+  if (typeof state?.step === 'string' && state.step.startsWith('Automask: ') && state.step !== 'Automask: Whole photo') return true;
+  const effects = state?.recipe?.picasa?.effects;
+  const last = Array.isArray(effects) ? effects.at(-1) : null;
+  return !!(last?.mask && state?.step === last.name);
+}
+
+// LAP-087: effects with an Amount slider preview live on the edited picture while the slider,
+// colour or centre changes (an unsaved render, no history step); the Original side of A|A and the
+// other side of A|B are never touched.
+const AMOUNT_EFFECTS = ['Sharpen','Tint','Saturation','Soft Focus','Glow','Filtered B&W','Focal B&W','Graduated Tint', ...PICASA39_EFFECTS];
+let effectApplied = false, effectDraftTimer: ReturnType<typeof setTimeout> | null = null, effectDraftId = 0;
+watch([activeTool, effectAmount, effectColor, () => JSON.stringify(toolPoint.value)], () => {
+  if (effectDraftTimer) clearTimeout(effectDraftTimer);
+  const id = ++effectDraftId;
+  if (!AMOUNT_EFFECTS.includes(activeTool.value) || !fileInfo.value?.id) {
+    if (!effectApplied && !DRAFT_TOOLS.includes(activeTool.value) && activeTool.value !== 'Automask') effectPreviewSrc.value = '';
+    return;
+  }
+  effectDraftTimer = setTimeout(async () => {
+    const fileId = Number(fileInfo.value.id);
+    const tools = JSON.parse(JSON.stringify(picasaTools.value));
+    tools.effects = [...(tools.effects || []), {name:activeTool.value,amount:effectAmount.value/100,color:effectColor.value,cx:toolPoint.value.x,cy:toolPoint.value.y}];
+    try {
+      const src = await invoke<string>('render_edit_draft', { fileId, picasa: tools });
+      if (id === effectDraftId && Number(fileInfo.value?.id) === fileId && AMOUNT_EFFECTS.includes(activeTool.value)) effectPreviewSrc.value = src;
+    } catch (error) { console.error('Effect preview failed:', error); }
+  }, 120);
+});
+watch(imageSrc, () => { effectApplied = false; if (!AMOUNT_EFFECTS.includes(activeTool.value) && !DRAFT_TOOLS.includes(activeTool.value) && activeTool.value !== 'Automask') effectPreviewSrc.value = ''; });
 
 function pickEditorPoint(event:MouseEvent) {
   if (!activeTool.value || cropStatus.value===1 || !imageRef.value) return;
@@ -2381,43 +3949,205 @@ function pickEditorPoint(event:MouseEvent) {
   toolPoint.value=point;
   if (activeTool.value==='Retouch') {
     if (!retouchTarget.value) retouchTarget.value=point;else retouchSource.value=point;
+  } else if (activeTool.value==='Temperature Picker') {
+    void pickNeutralTemperature(point);
   } else if (activeTool.value==='Neutral Color Picker') {
     const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
     const context=canvas.getContext('2d')!;context.drawImage(image,0,0);
     const pixel=context.getImageData(Math.min(canvas.width-1,Math.floor(point.x*canvas.width)),Math.min(canvas.height-1,Math.floor(point.y*canvas.height)),1,1).data;
     const gray=(pixel[0]+pixel[1]+pixel[2])/3;
-    editTools.value.neutral=[pixel[0],pixel[1],pixel[2]].map(v=>gray/Math.max(1,v));
-    editTools.value.lastStep='Neutral Color Picker';activeTool.value='';
+    picasaTools.value.neutral=[pixel[0],pixel[1],pixel[2]].map(v=>gray/Math.max(1,v));
+    picasaTools.value.lastStep='Neutral Color Picker';activeTool.value='';
   }
+}
+
+function retouchLayer() {
+  return {sx:retouchSource.value!.x,sy:retouchSource.value!.y,tx:retouchTarget.value!.x,ty:retouchTarget.value!.y,radius:brushSize.value/100};
+}
+
+// Tuning eyedropper (Picasa's whitept, LAP-071): the photo is rendered as it stands at the
+// temperature step (the edits before it, temperature 0, no effects or curves after it), the clicked
+// spot (5 x 5 average) is read, and Color Temperature is set to (B - R) / 60 - the temperature step
+// adds 30 x t to red and takes it from blue, so that spot ends with red equal to blue. The result
+// previews at once, until the saved step's preview replaces it.
+async function pickNeutralTemperature(point:{x:number;y:number}) {
+  const fileId = Number(fileInfo.value?.id);
+  if (!fileId) return;
+  const stage = JSON.parse(JSON.stringify(picasaTools.value));
+  stage.temperature = 0; stage.effects = []; delete stage.curves;
+  try {
+    const src = await invoke<string>('render_edit_draft', { fileId, picasa: stage });
+    const img = new Image(); img.src = src; await img.decode();
+    const canvas = document.createElement('canvas'); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    const context = canvas.getContext('2d')!; context.drawImage(img, 0, 0);
+    const x0 = Math.max(0, Math.min(canvas.width - 5, Math.round(point.x * (canvas.width - 1)) - 2));
+    const y0 = Math.max(0, Math.min(canvas.height - 5, Math.round(point.y * (canvas.height - 1)) - 2));
+    const data = context.getImageData(x0, y0, Math.min(5, canvas.width), Math.min(5, canvas.height)).data;
+    let red = 0, blue = 0;
+    for (let i = 0; i < data.length; i += 4) { red += data[i]; blue += data[i + 2]; }
+    const n = data.length / 4;
+    const slider = Math.max(-100, Math.min(100, Math.round((blue / n - red / n) * 100 / 60)));
+    if (activeTool.value !== 'Temperature Picker' || Number(fileInfo.value?.id) !== fileId) return;
+    picasaTools.value.temperature = slider; picasaTools.value.lastStep = 'Color Temperature';
+    activeTool.value = '';
+    effectApplied = true;
+    const preview = await invoke<string>('render_edit_draft', { fileId, picasa: JSON.parse(JSON.stringify(picasaTools.value)) });
+    if (Number(fileInfo.value?.id) === fileId && !activeTool.value) effectPreviewSrc.value = preview;
+  } catch (error) { console.error('Neutral temperature pick failed:', error); }
 }
 
 function applyRetouch() {
   if (!retouchTarget.value || !retouchSource.value) return;
-  editTools.value.retouch.push({sx:retouchSource.value.x,sy:retouchSource.value.y,tx:retouchTarget.value.x,ty:retouchTarget.value.y,radius:brushSize.value/100});
-  editTools.value.lastStep='Retouch';activeTool.value='';
+  effectApplied = true;   // keep the live result up until the saved step's preview replaces it
+  picasaTools.value.retouch.push(retouchLayer());
+  picasaTools.value.lastStep='Retouch';activeTool.value='';
+}
+
+// The Text tool's layer as the recipe stores it: the text drawn into a PNG (font, size, colour,
+// bold / italic, an outline in black or white, whichever stands out from the colour) placed at
+// toolPoint. Shared by the live preview and Apply, so Apply saves exactly what was previewed.
+function buildTextLayer() {
+  const canvas=document.createElement('canvas');const context=canvas.getContext('2d')!;
+  const size=Math.max(12,Math.min(96,textSize.value));
+  const font=`${textItalic.value?'italic ':''}${textBold.value?'bold ':''}${size}px ${toolFont.value}`;
+  const line=textOutline.value?Math.max(2,Math.round(size/12)):0;
+  const pad=2+line;
+  context.font=font;
+  canvas.width=Math.min(2048,Math.ceil(context.measureText(toolText.value).width)+pad*2);canvas.height=size*2+line*2;
+  context.font=font;context.textBaseline='top';context.lineJoin='round';
+  if (line) {
+    const hex=effectColor.value.replace('#','');
+    const rgb=[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)||0);
+    context.strokeStyle=(rgb[0]*299+rgb[1]*587+rgb[2]*114)/1000>128?'#000000':'#ffffff';
+    context.lineWidth=line*2;context.strokeText(toolText.value,pad,pad);
+  }
+  context.fillStyle=effectColor.value;context.fillText(toolText.value,pad,pad);
+  return {png:canvas.toDataURL('image/png').split(',')[1],x:toolPoint.value.x,y:toolPoint.value.y,
+    width:canvas.width/imageWidth.value,height:canvas.height/imageHeight.value};
 }
 
 function applyText() {
-  const canvas=document.createElement('canvas');const context=canvas.getContext('2d')!;
-  const size=Math.max(12,Math.min(96,textSize.value));
-  context.font=`${size}px ${toolFont.value}`;
-  canvas.width=Math.min(2048,Math.ceil(context.measureText(toolText.value).width)+4);canvas.height=size*2;
-  context.font=`${size}px ${toolFont.value}`;context.fillStyle=effectColor.value;
-  context.textBaseline='top';context.fillText(toolText.value,2,2);
-  editTools.value.text.push({png:canvas.toDataURL('image/png').split(',')[1],x:toolPoint.value.x,y:toolPoint.value.y,
-    width:canvas.width/imageWidth.value,height:canvas.height/imageHeight.value});
-  editTools.value.lastStep='Text';activeTool.value='';
+  if (!toolText.value) return;
+  effectApplied = true;   // keep the live result up until the saved step's preview replaces it
+  picasaTools.value.text.push(buildTextLayer());
+  picasaTools.value.lastStep='Text';activeTool.value='';
+}
+
+// Build 37: Text and Retouch preview live on the photo too (an unsaved render, no history step):
+// the text as it is typed, styled and placed; the healed blemish once both areas are picked.
+const DRAFT_TOOLS = ['Text', 'Retouch'];
+let toolDraftTimer: ReturnType<typeof setTimeout> | null = null, toolDraftId = 0;
+watch([activeTool, toolText, toolFont, textSize, effectColor, textBold, textItalic, textOutline, brushSize,
+  () => JSON.stringify(toolPoint.value), () => JSON.stringify(retouchTarget.value), () => JSON.stringify(retouchSource.value)], () => {
+  if (!DRAFT_TOOLS.includes(activeTool.value) || !fileInfo.value?.id) return;
+  if (toolDraftTimer) clearTimeout(toolDraftTimer);
+  const id = ++toolDraftId;
+  const tool = activeTool.value;
+  const ready = tool === 'Text' ? !!toolText.value : !!(retouchTarget.value && retouchSource.value);
+  if (!ready) { effectPreviewSrc.value = ''; return; }
+  toolDraftTimer = setTimeout(async () => {
+    const fileId = Number(fileInfo.value.id);
+    const tools = JSON.parse(JSON.stringify(picasaTools.value));
+    if (tool === 'Text') tools.text = [...(tools.text || []), buildTextLayer()];
+    else tools.retouch = [...(tools.retouch || []), retouchLayer()];
+    try {
+      const src = await invoke<string>('render_edit_draft', { fileId, picasa: tools });
+      if (id === toolDraftId && Number(fileInfo.value?.id) === fileId && activeTool.value === tool) effectPreviewSrc.value = src;
+    } catch (error) { console.error('Tool preview failed:', error); }
+  }, 120);
+});
+
+// A moving tone slider (Fill Light, LAP-106; and Highlights, Shadows, Colour Temperature, LAP-108)
+// renders the actual tone curve before the gesture is saved, the newest value winning.
+const TONE_KEYS = ['fillLight', 'highlights', 'shadows', 'temperature'];
+const toneUnsaved = () => TONE_KEYS.some(key =>
+  Number(picasaTools.value[key] || 0) !== Number(savedEditState.value.recipe?.picasa?.[key] || 0));
+let fillDraftTimer: ReturnType<typeof setTimeout> | null = null;
+const fillDraft = latestDraft(async () => {
+  const fileId = Number(fileInfo.value?.id);
+  if (!fileId || !imageReady.value || restoringHistory || activeTool.value || editorUnmounted) return null;
+  if (!toneUnsaved()) return null;
+  const tools = JSON.parse(JSON.stringify(picasaTools.value));
+  delete tools.curves; // the editor's curve layer follows this uncurved base
+  const signature = baseSignature;
+  const src = await invoke<string>('render_edit_draft', { fileId, picasa: tools, previewSize: 768 });
+  return { src, signature, fileId };
+}, ({ src, signature, fileId }) => {
+  if (signature === baseSignature && !editorUnmounted && !restoringHistory
+      && Number(fileInfo.value?.id) === fileId && !activeTool.value && toneUnsaved()) {
+    effectPreviewSrc.value = src;
+  }
+}, error => { historyError.value = String(error); });
+onUnmounted(() => { fillDraft.dispose(); if (fillDraftTimer) clearTimeout(fillDraftTimer); });
+watch(() => TONE_KEYS.map(key => picasaTools.value[key]).join(), () => {
+  fillDraft.invalidate();
+  if (!activeTool.value && !toneUnsaved()) effectPreviewSrc.value = '';
+  if (fillDraftTimer) clearTimeout(fillDraftTimer);
+  fillDraftTimer = setTimeout(() => fillDraft.request(), 30);
+});
+
+// Where the Retouch areas sit on screen (container pixels): the inverse of pickEditorPoint.
+const retouchRings = computed(() => {
+  const rings: { kind: string; x: number; y: number; r: number }[] = [];
+  const image = imageRef.value, box = containerRef.value;
+  void scale.value; void displayRotate.value; void effectPreviewSrc.value;
+  if (!image || !box || !imageWidth.value || !imageHeight.value) return rings;
+  const ir = image.getBoundingClientRect(), cr = box.getBoundingClientRect();
+  const cx = ir.left + ir.width / 2 - cr.left, cy = ir.top + ir.height / 2 - cr.top;
+  const a = displayRotate.value * Math.PI / 180;
+  const r = Math.max(4, brushSize.value / 100 * Math.min(imageWidth.value, imageHeight.value) * scale.value);
+  for (const [kind, point] of [['target', retouchTarget.value], ['source', retouchSource.value]] as const) {
+    if (!point) continue;
+    const px = (point.x * imageWidth.value - imageWidth.value / 2) * (isFlippedX.value ? -1 : 1);
+    const py = (point.y * imageHeight.value - imageHeight.value / 2) * (isFlippedY.value ? -1 : 1);
+    rings.push({ kind, x: cx + (px * Math.cos(a) - py * Math.sin(a)) * scale.value, y: cy + (px * Math.sin(a) + py * Math.cos(a)) * scale.value, r });
+  }
+  return rings;
+});
+
+// LAP-108: one slider gesture is one history step (sliderSteps): a drag is written shortly after
+// release, a double-click reset joins its first click, and a new gesture writes the last one first.
+const sliderGesture = sliderSteps({
+  clock: { now: () => performance.now(), set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) },
+  hasPending: () => pendingRecipe !== null,
+  flush: () => { void flushRecipeSteps().catch(err => { console.error('Failed to flush recipe step:', err); }); },
+});
+// A slider is being moved: pressed (its first input comes before it takes focus) or focused.
+function sliderMoving() {
+  const active = document.activeElement;
+  return sliderGesture.moving() || (active instanceof HTMLInputElement && active.type === 'range');
+}
+function startRangeDrag(event: PointerEvent) {
+  if (!(event.target instanceof HTMLInputElement && event.target.type === 'range')) return;
+  if (recipeTimer) {
+    if (sliderGesture.isIdle()) {
+      void flushRecipeSteps().catch(err => { console.error('Failed to flush recipe step:', err); });
+    } else {
+      clearTimeout(recipeTimer);
+      recipeTimer = null;
+    }
+  }
+  sliderGesture.press(event.target, event.clientX, event.clientY);
+}
+function endRangeDrag() { sliderGesture.release(); }
+// A slider's value is written when it is released (LAP-106); a pointer release is left to the gesture.
+function onSliderChange() { sliderGesture.change(); }
+function resetFillLight() {
+  sliderGesture.reset();
+  picasaTools.value.fillLight = 0;
+  picasaTools.value.lastStep = 'Fill Light';
 }
 
 let baseSignature='';
 function recipeBaseSignature(doc:any) {
-  const {curves, lastStep, ...tools}=doc.recipe?.tools || {};
-  return JSON.stringify([doc.auto_enhance,doc.recipe?.redEye,tools]);
+  const {curves, lastStep, ...tools}=doc.recipe?.picasa || {};
+  return JSON.stringify([doc.auto_enhance,doc.auto_enhance_preset || 1,doc.recipe?.redEye,tools]);
 }
 function refreshBasePreview() {
   const doc=savedEditState.value;
   const signature=recipeBaseSignature(doc);
   if (signature===baseSignature) return;
+  fillDraft.invalidate(); // a saved full-size base supersedes any in-flight slider draft
   baseSignature=signature;
   const src=getPreviewUrl(fileInfo.value.id,fileInfo.value.file_path,false,Number(fileInfo.value.modified_at||0),config.settings.rawThumbnailSource);
   imageSrc.value=`${src}${src.includes('?')?'&':'?'}original=1&baseEdit=1&rk=${doc.render_key||''}`;
@@ -2425,16 +4155,17 @@ function refreshBasePreview() {
 
 watch([rotate, isFlippedX, isFlippedY, cropAngle, cropStatus, brightness, contrast, saturation, hue, blur, selectedFilter,
   () => crop.value.left, () => crop.value.top, () => crop.value.width, () => crop.value.height,
-  () => resizeOutput.value.width, () => resizeOutput.value.height, redEye, () => JSON.stringify(editTools.value)], () => {
+  () => resizeOutput.value.width, () => resizeOutput.value.height, redEye, () => JSON.stringify(picasaTools.value)], () => {
   if (restoringHistory || !imageReady.value || !fileInfo.value || cropStatus.value === 1) return;
   const params = setEditParams();
-  const active = document.activeElement;
-  if (active instanceof HTMLInputElement && active.type === 'range') {
+  if (sliderMoving()) {
+    sliderGesture.valueChanged(JSON.stringify(params));
     pendingRecipe = params;
     if (recipeTimer) clearTimeout(recipeTimer);
-    recipeTimer = setTimeout(() => { void flushRecipeSteps().catch(() => {}); }, 200);
+    // A drag is one step, written after release (sliderGesture).
+    recipeTimer = sliderGesture.moving() ? null : setTimeout(() => { void flushRecipeSteps().catch(err => { console.error('Failed to flush recipe step:', err); }); }, 200);
   } else {
-    if (pendingRecipe) void flushRecipeSteps().catch(() => {});
+    if (pendingRecipe) void flushRecipeSteps().catch(err => { console.error('Failed to flush recipe step:', err); });
     persistRecipeStep(params);
   }
 }, { flush: 'post' });
@@ -2444,11 +4175,31 @@ watch([rotate, isFlippedX, isFlippedY, cropAngle, cropStatus, brightness, contra
 <style scoped>
 .crop-box-active {
   position: absolute;
-  border: 1px solid #fff;
-  box-shadow: 0 0 0 9999px color-mix(in srgb, var(--color-base-200) 80%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 9999px rgba(255, 255, 255, 0.55);
   box-sizing: border-box;
   will-change: transform;
-  transition: all 0.3s ease;
+  transition: none !important;
+}
+
+.crop-box-preview {
+  position: absolute;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
+  box-sizing: border-box;
+  transition: none !important;
+}
+
+/* Straighten grid over the photo: a light line with a dark edge so it shows on sky and shadow alike. */
+.straighten-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.6) 1px, rgba(0, 0, 0, 0.35) 1px, rgba(0, 0, 0, 0.35) 2px, transparent 2px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.6) 1px, rgba(0, 0, 0, 0.35) 1px, rgba(0, 0, 0, 0.35) 2px, transparent 2px);
+  background-size: 36px 36px;
+  background-position: center;
 }
 
 .crop-box-done {
@@ -2456,6 +4207,7 @@ watch([rotate, isFlippedX, isFlippedY, cropAngle, cropStatus, brightness, contra
   box-shadow: 0 0 0 9999px var(--color-base-200);
   box-sizing: border-box;
   will-change: transform;
+  transition: none !important;
 }
 
 .no-transition {
@@ -2464,108 +4216,242 @@ watch([rotate, isFlippedX, isFlippedY, cropAngle, cropStatus, brightness, contra
 
 .drag-handle {
   position: absolute;
-  width: 10px;
-  height: 10px;
-  background-color: #fff;
-  border: 1px solid #000;
+  background: transparent;
+  border: none;
   box-sizing: border-box;
+  transition: none !important;
 }
 
 .top-left {
-  top: -5px;
-  left: -5px;
+  top: -8px;
+  left: -8px;
+  width: 16px;
+  height: 16px;
   cursor: nwse-resize;
+  z-index: 20;
 }
 
 .top {
-  top: -5px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: -6px;
+  left: 8px;
+  right: 8px;
+  height: 12px;
   cursor: ns-resize;
+  z-index: 15;
 }
 
 .top-right {
-  top: -5px;
-  right: -5px;
+  top: -8px;
+  right: -8px;
+  width: 16px;
+  height: 16px;
   cursor: nesw-resize;
+  z-index: 20;
 }
 
 .left {
-  top: 50%;
-  left: -5px;
-  transform: translateY(-50%);
+  left: -6px;
+  top: 8px;
+  bottom: 8px;
+  width: 12px;
   cursor: ew-resize;
+  z-index: 15;
 }
 
 .right {
-  top: 50%;
-  right: -5px;
+  right: -6px;
+  top: 8px;
+  bottom: 8px;
+  width: 12px;
   cursor: ew-resize;
+  z-index: 15;
 }
 
 .bottom-left {
-  bottom: -5px;
-  left: -5px;
+  bottom: -8px;
+  left: -8px;
+  width: 16px;
+  height: 16px;
   cursor: nesw-resize;
+  z-index: 20;
 }
 
 .bottom {
-  bottom: -5px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: -6px;
+  left: 8px;
+  right: 8px;
+  height: 12px;
   cursor: ns-resize;
+  z-index: 15;
 }
 
 .bottom-right {
-  bottom: -5px;
-  right: -5px;
+  bottom: -8px;
+  right: -8px;
+  width: 16px;
+  height: 16px;
   cursor: nwse-resize;
+  z-index: 20;
 }
 
-.grid-line-h,
-.grid-line-v {
-  position: absolute;
-  background-color: rgba(255, 255, 255, 0.2);
+.crop-panel-container {
+  padding: 4px 4px;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  box-sizing: border-box;
 }
 
-.grid-line-h {
+.crop-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.crop-header-icon {
+  width: 36px;
+  height: 25px;
+  border: 1px solid #b5b5b5;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.crop-header-title {
+  font-size: 15px;
+  font-weight: normal;
+  color: #383838;
+}
+
+.crop-instruction-text {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: #555555;
+  margin: 0 0 10px 0;
+}
+
+.crop-dropdown-wrap {
+  margin-bottom: 10px;
+}
+
+.crop-dimension-select {
   width: 100%;
-  height: 1px;
-  left: 0;
-}
-
-.grid-line-v {
-  width: 1px;
-  height: 100%;
-  top: 0;
-}
-
-.grid-line-h-1 {
-  top: 33.33%;
-}
-
-.grid-line-h-2 {
-  top: 66.66%;
-}
-
-.grid-line-v-1 {
-  left: 33.33%;
-}
-
-.grid-line-v-2 {
-  left: 66.66%;
-}
-
-.crop-dimensions-display {
-  position: absolute;
-  bottom: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  background-color: rgba(0, 0, 0, 0.5);
-  color: #aaa;
-  padding: 2px 8px;
-  border-radius: 14px;
+  height: 24px;
+  background-color: #ffffff;
+  border: 1px solid #7f9db9;
+  border-radius: 2px;
   font-size: 12px;
-  white-space: nowrap;
+  font-weight: 600;
+  color: #222222;
+  padding: 1px 6px;
+  outline: none;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.crop-thumbnails-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.crop-thumbnail-card {
+  flex: 1;
+  height: 70px;
+  border: 1px solid #b0b0b0;
+  border-radius: 2px;
+  background: #ffffff;
+  padding: 2px;
+  box-sizing: border-box;
+  cursor: pointer;
+  outline: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: none !important;
+}
+
+.crop-thumbnail-card:hover {
+  border-color: #707070;
+}
+
+.crop-thumbnail-card-active {
+  border: 2px solid #3b82f6;
+  padding: 1px;
+}
+
+.crop-thumbnail-inner {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #eaeaea;
+}
+
+.crop-thumbnail-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+}
+
+.crop-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.crop-btn-row-center {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.crop-btn-reset {
+  width: 96px;
+}
+
+.crop-btn-icon {
+  width: 15px;
+  height: 15px;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.picasa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  color: #222222;
+  height: 25px;
+  padding: 0 10px;
+  background: linear-gradient(180deg, #fefefe 0%, #ececec 48%, #e1e1e1 52%, #e5e5e5 100%);
+  border: 1px solid #9c9c9c;
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 1px 1px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  transition: none !important;
+}
+
+.picasa-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #f4f4f4 48%, #e8e8e8 52%, #eeeeee 100%);
+  border-color: #707070;
+}
+
+.picasa-btn:active:not(:disabled) {
+  background: linear-gradient(180deg, #d4d4d4 0%, #e2e2e2 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.picasa-btn:disabled {
+  background: #f0f0f0;
+  border-color: #d4d4d4;
+  color: #a8a8a8;
+  box-shadow: none;
+  cursor: default;
 }
 </style>

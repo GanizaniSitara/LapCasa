@@ -9,6 +9,82 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+static SIDECAR_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Edit one photo section while retaining unrelated lines, sections and keys.
+pub fn update_picasa_ini_entry(folder: &Path, filename: &str, updates: &[(&str, Option<&str>)]) -> Result<(), String> {
+    use std::io::Write;
+    if filename.is_empty() || filename.contains(['\r', '\n', '[', ']']) {
+        return Err("Invalid Picasa section name".into());
+    }
+    for (key, value) in updates {
+        if key.trim().is_empty() || key.contains(['\r', '\n', '=', '[', ']', ';', '#'])
+            || value.is_some_and(|v| v.contains(['\r', '\n'])) {
+            return Err("Invalid Picasa key or value".into());
+        }
+    }
+    let _guard = SIDECAR_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
+    let path = folder.join(".picasa.ini");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    let section = format!("[{filename}]");
+    for (key, value) in updates {
+        let mut inside = false;
+        let mut section_end = None;
+        let mut found = false;
+        lines.retain_mut(|line| {
+            let trimmed = line.trim().trim_start_matches('\u{feff}');
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                inside = trimmed == section;
+            }
+            if inside && !trimmed.starts_with([';', '#'])
+                && trimmed.split_once('=').is_some_and(|(k,_)| k.trim().eq_ignore_ascii_case(key.trim())) {
+                if found || value.is_none() { return false; }
+                *line = format!("{}={}{}", key.trim(), value.unwrap(), newline);
+                found = true;
+            }
+            true
+        });
+        if found || value.is_none() { continue; }
+        inside = false;
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim().trim_start_matches('\u{feff}');
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                if inside { section_end = Some(index); break; }
+                inside = trimmed == section;
+            }
+        }
+        let index = section_end.unwrap_or(lines.len());
+        if !inside && section_end.is_none() {
+            if let Some(last) = lines.last_mut() {
+                if !last.ends_with('\n') { last.push_str(newline); }
+            }
+            lines.push(format!("{section}{newline}"));
+        } else if index > 0 && !lines[index-1].ends_with('\n') {
+            lines[index-1].push_str(newline);
+        }
+        let index = if !inside && section_end.is_none() { lines.len() } else { index };
+        lines.insert(index, format!("{}={}{}", key.trim(), value.unwrap(), newline));
+    }
+    let staged = folder.join(format!(".picasa.ini.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&staged)
+            .map_err(|e| e.to_string())?;
+        file.write_all(lines.concat().as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        // rename replaces the existing file atomically on Windows and Unix.
+        fs::rename(&staged, &path).map_err(|e| e.to_string())
+    })();
+    let _ = fs::remove_file(staged);
+    result
+}
 struct Busy;
 impl Busy {
     fn acquire() -> Result<Self, String> {
@@ -40,7 +116,6 @@ fn python() -> Result<(String, Vec<String>), String> {
     if let Ok(path) = std::env::var("LAP_PICASA_PYTHON") { choices.push((path, vec![])); }
     #[cfg(windows)]
     {
-        choices.push(("C:/miniconda3/envs/python312/python.exe".into(), vec![]));
         choices.push(("py".into(), vec!["-3".into()]));
     }
     choices.push(("python3".into(), vec![]));
@@ -174,4 +249,33 @@ pub async fn picasa_import_apply(app: tauri::AppHandle, token: String, thumbnail
 #[tauri::command]
 pub fn picasa_import_open_report(app: tauri::AppHandle, token: String) -> Result<(), String> {
     opener::open(job_path(&app, &token)?).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sidecar_round_trip_preserves_sections_and_faces() {
+        let root = std::env::temp_dir().join(format!("lap089-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join(".picasa.ini");
+        let prefix = "[Picasa]\r\nname=Holiday\r\n[.album:abc]\r\nname=Family\r\n";
+        let suffix = "[other.jpg]\r\nstar=yes\r\n";
+        fs::write(&path,format!("{prefix}[photo.jpg]\r\nfaces=rect64(1234),abc\r\nstar=no\r\ncaption=old\r\nbackuphash=123\r\n{suffix}")).unwrap();
+        update_picasa_ini_entry(&root,"photo.jpg",&[("star",Some("yes")),("caption",Some("Holiday = fun")),("filters",Some("finetune2=1,0,0,0,0,0"))]).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(prefix));
+        assert!(text.ends_with(suffix));
+        for line in ["faces=rect64(1234),abc", "star=yes", "caption=Holiday = fun", "filters=finetune2=1,0,0,0,0,0", "backuphash=123"] {
+            assert!(text.contains(&format!("{line}\r\n")),"{line}");
+        }
+        update_picasa_ini_entry(&root,"photo.jpg",&[("filters",None),("backuphash",None)]).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("filters="));
+        assert!(!text.contains("backuphash="));
+        assert!(text.contains("faces=rect64(1234),abc"));
+        update_picasa_ini_entry(&root,"new.jpg",&[("star",Some("yes"))]).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("[new.jpg]\r\nstar=yes\r\n"));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

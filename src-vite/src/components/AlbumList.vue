@@ -77,7 +77,7 @@
       </div>
     </div>
 
-    <!-- The main Folders pane is one flat, always-open list of every folder
+    <!-- Picasa: the main Folders pane is one flat, always-open list of every folder
          with pictures (album roots are not nodes). The Move-to dialog keeps the tree. -->
     <FlatFolderList
       v-if="isMainPane"
@@ -1140,7 +1140,7 @@ onBeforeUnmount(() => {
 });
 
 /// Add a new album
-// Adding a folder happens in the Folder Manager (whole-computer tree).
+// Picasa-style: adding a folder happens in the Folder Manager (whole-computer tree).
 const clickNewAlbum = async () => {
   await tauriEmit('open-folder-manager', {});
 };

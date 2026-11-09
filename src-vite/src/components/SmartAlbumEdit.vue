@@ -232,7 +232,7 @@ const sortOrderOptions = computed(() => indexedOptions(
 
 const groupOptions = computed(() => {
   const labels = localeMsg.value.toolbar.filter?.group_type_options || [];
-  return [GROUP.NONE, GROUP.FOLDER, GROUP.DAY, GROUP.MONTH, GROUP.YEAR, GROUP.FILE_TYPE, GROUP.CULLING, GROUP.RATING, GROUP.CAMERA, GROUP.LENS, GROUP.LOCATION]
+  return [GROUP.NONE, GROUP.FOLDER, GROUP.DAY, GROUP.MONTH, GROUP.QUARTER, GROUP.YEAR, GROUP.FILE_TYPE, GROUP.CULLING, GROUP.RATING, GROUP.CAMERA, GROUP.LENS, GROUP.LOCATION]
     .map(value => ({ value, label: String(labels[value] || '') }))
     .filter(option => option.label);
 });
@@ -386,7 +386,6 @@ async function addRule() {
   await nextTick();
   rulesListRef.value?.scrollTo({
     top: rulesListRef.value.scrollHeight,
-    behavior: 'smooth',
   });
 }
 

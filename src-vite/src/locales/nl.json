@@ -357,6 +357,7 @@
     "title": "Kalender",
     "tabs": {
       "years": "Jaren",
+      "quarters": "Quarters",
       "months": "Maanden",
       "days": "Dagen"
     },
@@ -433,7 +434,8 @@
         "Objectief",
         "Jaar",
         "Bestandstype",
-        "Schiften"
+        "Schiften",
+        "Quarter"
       ],
       "sort_type_options": [
         "Opnamedatum",
@@ -677,6 +679,27 @@
       "copy": "Kopiëren naar klembord",
       "paste": "Plakken",
       "edit_image": "Bewerken...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Foto openen in {app}...",
       "open_video_in_app": "Video openen in {app}...",
       "open_selected_images_in_app": "Foto's openen in {app}...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "AI-versnelling",
+      "gpu_description": "Grafische hardware, GPU-uitbreiding en AI-engines.",
+      "open_gpu": "AI-versnelling openen",
+      "about_title": "Over LapCasa",
+      "about_description": "Versie, build, licentie en credits.",
+      "open_about": "Over openen"
+    },
     "general": {
       "title": "Algemeen",
       "section_language": "Taal",

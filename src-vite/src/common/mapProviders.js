@@ -19,7 +19,9 @@ function tiandituUrl(layer, token) {
 
 export function getMapThemes(provider, tiandituToken) {
   const token = String(tiandituToken || '').trim();
-  if (provider !== 'tianditu' || !token) return GLOBAL_THEMES;
+  if (provider === 'osm') return [GLOBAL_THEMES[0], GLOBAL_THEMES[0]];
+  if (provider === 'esri') return [GLOBAL_THEMES[1], GLOBAL_THEMES[1]];
+  if (provider !== 'tianditu' || !token) return [{ offline: true, maxZoom: 19, layers: [] }];
 
   const attribution = 'Tianditu';
   return [
@@ -40,16 +42,52 @@ export function getMapThemes(provider, tiandituToken) {
   ];
 }
 
-export function getMapTheme(provider, tiandituToken, themeIndex) {
+export function getMapTheme(provider, tiandituToken, themeIndex, localMapPath = '') {
   const themes = getMapThemes(provider, tiandituToken);
-  return themes[Number(themeIndex) === 1 ? 1 : 0];
-}
-
-export function getGlobalMapTheme(themeIndex) {
-  return GLOBAL_THEMES[Number(themeIndex) === 1 ? 1 : 0];
+  const theme = themes[Number(themeIndex) === 1 ? 1 : 0] || themes[0];
+  return theme.offline ? { ...theme, localMapPath } : theme;
 }
 
 export function createTileLayerGroup(L, theme) {
+  if (theme.offline) {
+    const overview = L.geoJSON(worldOverview, {
+      style: { color: '#7e8985', weight: 0.7, fillColor: '#b7c6b4', fillOpacity: 1 },
+      interactive: false,
+      attribution: 'Natural Earth · offline overview',
+    });
+    if (!theme.localMapPath) return { layer: overview, tileLayers: [] };
+    const LocalTiles = L.GridLayer.extend({
+      createTile(coords, done) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 256;
+        invoke('local_map_tile', { path: theme.localMapPath, z: coords.z, x: coords.x, y: coords.y })
+          .then(source => {
+            if (!source) { done(null, canvas); return; }
+            const image = new Image();
+            image.onload = () => { canvas.getContext('2d').drawImage(image, 0, 0, 256, 256); done(null, canvas); };
+            image.onerror = () => done(new Error('Local map tile could not be decoded'), canvas);
+            image.src = source;
+          }).catch(error => done(new Error(String(error)), canvas));
+        return canvas;
+      },
+    });
+    const tiles = new LocalTiles({ maxZoom: 19, noWrap: true });
+    tiles.on('add', async () => {
+      try {
+        const info = await invoke('local_map_info', { path: theme.localMapPath });
+        if (!tiles._map) return;
+        // Pack metadata is untrusted text, never provider-supplied HTML.
+        const escaped = String(info.attribution || info.name || 'Local map')
+          .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+        tiles.options.attribution = escaped;
+        tiles._map.attributionControl.addAttribution(escaped);
+        tiles.options.minNativeZoom = info.minZoom;
+        tiles.options.maxNativeZoom = info.maxZoom;
+        tiles.redraw();
+      } catch (error) { tiles.fire('tileerror', { error }); }
+    });
+    return { layer: L.layerGroup([overview, tiles]), tileLayers: [tiles] };
+  }
   const layers = theme.layers.map(({ url, attribution, subdomains }) => L.tileLayer(url, {
     attribution,
     maxZoom: theme.maxZoom,
@@ -60,3 +98,6 @@ export function createTileLayerGroup(L, theme) {
     tileLayers: layers,
   };
 }
+import { invoke } from '@tauri-apps/api/core';
+import worldOverview from '@/assets/world-overview.json';
+

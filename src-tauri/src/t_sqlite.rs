@@ -39,6 +39,140 @@ static THUMB_BACKGROUND_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new(
 static THUMB_BACKGROUND_GENERATION_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 const MAX_BACKGROUND_THUMB_GENERATIONS: usize = 4;
 
+#[cfg(test)]
+mod lap106_scan_orientation_tests {
+    use super::*;
+
+    #[test]
+    fn lap106_parsed_exif_keeps_binary_and_sony_fallbacks() {
+        let root = std::env::temp_dir().join(format!("lap106-scan-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        for (brand,primary,fallback_tag,expected) in [("Sony",None,0x0112u16,6), ("Sony",Some(1),0x2000,1), ("Sony",None,0x2000,6), ("Sony",Some(8),0x2000,8),
+            ("Canon",Some(1),0x2000,1),("Canon",Some(1),0x0112,1),("Canon",None,0x0112,6),("Canon",None,0x2000,1),
+            ("CanonThumbnail",None,0x0112,1)] {
+            let make = exif::Field { tag: Tag::Make, ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![brand.as_bytes().to_vec()]) };
+            let orientation = exif::Field { tag: Tag::Orientation, ifd_num: In::PRIMARY,
+                value: Value::Short(vec![primary.unwrap_or(1)]) };
+            let mut writer = exif::experimental::Writer::new();
+            writer.push_field(&make);
+            if primary.is_some() { writer.push_field(&orientation); }
+            let thumbnail = exif::Field { tag:Tag::Orientation,ifd_num:In::THUMBNAIL,value:Value::Short(vec![6]) };
+            if brand=="CanonThumbnail" { writer.push_field(&thumbnail); }
+            let mut raw = Cursor::new(Vec::new());
+            writer.write(&mut raw, true).unwrap();
+            let mut exif = b"Exif\0\0".to_vec(); exif.extend(raw.into_inner());
+            let path = root.join(format!("{brand}-{primary:?}-{fallback_tag}.jpg"));
+            image::RgbImage::from_pixel(80,60,image::Rgb([40,80,120])).save(&path).unwrap();
+            let jpeg = fs::read(&path).unwrap();
+            let mut bytes = vec![0xff,0xd8,0xff,0xe1];
+            bytes.extend(((exif.len()+2) as u16).to_be_bytes()); bytes.extend(exif);
+            bytes.extend([0xff,0xef,0,14]);
+            bytes.extend(fallback_tag.to_le_bytes()); bytes.extend([3,0,1,0,0,0,6,0,0,0]);
+            bytes.extend(&jpeg[2..]); fs::write(&path,bytes).unwrap();
+            assert!(t_image::read_exif_permissive(path.to_str().unwrap()).is_some());
+            let file = AFile::new(1,path.to_str().unwrap(),1).unwrap();
+            assert_eq!(file.e_orientation,Some(expected),"{brand} primary={primary:?} fallback={fallback_tag:x}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+// LAP-RE-13: cache only thumbnail-derived classifications, never full-photo decodes.
+fn color_bit(name: &str) -> Option<i64> {
+    let index = match name.to_ascii_lowercase().as_str() {
+        "red" => 0, "orange" => 1, "yellow" => 2, "green" => 3,
+        "blue" => 4, "purple" => 5, "pink" => 6, "black" => 7,
+        "white" => 8, "gray" | "grey" => 9, "bw" => 10, _ => return None,
+    };
+    Some(1 << index)
+}
+
+fn thumbnail_color_mask(bytes: &[u8]) -> Option<i64> {
+    let image = image::load_from_memory(bytes).ok()?.thumbnail(64, 64).to_rgb8();
+    if image.is_empty() { return None; }
+    let mut sums = [0.0; 3];
+    let mut neutral = 0usize;
+    for pixel in image.pixels() {
+        let [r,g,b] = pixel.0.map(|c| c as f64 / 255.0);
+        let high = r.max(g).max(b);
+        let low = r.min(g).min(b);
+        if high == 0.0 || (high-low)/high < 0.15 { neutral += 1; }
+        for (sum, value) in sums.iter_mut().zip([r,g,b]) { *sum += value; }
+    }
+    let count = image.width() as f64 * image.height() as f64;
+    let [r,g,b] = sums.map(|c| c/count);
+    let high = r.max(g).max(b);
+    let low = r.min(g).min(b);
+    let delta = high-low;
+    let saturation = if high == 0.0 { 0.0 } else { delta/high };
+    let mut mask = 0;
+    // Pixel neutrality prevents complementary colors averaging to gray from
+    // incorrectly matching B&W. Average RGB remains the hue-search metric.
+    if neutral as f64 / count >= 0.95 { mask |= color_bit("bw")?; }
+    if saturation < 0.15 {
+        let luminance = 0.2126*r + 0.7152*g + 0.0722*b;
+        mask |= color_bit(if luminance < 0.20 { "black" } else if luminance > 0.85 { "white" } else { "gray" })?;
+    } else if saturation > 0.25 {
+        let hue = if high == r { 60.0*((g-b)/delta).rem_euclid(6.0) }
+            else if high == g { 60.0*((b-r)/delta+2.0) }
+            else { 60.0*((r-g)/delta+4.0) };
+        let name = if !(20.0..345.0).contains(&hue) { "red" }
+            else if hue < 45.0 { "orange" } else if hue < 70.0 { "yellow" }
+            else if hue < 190.0 { "green" } else if hue <= 260.0 { "blue" }
+            else if hue < 300.0 { "purple" } else { "pink" };
+        mask |= color_bit(name)?;
+    }
+    Some(mask)
+}
+
+fn refresh_color_index(conn: &Connection, mut load: impl FnMut(i64) -> Option<Vec<u8>>) -> Result<(), String> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS dominant_colors (
+        file_id INTEGER PRIMARY KEY REFERENCES afiles(id) ON DELETE CASCADE,
+        signature TEXT NOT NULL, color_mask INTEGER NOT NULL)").map_err(|e| e.to_string())?;
+    // A regenerated thumbnail changes this signature. Missing thumbnails are
+    // retried later rather than caching a permanent negative classification.
+    let pending = conn.prepare("SELECT t.file_id,
+        COALESCE(t.thumb_key,'') || ':' || COALESCE(t.thumb_mtime,0) || ':' ||
+        COALESCE(t.thumb_size,0) || ':' || COALESCE(t.updated_at,0) AS signature
+        FROM athumbs t JOIN afiles a ON a.id=t.file_id
+        LEFT JOIN dominant_colors c ON c.file_id=t.file_id
+        WHERE t.error_code=0 AND (c.file_id IS NULL OR c.signature !=
+        COALESCE(t.thumb_key,'') || ':' || COALESCE(t.thumb_mtime,0) || ':' ||
+        COALESCE(t.thumb_size,0) || ':' || COALESCE(t.updated_at,0))")
+        .map_err(|e| e.to_string())?.query_map([], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))
+        .map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let classified: Vec<_> = pending.into_iter().map(|(id,signature)| {
+        let blob = conn.query_row("SELECT thumb_data FROM athumbs WHERE file_id=?1",[id],
+            |r| r.get::<_,Option<Vec<u8>>>(0)).ok().flatten();
+        (id,signature,blob.or_else(|| load(id)).as_deref().and_then(thumbnail_color_mask))
+    }).collect();
+    if classified.is_empty() { return Ok(()); }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for (id,signature,mask) in classified {
+        if let Some(mask) = mask {
+            tx.execute("INSERT OR REPLACE INTO dominant_colors VALUES (?1,?2,?3)",
+                params![id,signature,mask]).map_err(|e| e.to_string())?;
+        } else {
+            tx.execute("DELETE FROM dominant_colors WHERE file_id=?1",[id]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn extract_color_tokens(text: &str, mask: &mut i64) -> String {
+    let mut extracted = false;
+    let remaining = text.split_whitespace().filter(|word| {
+        if let Some((prefix,name)) = word.split_once(':') {
+            if prefix.eq_ignore_ascii_case("color") {
+                if let Some(bit) = color_bit(name) { *mask |= bit; extracted = true; return false; }
+            }
+        }
+        true
+    }).collect::<Vec<_>>().join(" ");
+    if extracted { remaining } else { text.to_owned() }
+}
+
 fn subtree_like_pattern(path: &str) -> String {
     let separator = std::path::MAIN_SEPARATOR;
     let prefix = path.trim_end_matches(separator);
@@ -67,6 +201,42 @@ mod selection_summary_tests {
         assert_eq!(AFile::get_selection_summary_on(&conn, &ids).unwrap(), (505, 601, Some(100), Some(300)));
         assert_eq!(AFile::get_selection_summary_on(&conn, &[]).unwrap(), (0, 0, None, None));
         assert_eq!(AFile::get_selection_summary_on(&conn, &[4]).unwrap(), (1, 40, None, None));
+    }
+
+    #[test]
+    fn adjust_date_and_time_shifts_every_photo_by_the_anchors_delta() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE afiles (id INTEGER PRIMARY KEY, taken_date INTEGER, created_at INTEGER);
+            INSERT INTO afiles VALUES (1, 1000, 50), (2, 1600, 60), (3, NULL, 700), (4, 0, 900), (5, NULL, NULL), (6, 5000, 0);").unwrap();
+        // photo 2 to 10600 (+9000): the others in the shoot move by the same amount, 6 is not selected
+        assert_eq!(AFile::shift_taken_dates_on(&conn, &[1, 2, 3, 4, 5], 2, 10600).unwrap(), 4);
+        let dates: Vec<Option<i64>> = (1..=6).map(|id| conn.query_row("SELECT taken_date FROM afiles WHERE id=?1", [id], |r| r.get(0)).unwrap()).collect();
+        assert_eq!(dates, vec![Some(10000), Some(10600), Some(9700), Some(9900), None, Some(5000)]);
+        // an anchor dated only by its created date; backwards in time too
+        assert_eq!(AFile::shift_taken_dates_on(&conn, &[3], 3, 9600).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT taken_date FROM afiles WHERE id=3", [], |r| r.get::<_, i64>(0)).unwrap(), 9600);
+        // a photo with no date at all cannot anchor
+        assert!(AFile::shift_taken_dates_on(&conn, &[5], 5, 1).is_err());
+    }
+
+    #[test]
+    fn geotag_sets_and_clear_geotags_removes_a_location() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE afiles (id INTEGER PRIMARY KEY, gps_latitude REAL, gps_longitude REAL, gps_altitude REAL,
+            geo_name TEXT, geo_admin1 TEXT, geo_admin2 TEXT, geo_cc TEXT);
+            INSERT INTO afiles VALUES (1, 1.0, 2.0, 300.0, 'Old', 'A1', 'A2', 'CZ'), (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL), (3, 5.0, 6.0, NULL, 'Keep', NULL, NULL, 'GB');").unwrap();
+        let row = |id: i64| conn.query_row("SELECT gps_latitude, gps_longitude, gps_altitude, geo_name, geo_cc FROM afiles WHERE id=?1", [id],
+            |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<f64>>(1)?, r.get::<_, Option<f64>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?))).unwrap();
+        assert_eq!(AFile::set_location_on(&conn, &[1, 2], Some(49.1951), Some(16.6068), Some(" Brno ")).unwrap(), 2);
+        assert_eq!(row(1), (Some(49.1951), Some(16.6068), None, Some("Brno".into()), None));
+        assert_eq!(row(2), (Some(49.1951), Some(16.6068), None, Some("Brno".into()), None));
+        assert_eq!(row(3), (Some(5.0), Some(6.0), None, Some("Keep".into()), Some("GB".into())));
+        assert_eq!(AFile::set_location_on(&conn, &[2], None, None, None).unwrap(), 1); // Clear Geotags
+        assert_eq!(row(2), (None, None, None, None, None));
+        assert!(AFile::set_location_on(&conn, &[1], Some(91.0), Some(0.0), None).is_err());
+        assert!(AFile::set_location_on(&conn, &[1], Some(10.0), None, None).is_err());
+        assert!(AFile::set_location_on(&conn, &[1], None, None, Some("Nowhere")).is_err());
+        assert_eq!(row(1).3, Some("Brno".into())); // refused changes leave it as it was
     }
 }
 
@@ -1689,6 +1859,8 @@ pub struct AFile {
     pub motion_photo_offset: Option<i64>,   // byte offset of embedded MP4 (Android Motion Photo)
     pub proxy_path: Option<String>,
     pub edits: Option<String>,
+    #[serde(default)]
+    pub is_hidden: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2127,6 +2299,21 @@ impl ACollection {
     }
 }
 
+/// One bar of the Timeline ribbon (LAP-091): a month, a week or a day of the view (see `unit`),
+/// how many photos it has, and the earliest of them (its folder and id) so a click can jump there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ADateHistogramBucket {
+    /// The bucket's first day: a month's 1st (day 1), a week's Monday, or the day itself.
+    pub year: i32,
+    pub month: i32,
+    pub day: i32,
+    /// "month" (the view spans over two years), "week" (over 62 days) or "day".
+    pub unit: String,
+    pub count: i64,
+    pub first_folder_path: Option<String>,
+    pub first_file_id: Option<i64>,
+}
+
 /// Define the timeline marker struct for scrollbar markers
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ATimeLine {
@@ -2141,6 +2328,28 @@ pub struct SearchToken {
     #[serde(rename = "type", alias = "token_type", alias = "tokenType")]
     pub token_type: String,
     pub value: String,
+}
+
+static SHOW_HIDDEN_PICTURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HIDDEN_STATE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn show_hidden_pictures() -> bool {
+    SHOW_HIDDEN_PICTURES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_show_hidden_pictures(show: bool) {
+    let prev = SHOW_HIDDEN_PICTURES.swap(show, std::sync::atomic::Ordering::Relaxed);
+    if prev != show {
+        bump_hidden_state_epoch();
+    }
+}
+
+pub fn hidden_state_epoch() -> u64 {
+    HIDDEN_STATE_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn bump_hidden_state_epoch() {
+    HIDDEN_STATE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Define the query parameters struct for file queries
@@ -2180,7 +2389,7 @@ pub struct QueryParams {
     #[serde(default)]
     pub tag_group_id: i64,
     pub person_id: i64,
-    // Person view in review mode: list only that person's pending suggestions.
+    // Person view in Picasa-style review mode: list only that person's pending suggestions.
     #[serde(default)]
     pub person_suggestions: bool,
     // Person view: list only that person's ignored ("x") faces.
@@ -2190,7 +2399,11 @@ pub struct QueryParams {
     // "x" dims the tile in place instead of the grid closing up mid-review.
     #[serde(default)]
     pub person_since: i64,
-    // Continuous People view: one section per named person, rows are
+    // LAP-006: a person's photos by date (opt-in): 0 = the usual order, 1 = newest first,
+    // 2 = oldest first, by taken date (else the added date), then id.
+    #[serde(default)]
+    pub person_face_sort: i64,
+    // Picasa-style continuous People view: one section per named person, rows are
     // (person, file) pairs (see AFile::people_groups_on).
     #[serde(default)]
     pub people_all: bool,
@@ -2200,7 +2413,7 @@ pub struct QueryParams {
     pub minimum_unnamed_sightings: i64,
     #[serde(default)]
     pub hide_duplicate_unnamed: bool,
-    // Folders view: every folder that directly holds pictures, one
+    // Picasa-style Folders view: every folder that directly holds pictures, one
     // section each, in folder_sort order (see AFile::folder_sections_on).
     #[serde(default)]
     pub folders_all: bool,
@@ -2215,6 +2428,8 @@ pub struct QueryParams {
     pub gps_max_lon: Option<f64>,
     #[serde(default)]
     pub group_by: i64,
+    #[serde(default)]
+    pub show_hidden: Option<bool>,
 }
 
 impl Default for QueryParams {
@@ -2249,6 +2464,7 @@ impl Default for QueryParams {
             person_suggestions: false,
             person_ignored: false,
             person_since: 0,
+            person_face_sort: 0,
             people_all: false,
             people_include_unnamed: false,
             minimum_unnamed_sightings: 2,
@@ -2259,6 +2475,7 @@ impl Default for QueryParams {
             gps_min_lon: None,
             gps_max_lon: None,
             group_by: 0,
+            show_hidden: None,
         }
     }
 }
@@ -2365,7 +2582,35 @@ struct QueryGroup {
     size: i64,
 }
 
-/// One row of the flat Folders list / one section of its grid: a folder
+/// A grouped view's groups and every group's file ids in display order, for one query (LAP-091:
+/// a Timeline jump in Calendar > All Dates fetched each slice with a full scan for the groups and
+/// one more per group in the slice, about a second each). Built with two scans, then every slice
+/// is an id lookup. Valid while the library is unchanged: keyed by the query and SQLite's
+/// data_version, which moves on every commit by any other connection or process.
+struct GroupedIds {
+    key: String,
+    version: i64,
+    groups: Vec<QueryGroup>,
+    /// where each group's ids start in `ids`
+    starts: HashMap<String, usize>,
+    ids: Vec<i64>,
+}
+static GROUPED_IDS: Mutex<Option<Arc<GroupedIds>>> = Mutex::new(None);
+/// A connection used only to read data_version (it never writes, so every commit is "another").
+static DATA_VERSION_CONN: Mutex<Option<(String, Connection)>> = Mutex::new(None);
+
+fn library_data_version() -> Option<(String, i64)> {
+    let path = t_storage::get_current_db_path().ok()?;
+    let mut guard = DATA_VERSION_CONN.lock().ok()?;
+    if guard.as_ref().is_none_or(|(p, _)| *p != path) {
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+        *guard = Some((path.clone(), conn));
+    }
+    let version = guard.as_ref()?.1.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).ok()?;
+    Some((path, version))
+}
+
+/// One row of the Picasa-style flat Folders list / one section of its grid: a folder
 /// that directly holds visible pictures. Dates are the pictures' (taken, else file) dates.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2391,6 +2636,14 @@ const GROUP_BY_LENS: i64 = 7;
 const GROUP_BY_DATE_YEAR: i64 = 8;
 const GROUP_BY_FILE_TYPE: i64 = 9;
 const GROUP_BY_CULLING: i64 = 10;
+const GROUP_BY_DATE_QUARTER: i64 = 11;
+
+/// SQL for the Unix time of local midnight on the first day of the calendar quarter holding
+/// `ts` (Unix seconds): its month's start, moved back 0-2 months to Jan, Apr, Jul or Oct.
+fn quarter_bucket_sql(ts: &str) -> String {
+    let back = format!("'-' || ((CAST(strftime('%m', {ts}, 'unixepoch', 'localtime') AS INTEGER) - 1) % 3) || ' months'");
+    format!("strftime('%s', date({ts}, 'unixepoch', 'localtime', 'start of month', {back}), 'utc')")
+}
 
 /// Define the AI image search parameters struct
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2600,16 +2853,15 @@ impl AFile {
             // 6: Rotate 90 CW
             // 7: Mirror horizontal and rotate 90 CW
             // 8: Rotate 270 CW
-            e_orientation = exif.as_ref().and_then(|exif_data| {
-                exif_data
-                    .get_field(Tag::Orientation, In::PRIMARY)
-                    .or_else(|| exif_data.fields().find(|f| f.tag == Tag::Orientation))
-                    .and_then(|field| field.value.get_uint(0))
-                    .map(|v| v as u32)
-            });
+            e_orientation = exif.as_ref().map(|data|
+                t_image::normalized_image_orientation(data, width, height) as u32);
+            let rim_orientation_defect = exif.as_ref().is_some_and(|data|
+                t_image::has_rim_orientation_defect(data, width, height));
 
-            // 2. Binary Scan Fallback if still None or 1
-            if e_orientation.is_none() || e_orientation == Some(1) {
+            // Respect parsed orientation, including an upright primary or thumbnail-only tag.
+            let parsed_orientation = exif.as_ref().is_some_and(|data|
+                data.fields().any(|field| field.tag == Tag::Orientation));
+            if !rim_orientation_defect && !parsed_orientation && (e_orientation.is_none() || e_orientation == Some(1)) {
                 if let Some(hdr) = file_header_deref {
                     if let Some(bo) = t_image::scan_orientation_binary(hdr) {
                         e_orientation = Some(bo as u32);
@@ -2766,7 +3018,9 @@ impl AFile {
                         e_lens_make = Self::scrape_ascii_from_tag(data, tiff_base, 0xa433);
                     }
                     // Extra Orientation fallback for Sony MakerNotes (Tag 0x2000)
-                    if e_orientation.is_none() || e_orientation == Some(1) {
+                    if !rim_orientation_defect && !parsed_orientation
+                        && e_make.as_deref().is_some_and(|make| make.trim().eq_ignore_ascii_case("Sony"))
+                        && (e_orientation.is_none() || e_orientation == Some(1)) {
                         if let Some(so) = Self::scrape_u16_from_tag(data, 0x2000) {
                             if (1..=8).contains(&so) {
                                 e_orientation = Some(so as u32);
@@ -2853,7 +3107,11 @@ impl AFile {
             rating: Some(0),
             culling_flag: Some(0),
             rotate: None,
-            comments: t_ai_png::extract_comment(file_path),
+            // LAP-047: a PNG's AI prompt, else a caption written into the JPEG (Picasa's IPTC caption,
+            // XMP or EXIF description, camera boilerplate skipped). "" records that there was none.
+            comments: t_ai_png::extract_comment(file_path)
+                .or_else(|| crate::t_xmp::embedded_caption(file_path, e_description.as_deref()))
+                .or(Some(String::new())),
             has_tags: Some(false),
             has_faces: Some(0),
 
@@ -2898,6 +3156,7 @@ impl AFile {
             album_visible: true,
             proxy_path: None,
             edits: None,
+            is_hidden: Some(false),
         };
 
         Ok(file)
@@ -3214,6 +3473,20 @@ impl AFile {
                 self.proxy_path,
             ]
         ).map_err(|e| e.to_string())?;
+        if result > 0 {
+            let inserted_id = self.id.filter(|&id| id > 0).unwrap_or_else(|| conn.last_insert_rowid());
+            crate::t_storage::projections::hook_upsert_file(
+                inserted_id,
+                self.folder_id,
+                self.taken_date,
+                self.created_at,
+                self.modified_at,
+                self.rating,
+                self.is_favorite,
+                self.rotate,
+                self.culling_flag,
+            );
+        }
         Ok(result)
     }
 
@@ -3263,7 +3536,6 @@ impl AFile {
                 file.e_iso_speed,
                 file.e_flash,
                 file.e_orientation,
-
                 file.gps_latitude,
                 file.gps_longitude,
                 file.gps_altitude,
@@ -3279,6 +3551,19 @@ impl AFile {
                 file_id,
             ]
         ).map_err(|e| e.to_string())?;
+        if result > 0 {
+            crate::t_storage::projections::hook_upsert_file(
+                file_id,
+                file.folder_id,
+                file.taken_date,
+                file.created_at,
+                file.modified_at,
+                file.rating,
+                file.is_favorite,
+                file.rotate,
+                file.culling_flag,
+            );
+        }
         Ok(result)
     }
 
@@ -3292,6 +3577,9 @@ impl AFile {
             .execute("DELETE FROM afiles WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
+        if result > 0 {
+            crate::t_storage::projections::hook_delete_files(&[id]);
+        }
         Ok(result)
     }
 
@@ -3316,6 +3604,9 @@ impl AFile {
             }
         }
         tx.commit().map_err(|e| e.to_string())?;
+        if deleted > 0 {
+            crate::t_storage::projections::hook_delete_files(ids);
+        }
         Ok(deleted)
     }
 
@@ -3446,7 +3737,8 @@ impl AFile {
                 a.motion_photo_offset,
                 {} AS album_visible,
                 a.proxy_path,
-                a.edits
+                a.edits,
+                COALESCE(a.is_hidden, 0) AS is_hidden
             FROM afiles a
             LEFT JOIN afolders b ON a.folder_id = b.id
             LEFT JOIN albums c ON b.album_id = c.id
@@ -3528,10 +3820,11 @@ impl AFile {
             album_visible: row.get(56)?,
             proxy_path: row.get(57)?,
             edits: row.get(58)?,
+            is_hidden: row.get(59).ok(),
         })
     }
 
-    // query the count, size and (status bar) first / last picture date by sql
+    // query the count, size and (Picasa status bar) first / last picture date by sql
     fn query_count_and_sum(
         sql: &str,
         params: &[&dyn rusqlite::ToSql],
@@ -3855,10 +4148,18 @@ impl AFile {
         }
     }
 
+    pub fn hidden_filter_predicate(file: &str) -> String {
+        if show_hidden_pictures() {
+            "1=1".to_string()
+        } else {
+            format!("COALESCE({file}.is_hidden, 0) = 0")
+        }
+    }
+
     /// The scan and all query surfaces share the same exclusion rules. Retained
     /// excluded rows are protected from sweep so restoring a rule restores metadata.
     fn album_scan_predicate(alias: &str) -> String {
-        Self::album_query_predicate(alias)
+        Self::album_scope_query_predicate(alias)
     }
 
     fn album_media_predicate(file: &str, album: &str) -> String {
@@ -3878,10 +4179,11 @@ impl AFile {
 
     // Reuse the base query's existing joins for output visibility.
     fn album_joined_filter_predicate(file: &str, folder: &str, album: &str) -> String {
-        format!("({album}.id IS NOT NULL AND {} AND NOT ({}) AND NOT {})",
+        format!("({album}.id IS NOT NULL AND {} AND NOT ({}) AND NOT {} AND {})",
             Self::album_media_predicate(file, album),
             Self::album_folder_excluded_predicate(folder, album),
-            crate::t_folder_rules::sql_folder_excluded(&format!("{folder}.id")))
+            crate::t_folder_rules::sql_folder_excluded(&format!("{folder}.id")),
+            Self::hidden_filter_predicate(file))
     }
 
     // Single-folder queries should not materialize exclusions across the library.
@@ -3891,7 +4193,7 @@ impl AFile {
             Self::album_joined_filter_predicate(alias, "scope_folder", "scope_album"))
     }
 
-    fn album_query_predicate(alias: &str) -> String {
+    fn album_scope_query_predicate(alias: &str) -> String {
         // Materialize excluded folder IDs once per bulk query, not per file.
         format!("(EXISTS (SELECT 1 FROM afolders scope_folder JOIN albums scope_album
             ON scope_album.id = scope_folder.album_id WHERE scope_folder.id = {alias}.folder_id AND {})
@@ -3903,6 +4205,10 @@ impl AFile {
             Self::album_media_predicate(alias, "scope_album"),
             Self::album_folder_excluded_predicate("excluded_folder", "excluded_album"),
             crate::t_folder_rules::sql_excluded_folder_ids())
+    }
+
+    fn album_query_predicate(alias: &str) -> String {
+        format!("({} AND {})", Self::album_scope_query_predicate(alias), Self::hidden_filter_predicate(alias))
     }
 
     pub fn is_album_visible(file_id: i64) -> Result<bool, String> {
@@ -4027,9 +4333,19 @@ impl AFile {
                         .as_deref()
                         .is_none_or(|comment| comment.trim().is_empty())
                     {
-                        if let Some(comment) = t_ai_png::extract_comment(file_path) {
+                        // LAP-047: an embedded caption is looked for once per file (NULL = never
+                        // looked; "" = looked, none), so rescans stay cheap and a comment the
+                        // owner cleared is never filled again.
+                        let looked = file.comments.is_some();
+                        let comment = t_ai_png::extract_comment(file_path).or_else(|| {
+                            (!looked).then(|| crate::t_xmp::embedded_caption(file_path, file.e_description.as_deref())).flatten()
+                        });
+                        if let Some(comment) = comment {
                             let _ = Self::update_column(file_id, "comments", &comment);
                             file.comments = Some(comment);
+                        } else if !looked {
+                            let _ = Self::update_column(file_id, "comments", &"");
+                            file.comments = Some(String::new());
                         }
                     }
                 }
@@ -4108,6 +4424,30 @@ impl AFile {
 
     pub fn get_files_by_ids(file_ids: &[i64]) -> Result<Vec<Self>, String> {
         let conn = open_conn()?;
+        Self::get_files_by_ids_on(&conn, file_ids)
+    }
+
+    /// Ordered id/date/size/geometry/visibility, without offscreen EXIF/path data.
+    pub(crate) fn get_search_index_on(conn: &Connection, file_ids: &[i64]) -> Result<Vec<(i64, i64, i64, u32, u32, i32, bool)>, String> {
+        if file_ids.is_empty() { return Ok(Vec::new()); }
+        let sql = format!("SELECT a.id,
+            COALESCE(NULLIF(a.taken_date,0),NULLIF(a.created_at,0),a.modified_at,0),COALESCE(a.size,0),
+            COALESCE(a.width,0),COALESCE(a.height,0),COALESCE(a.rotate,0),{}
+            FROM afiles a JOIN afolders b ON a.folder_id=b.id JOIN albums c ON b.album_id=c.id
+            WHERE a.id IN (SELECT value FROM json_each(?1)){}",
+            Self::album_joined_filter_predicate("a", "b", "c"), Self::inaccessible_album_filter("b"));
+        let mut stmt = conn.prepare(&sql).map_err(|e|e.to_string())?;
+        let rows = stmt.query_map([serde_json::to_string(file_ids).map_err(|e|e.to_string())?],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+                row.get::<_, u32>(3)?, row.get::<_, u32>(4)?, row.get::<_, i32>(5)?, row.get::<_, bool>(6)?)))
+            .map_err(|e|e.to_string())?;
+        let mut by_id = std::collections::HashMap::new();
+        for row in rows { let row = row.map_err(|e|e.to_string())?; by_id.insert(row.0, row); }
+        Ok(file_ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    }
+
+    /// Hydrate against the caller's snapshot, including read-only search connections.
+    pub(crate) fn get_files_by_ids_on(conn: &Connection, file_ids: &[i64]) -> Result<Vec<Self>, String> {
         let valid_ids = file_ids
             .iter()
             .copied()
@@ -4168,7 +4508,7 @@ impl AFile {
             .as_deref()
             .is_some_and(|comment| !comment.trim().is_empty())
         {
-            new_file_info.comments = old_file_info.comments;
+            new_file_info.comments = old_file_info.comments.clone();
         }
         new_file_info.has_tags = old_file_info.has_tags;
         new_file_info.has_thumbnail = old_file_info.has_thumbnail;
@@ -4191,6 +4531,11 @@ impl AFile {
 
         // update the file info
         Self::update(file_id, &new_file_info)?;
+        // `update` leaves comments alone: an empty one takes what the file now carries (a PNG's AI
+        // prompt, an embedded caption, or "" = looked, none; LAP-047). A non-empty one is kept above.
+        if new_file_info.comments != old_file_info.comments {
+            Self::update_column(file_id, "comments", &new_file_info.comments)?;
+        }
 
         Self::get_file_info(file_id)
     }
@@ -4243,7 +4588,27 @@ impl AFile {
         value: &dyn rusqlite::ToSql,
     ) -> Result<usize, String> {
         let conn = open_conn()?;
-        Self::update_column_with_conn(&conn, file_id, column, value)
+        let updated = Self::update_column_with_conn(&conn, file_id, column, value)?;
+        if updated > 0 && matches!(column,"is_favorite" | "comments") {
+            Self::sync_picasa_metadata(&conn,file_id,column == "is_favorite",column == "comments");
+        }
+        Ok(updated)
+    }
+
+    // Sidecar writes follow a committed catalog update. A read-only photo
+    // folder must not turn an already-saved catalog change into a false failure.
+    fn sync_picasa_metadata(conn: &Connection, file_id: i64, star: bool, caption: bool) {
+        let row = conn.query_row("SELECT b.path,a.name,COALESCE(a.is_favorite,0),a.comments
+            FROM afiles a JOIN afolders b ON b.id=a.folder_id WHERE a.id=?1",[file_id],
+            |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?)));
+        if let Ok((folder,name,favorite,comments)) = row {
+            let mut updates = Vec::new();
+            if star { updates.push(("star",if favorite { Some("yes") } else { None })); }
+            if caption { updates.push(("caption",comments.as_deref().filter(|s| !s.is_empty()))); }
+            if let Err(error) = crate::t_picasa::update_picasa_ini_entry(Path::new(&folder),&name,&updates) {
+                eprintln!("Picasa sidecar update failed for {name}: {error}");
+            }
+        }
     }
 
     pub fn update_column_with_conn(
@@ -4351,6 +4716,131 @@ impl AFile {
         }
 
         tx.commit().map_err(|e| e.to_string())?;
+        if updated > 0 {
+            if is_favorite.is_some() || comment.is_some() {
+                for &file_id in file_ids {
+                    Self::sync_picasa_metadata(&conn,file_id,is_favorite.is_some(),comment.is_some());
+                }
+            }
+            crate::t_storage::projections::hook_update_metadata(
+                file_ids,
+                is_favorite,
+                rating,
+                rotate_delta,
+                culling_flag,
+            );
+        }
+        Ok(updated)
+    }
+
+    /// Picasa's Tools > Adjust Date and Time (LAP-049): every file's taken date moves by the one
+    /// amount that puts `anchor_id` at `new_taken_date`, so the intervals of a shoot are kept. A file
+    /// with no taken date (NULL or 0) moves from its created date. Only the library changes, never
+    /// the files.
+    /// Returns the rows changed.
+    pub fn shift_taken_dates(file_ids: &[i64], anchor_id: i64, new_taken_date: i64) -> Result<usize, String> {
+        if file_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = open_conn()?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let updated = Self::shift_taken_dates_on(&tx, file_ids, anchor_id, new_taken_date)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn);
+        // the in-memory projection that sorts and groups by date follows the new dates
+        for f in file_ids.iter().filter_map(|&id| Self::get_file_info(id).ok().flatten()) {
+            crate::t_storage::projections::hook_upsert_file(
+                f.id.unwrap_or(0), f.folder_id, f.taken_date, f.created_at, f.modified_at,
+                f.rating, f.is_favorite, f.rotate, f.culling_flag,
+            );
+        }
+        Ok(updated)
+    }
+
+    /// Picasa's Geotag (LAP-049): put the files at `latitude`, `longitude` with an optional place
+    /// name, or with both coordinates None clear their geotags (Clear Geotags). The place details
+    /// read from the old position (altitude, region, country) are cleared either way. Library only.
+    pub fn set_location(file_ids: &[i64], latitude: Option<f64>, longitude: Option<f64>, name: Option<&str>) -> Result<usize, String> {
+        if file_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = open_conn()?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let updated = Self::set_location_on(&tx, file_ids, latitude, longitude, name)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(updated)
+    }
+
+    fn set_location_on(conn: &Connection, file_ids: &[i64], latitude: Option<f64>, longitude: Option<f64>, name: Option<&str>) -> Result<usize, String> {
+        let name = name.map(str::trim).filter(|n| !n.is_empty());
+        match (latitude, longitude) {
+            (Some(lat), Some(lng)) if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) || !lat.is_finite() || !lng.is_finite() =>
+                return Err("Latitude must be -90..90 and longitude -180..180".to_string()),
+            (Some(_), None) | (None, Some(_)) => return Err("Give both latitude and longitude".to_string()),
+            (None, None) if name.is_some() => return Err("A place name needs coordinates".to_string()),
+            _ => {}
+        }
+        let mut stmt = conn
+            .prepare_cached(
+                "UPDATE afiles SET gps_latitude = ?1, gps_longitude = ?2, gps_altitude = NULL,
+                 geo_name = ?3, geo_admin1 = NULL, geo_admin2 = NULL, geo_cc = NULL WHERE id = ?4",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut updated = 0;
+        for file_id in file_ids {
+            updated += stmt.execute(params![latitude, longitude, name, file_id]).map_err(|e| e.to_string())?;
+        }
+        Ok(updated)
+    }
+
+    fn shift_taken_dates_on(conn: &Connection, file_ids: &[i64], anchor_id: i64, new_taken_date: i64) -> Result<usize, String> {
+        let anchor_old: Option<i64> = conn
+            .query_row("SELECT COALESCE(NULLIF(taken_date, 0), created_at) FROM afiles WHERE id = ?1", [anchor_id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        let anchor_old = anchor_old.ok_or("The photo has no date to adjust")?;
+        let delta = new_taken_date - anchor_old;
+        let mut stmt = conn
+            .prepare_cached(
+                "UPDATE afiles SET taken_date = COALESCE(NULLIF(taken_date, 0), created_at) + ?1
+                 WHERE id = ?2 AND COALESCE(NULLIF(taken_date, 0), created_at) IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut updated = 0;
+        for file_id in file_ids {
+            updated += stmt.execute(params![delta, file_id]).map_err(|e| e.to_string())?;
+        }
+        Ok(updated)
+    }
+
+    pub fn set_hidden(file_id: i64, is_hidden: bool) -> Result<usize, String> {
+        let val = if is_hidden { 1i32 } else { 0i32 };
+        let res = Self::update_column(file_id, "is_hidden", &val)?;
+        bump_hidden_state_epoch();
+        crate::t_storage::projections::hook_set_file_hidden(&[file_id], is_hidden);
+        Ok(res)
+    }
+
+    pub fn set_hidden_batch(file_ids: &[i64], is_hidden: bool) -> Result<usize, String> {
+        if file_ids.is_empty() {
+            return Ok(0);
+        }
+        let val = if is_hidden { 1i32 } else { 0i32 };
+        let mut conn = open_conn()?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut updated = 0usize;
+        {
+            let mut stmt = tx
+                .prepare_cached("UPDATE afiles SET is_hidden = ?1 WHERE id = ?2")
+                .map_err(|e| e.to_string())?;
+            for file_id in file_ids {
+                updated += stmt.execute(params![val, file_id]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        bump_hidden_state_epoch();
+        crate::t_storage::projections::hook_set_file_hidden(file_ids, is_hidden);
         Ok(updated)
     }
 
@@ -4998,10 +5488,59 @@ impl AFile {
     // helper to build search query conditions and params
     // Returns (joins_clause, where_clause, params)
     fn build_search_query_parts(params: &QueryParams) -> (String, String, Vec<Box<dyn ToSql>>) {
+        Self::build_search_query_parts_with_color_conn(params, None)
+    }
+
+    fn build_search_query_parts_with_color_conn(params: &QueryParams, color_conn: Option<&Connection>) -> (String, String, Vec<Box<dyn ToSql>>) {
+        let mut normalized = params.clone();
+        let mut color_mask = 0;
+        if let Some(tokens) = normalized.search_tokens.as_mut().filter(|t| !t.is_empty()) {
+            tokens.retain_mut(|token| {
+                if token.token_type.eq_ignore_ascii_case("color") {
+                    if let Some(bit) = color_bit(token.value.trim()) { color_mask |= bit; return false; }
+                }
+                if token.token_type.eq_ignore_ascii_case("raw") {
+                    token.value = extract_color_tokens(&token.value,&mut color_mask);
+                    return !token.value.is_empty();
+                }
+                true
+            });
+            // All tokens may have been consumed; suppress the raw fallback.
+            if tokens.is_empty() {
+                normalized.search_query = None;
+                normalized.search_file_name.clear();
+            }
+        } else {
+            let text = normalized.search_query.as_deref().filter(|s| !s.trim().is_empty())
+                .unwrap_or(&normalized.search_file_name);
+            normalized.search_query = Some(extract_color_tokens(text,&mut color_mask));
+            normalized.search_file_name.clear();
+        }
+        let params = &normalized;
+        if let Some(show) = params.show_hidden {
+            set_show_hidden_pictures(show);
+        }
         let mut joins = Vec::new();
         let mut conditions: Vec<String> =
             vec![Self::live_photo_companion_exclusion_condition().to_string()];
         let mut sql_params: Vec<Box<dyn ToSql>> = Vec::new();
+
+        if color_mask != 0 {
+            let refresh = |conn: &Connection| refresh_color_index(conn, |id| {
+                AThumb::fetch(id).ok().flatten().and_then(|thumb| thumb.thumb_data)
+            });
+            let result = match color_conn {
+                Some(conn) => refresh(conn),
+                None => open_conn().and_then(|conn| refresh(&conn)),
+            };
+            if let Err(error) = result {
+                eprintln!("Color thumbnail index unavailable: {error}");
+                conditions.push("0".into());
+            } else {
+                conditions.push("EXISTS (SELECT 1 FROM dominant_colors color_index JOIN athumbs color_thumb ON color_thumb.file_id=color_index.file_id WHERE color_index.file_id=a.id AND color_thumb.error_code=0 AND (color_index.color_mask & ?) != 0)".into());
+                sql_params.push(Box::new(color_mask));
+            }
+        }
 
         let inaccessible_album_ids = t_utils::inaccessible_album_ids();
         if !inaccessible_album_ids.is_empty() {
@@ -5019,11 +5558,24 @@ impl AFile {
             if !tokens.is_empty() {
                 for token in tokens {
                     let val = token.value.trim();
-                    if val.is_empty() {
+                    let token_type = token.token_type.trim().to_lowercase();
+                    if val.is_empty() && !matches!(token_type.as_str(), "id" | "ids") {
                         continue;
                     }
                     let pattern = format!("%{}%", val);
-                    match token.token_type.trim().to_lowercase().as_str() {
+                    match token_type.as_str() {
+                        "id" | "ids" => {
+                            let ids = val.split(',').filter_map(|id| id.trim().parse::<i64>().ok()).map(|id| id.to_string()).collect::<Vec<_>>();
+                            conditions.push(if ids.is_empty() { "0".into() } else { format!("a.id IN ({})",ids.join(",")) });
+                        }
+                        "camera" | "make" | "model" => {
+                            conditions.push("(a.e_make LIKE ? COLLATE NOCASE OR a.e_model LIKE ? COLLATE NOCASE OR (COALESCE(a.e_make,'') || ' ' || COALESCE(a.e_model,'')) LIKE ? COLLATE NOCASE)".into());
+                            for _ in 0..3 { sql_params.push(Box::new(pattern.clone())); }
+                        }
+                        "lens" => {
+                            conditions.push("(a.e_lens_make LIKE ? COLLATE NOCASE OR a.e_lens_model LIKE ? COLLATE NOCASE)".into());
+                            for _ in 0..2 { sql_params.push(Box::new(pattern.clone())); }
+                        }
                         "person" | "people" => {
                             if let Ok(pid) = val.parse::<i64>() {
                                 conditions.push("EXISTS (SELECT 1 FROM faces f JOIN persons p ON f.person_id = p.id WHERE f.file_id = a.id AND (p.name LIKE ? COLLATE NOCASE OR p.id = ?))".to_string());
@@ -5051,6 +5603,15 @@ impl AFile {
                         "object" | "objects" => {
                             conditions.push("a.ai_objects LIKE ? COLLATE NOCASE".to_string());
                             sql_params.push(Box::new(pattern));
+                        }
+                        "scene" | "scenes" => {
+                            conditions.push("(a.ai_tags LIKE ? COLLATE NOCASE OR a.ai_tags LIKE ? COLLATE NOCASE)".into());
+                            sql_params.push(Box::new(format!("%scene: {}%", val)));
+                            sql_params.push(Box::new(pattern));
+                        }
+                        "place" | "places" => {
+                            conditions.push("(a.ai_tags LIKE ? COLLATE NOCASE OR a.geo_name LIKE ? COLLATE NOCASE OR a.geo_admin1 LIKE ? COLLATE NOCASE OR a.geo_cc LIKE ? COLLATE NOCASE)".into());
+                            for _ in 0..4 { sql_params.push(Box::new(pattern.clone())); }
                         }
                         "raw" | _ => {
                             conditions.push("(a.name LIKE ? COLLATE NOCASE OR a.comments LIKE ? COLLATE NOCASE OR a.ocr_text LIKE ? COLLATE NOCASE OR a.ai_objects LIKE ? COLLATE NOCASE OR a.ai_tags LIKE ? COLLATE NOCASE OR EXISTS (SELECT 1 FROM afile_tags ft JOIN atags t ON ft.tag_id = t.id WHERE ft.file_id = a.id AND t.name LIKE ? COLLATE NOCASE) OR EXISTS (SELECT 1 FROM faces f JOIN persons p ON f.person_id = p.id WHERE f.file_id = a.id AND p.name LIKE ? COLLATE NOCASE))".to_string());
@@ -5184,7 +5745,7 @@ impl AFile {
         if params.person_id > 0 {
             joins.push("INNER JOIN faces f ON a.id = f.file_id");
             conditions.push("NOT EXISTS (SELECT 1 FROM face_ignores i WHERE i.face_id = f.id)".to_string());
-            // The person view lists confirmed faces, then the pending
+            // As in Picasa: the person view lists confirmed faces, then the pending
             // suggestions at the end (see build_order_clause); the suggestions button
             // narrows it to suggestions only.
             if params.person_ignored {
@@ -5452,6 +6013,15 @@ impl AFile {
                     "0".to_string(),
                 ))
             }
+            GROUP_BY_DATE_QUARTER => {
+                // Browse by date (LAP-049): local calendar quarters (Jan 1, Apr 1, Jul 1, Oct 1); a
+                // photo with no taken date goes by when it was added.
+                let d = if date_col == "a.taken_date" { "COALESCE(NULLIF(a.taken_date, 0), a.created_at)".to_string() } else { date_col.to_string() };
+                Some((
+                    format!("CASE WHEN {d} IS NULL THEN 'unknown-quarter' ELSE CAST({} AS TEXT) END", quarter_bucket_sql(&d)),
+                    "0".to_string(),
+                ))
+            }
             GROUP_BY_RATING => Some((
                 "CAST(COALESCE(a.rating, 0) AS TEXT)".to_string(),
                 "0".to_string(),
@@ -5487,7 +6057,7 @@ impl AFile {
         category_sort: i64,
     ) -> String {
         match group_by {
-            GROUP_BY_DATE_DAY | GROUP_BY_DATE_MONTH | GROUP_BY_DATE_YEAR => {
+            GROUP_BY_DATE_DAY | GROUP_BY_DATE_MONTH | GROUP_BY_DATE_QUARTER | GROUP_BY_DATE_YEAR => {
                 let dir = if calendar_sort % 2 == 1 {
                     "DESC"
                 } else {
@@ -5538,6 +6108,11 @@ impl AFile {
     }
 
     fn query_groups(params: &QueryParams) -> Result<Vec<QueryGroup>, String> {
+        let conn = open_conn()?;
+        Self::query_groups_on(&conn, params)
+    }
+
+    fn query_groups_on(conn: &Connection, params: &QueryParams) -> Result<Vec<QueryGroup>, String> {
         let Some((group_id_expr, sort_expr)) =
             Self::group_key_and_sort_expr(params.group_by, params.calendar_sort)
         else {
@@ -5558,7 +6133,6 @@ impl AFile {
             Self::group_order_clause(params)
         );
         let final_params: Vec<&dyn ToSql> = sql_params.iter().map(|p| p.as_ref()).collect();
-        let conn = open_conn()?;
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(&final_params[..], |row| {
@@ -5723,6 +6297,18 @@ impl AFile {
         if params.folders_all {
             return Self::get_folder_grouped_rows(params, offset, limit);
         }
+        if let Some(cached) = Self::grouped_ids(params) {
+            return Self::build_grouped_query_result(
+                cached.groups.clone(),
+                offset,
+                limit,
+                |group, group_file_offset, group_file_limit| {
+                    let start = cached.starts.get(&group.id).copied().unwrap_or(0) + group_file_offset.max(0) as usize;
+                    let end = (start + group_file_limit.max(0) as usize).min(cached.ids.len());
+                    Self::files_in_id_order(&cached.ids[start.min(end)..end])
+                },
+            );
+        }
         let groups = Self::query_groups(params)?;
         Self::build_grouped_query_result(
             groups,
@@ -5737,6 +6323,65 @@ impl AFile {
                 )
             },
         )
+    }
+
+    /// The grouped view's ids (see GroupedIds), from the cache or built now; None when the library
+    /// version cannot be read or the per-group ids do not add up to the groups' counts (then the
+    /// caller runs the per-group queries as before).
+    fn grouped_ids(params: &QueryParams) -> Option<Arc<GroupedIds>> {
+        let key = serde_json::to_string(params).ok()?;
+        let (path, version) = library_data_version()?;
+        let key = format!("{path}\u{1}{key}");
+        if let Ok(guard) = GROUPED_IDS.lock() {
+            if let Some(cached) = guard.as_ref() {
+                if cached.key == key && cached.version == version { return Some(cached.clone()); }
+            }
+        }
+        let conn = open_conn().ok()?;
+        let (groups, starts, ids) = Self::grouped_ids_on(&conn, params)?;
+        let built = Arc::new(GroupedIds { key, version, groups, starts, ids });
+        if let Ok(mut guard) = GROUPED_IDS.lock() { *guard = Some(built.clone()); }
+        Some(built)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn grouped_ids_on(conn: &Connection, params: &QueryParams) -> Option<(Vec<QueryGroup>, HashMap<String, usize>, Vec<i64>)> {
+        let groups = Self::query_groups_on(conn, params).ok()?;
+        let (group_id_expr, _) = Self::group_key_and_sort_expr(params.group_by, params.calendar_sort)?;
+        let (joins, where_clause, sql_params) = Self::build_search_query_parts(params);
+        let sql = format!(
+            "SELECT a.id, {group_id_expr}
+             FROM afiles a
+             LEFT JOIN afolders b ON a.folder_id = b.id
+             LEFT JOIN albums c ON b.album_id = c.id
+             {joins}{where_clause} GROUP BY a.id ORDER BY {}",
+            Self::build_order_clause(params)
+        );
+        let final_params: Vec<&dyn ToSql> = sql_params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).ok()?;
+        let mut by_group: HashMap<String, Vec<i64>> = HashMap::new();
+        let rows = stmt.query_map(&final_params[..], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))).ok()?;
+        for row in rows {
+            let (id, group) = row.ok()?;
+            by_group.entry(group).or_default().push(id);
+        }
+        let mut starts = HashMap::with_capacity(groups.len());
+        let mut ids = Vec::new();
+        for group in &groups {
+            let members = by_group.remove(&group.id).unwrap_or_default();
+            if members.len() as i64 != group.count { return None; }
+            starts.insert(group.id.clone(), ids.len());
+            ids.extend(members);
+        }
+        Some((groups, starts, ids))
+    }
+
+    /// The files with these ids, in this order (missing ones left out).
+    fn files_in_id_order(ids: &[i64]) -> Result<Vec<Self>, String> {
+        if ids.is_empty() { return Ok(Vec::new()); }
+        let mut by_id: HashMap<i64, Self> = Self::get_files_by_ids(ids)?.into_iter()
+            .filter_map(|f| f.id.map(|id| (id, f))).collect();
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
     pub fn get_group_file_ids(params: &QueryParams, group_id: &str) -> Result<Vec<i64>, String> {
@@ -5891,6 +6536,10 @@ impl AFile {
     }
 
     fn get_query_file_ids_on(conn: &Connection, params: &QueryParams) -> Result<Vec<i64>, String> {
+        if let Ok(Some(ids)) = crate::t_storage::projections::query_filtered_file_ids(conn, params) {
+            return Ok(ids);
+        }
+
         let (joins, where_clause, sql_params) = Self::build_search_query_parts(params);
         let mut query = format!(
             "SELECT a.id
@@ -5917,7 +6566,7 @@ impl AFile {
         Ok(ids)
     }
 
-    // ---- Continuous People view (QueryParams.people_all) ----
+    // ---- Picasa-style continuous People view (QueryParams.people_all) ----
     // One section per named person, in the People sidebar's order; each section lists
     // that person's photos exactly as the single-person view does (confirmed, then the
     // suggestions in the order they were made, plus faces ignored since person_since).
@@ -5995,23 +6644,42 @@ impl AFile {
     /// Sections for one load of the view. The grid fetches rows in chunks with the same
     /// params (each load has its own random_seed), so the sections are computed once.
     fn people_groups_cached(params: &QueryParams) -> Result<Vec<QueryGroup>, String> {
-        static CACHE: std::sync::Mutex<Option<(String, std::time::Instant, Vec<QueryGroup>)>> =
-            std::sync::Mutex::new(None);
+        if let Some(show) = params.show_hidden {
+            set_show_hidden_pictures(show);
+        }
+        // A few entries: one load's count and grouped-row requests send different
+        // grouping fields, and a single slot evicted one with the other on every call.
+        static CACHE: std::sync::Mutex<Vec<(String, std::time::Instant, Vec<QueryGroup>)>> =
+            std::sync::Mutex::new(Vec::new());
+        // Startup issues several grouped requests at once; the first computes, the rest wait.
+        static COMPUTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _computing = COMPUTING.lock();
+        let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_people_groups");
+        // group_by does not change the people sections.
+        let mut key_params = params.clone();
+        key_params.group_by = 0;
         let key = format!(
-            "{}|{}",
+            "{}|{}|{}|{}",
             t_storage::get_current_db_path().unwrap_or_default(),
-            serde_json::to_string(params).unwrap_or_default()
+            serde_json::to_string(&key_params).unwrap_or_default(),
+            show_hidden_pictures(),
+            hidden_state_epoch()
         );
         if let Ok(cache) = CACHE.lock() {
-            if let Some((cached_key, at, groups)) = cache.as_ref() {
-                if *cached_key == key && at.elapsed() < std::time::Duration::from_secs(120) {
-                    return Ok(groups.clone());
-                }
+            if let Some((_, _, groups)) = cache.iter().find(|(cached_key, at, _)| {
+                *cached_key == key && at.elapsed() < std::time::Duration::from_secs(120)
+            }) {
+                return Ok(groups.clone());
             }
         }
         let groups = Self::people_groups_on(&*open_conn()?, params)?;
+        trace.mark("computed", groups.len());
         if let Ok(mut cache) = CACHE.lock() {
-            *cache = Some((key, std::time::Instant::now(), groups.clone()));
+            cache.retain(|(cached_key, _, _)| *cached_key != key);
+            cache.push((key, std::time::Instant::now(), groups.clone()));
+            if cache.len() > 4 {
+                cache.remove(0);
+            }
         }
         Ok(groups)
     }
@@ -6058,7 +6726,7 @@ impl AFile {
         Ok(None)
     }
 
-    // ---- Continuous Folders view (QueryParams.folders_all) ----
+    // ---- Picasa-style continuous Folders view (QueryParams.folders_all) ----
     // A flat list of every folder that directly holds visible pictures (at any depth;
     // a folder whose pictures are all in subfolders is not listed), one grid section
     // each, in the same order as the sidebar list. Album roots are not nodes any more:
@@ -6151,8 +6819,15 @@ impl AFile {
     /// Sections for one load of the view. The grid fetches rows in chunks with the same
     /// params (each load has its own random_seed), so the sections are computed once.
     fn folder_sections_cached(params: &QueryParams) -> Result<Vec<FolderSection>, String> {
+        if let Some(show) = params.show_hidden {
+            set_show_hidden_pictures(show);
+        }
         static CACHE: std::sync::Mutex<Option<(String, std::time::Instant, Vec<FolderSection>)>> =
             std::sync::Mutex::new(None);
+        // Startup issues several grouped requests at once; the first computes, the rest wait.
+        static COMPUTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _computing = COMPUTING.lock();
+        let mut trace = crate::t_protocol::ThumbnailTrace::new(0, "query_folder_sections");
         // The grid's grouped calls and its flat calls (selection, counts) differ only in
         // fields that do not change the sections; share one entry per load.
         let mut key_params = params.clone();
@@ -6160,9 +6835,11 @@ impl AFile {
         key_params.calendar_sort = 0;
         key_params.category_sort = 0;
         let key = format!(
-            "{}|{}",
+            "{}|{}|{}|{}",
             t_storage::get_current_db_path().unwrap_or_default(),
-            serde_json::to_string(&key_params).unwrap_or_default()
+            serde_json::to_string(&key_params).unwrap_or_default(),
+            show_hidden_pictures(),
+            hidden_state_epoch()
         );
         if let Ok(cache) = CACHE.lock() {
             if let Some((cached_key, at, sections)) = cache.as_ref() {
@@ -6172,6 +6849,7 @@ impl AFile {
             }
         }
         let sections = Self::folder_sections_on(&*open_conn()?, params)?;
+        trace.mark("computed", sections.len());
         if let Ok(mut cache) = CACHE.lock() {
             *cache = Some((key, std::time::Instant::now(), sections.clone()));
         }
@@ -6188,8 +6866,14 @@ impl AFile {
     // Both flags select a single People-then-Folders timeline. Person IDs are positive
     // integers; folder IDs are full paths, so the existing section keys stay stable.
     fn library_query_groups(params: &QueryParams) -> Result<Vec<QueryGroup>, String> {
-        let mut groups = Self::people_groups_cached(params)?;
-        groups.extend(Self::folder_query_groups(&Self::folder_sections_cached(params)?));
+        // Independent queries on separate pooled connections: compute them side by side.
+        let (people, folders) = std::thread::scope(|scope| {
+            let people = scope.spawn(|| Self::people_groups_cached(params));
+            let folders = Self::folder_sections_cached(params);
+            (people.join().unwrap_or_else(|_| Err("people sections panicked".to_string())), folders)
+        });
+        let mut groups = people?;
+        groups.extend(Self::folder_query_groups(&folders?));
         Ok(groups)
     }
 
@@ -6278,9 +6962,22 @@ impl AFile {
     fn build_order_clause(params: &QueryParams) -> String {
         let order = Self::build_order_clause_values(params.sort_type, params.sort_order, params.random_seed);
         if params.person_id > 0 && !params.person_ignored {
-            // A tick moves the photo into the confirmed block, regardless of its old
-            // suggested_at. Remaining suggestions stay together in suggestion order.
-            let pending = format!("MIN(CASE WHEN f.person_id = {} THEN 0 ELSE 1 END)", params.person_id);
+            // LAP-006: within the confirmed block (and among suggestions made together), the
+            // person's photos by date when asked; the confirmed / suggested blocks stay as they are.
+            let order = match params.person_face_sort {
+                1 => "COALESCE(NULLIF(a.taken_date, 0), a.created_at) DESC, a.id DESC".to_string(),
+                2 => "COALESCE(NULLIF(a.taken_date, 0), a.created_at) ASC, a.id ASC".to_string(),
+                _ => order,
+            };
+            // A tick moves the photo into the confirmed block (it drops suggested_at).
+            // Remaining suggestions stay together in suggestion order, and so do faces
+            // confirmed with Confirm all since person_since: they keep suggested_at, so
+            // every tile stays where it was for the rest of the session.
+            let since = if params.person_since > 0 { params.person_since } else { i64::MAX };
+            let pending = format!(
+                "MIN(CASE WHEN f.person_id = {} AND NOT (f.suggested_at IS NOT NULL AND f.resolved_at >= {since}) THEN 0 ELSE 1 END)",
+                params.person_id
+            );
             format!("{pending} ASC, CASE WHEN {pending} = 0 THEN 0 ELSE MAX(COALESCE(f.suggested_at, 0)) END ASC, {order}")
         } else {
             order
@@ -7165,6 +7862,13 @@ impl AFile {
             return Ok(Vec::new());
         }
 
+        // Fast in-memory columnar projection query
+        if let Ok(conn) = open_conn() {
+            if let Ok(Some(timelines)) = crate::t_storage::projections::query_smart_timeline(&conn, params) {
+                return Ok(timelines);
+            }
+        }
+
         let (joins, where_clause, sql_params, needs_group) = Self::build_smart_query_parts(params)?;
         let (date_field, year_extract, month_extract, date_extract) = match params.sort_type {
             0 => (
@@ -7292,11 +7996,91 @@ impl AFile {
             .map_err(|e| e.to_string())
     }
 
+    /// The Timeline ribbon's bars (LAP-091): photos per month of the view, oldest first, dated by
+    /// the taken date, else the added date, else the file date (local time). A view spanning two
+    /// years or less gets weeks (Monday to Sunday), 62 days or less days, so bars stay about as many
+    /// as in the whole library. Unlike the scrollbar timeline it also covers the continuous Folders
+    /// (and People) views: there it counts the whole library under the same filters (file type,
+    /// hidden pictures, folder rules).
+    pub fn get_date_histogram(params: &QueryParams) -> Result<Vec<ADateHistogramBucket>, String> {
+        let conn = open_conn()?;
+        Self::get_date_histogram_on(&conn, params)
+    }
+
+    fn get_date_histogram_on(conn: &Connection, params: &QueryParams) -> Result<Vec<ADateHistogramBucket>, String> {
+        let mut scope = params.clone();
+        if scope.folders_all || scope.people_all {
+            scope.folders_all = false;
+            scope.people_all = false;
+            scope.person_id = 0;
+            scope.search_folder = String::new();
+            scope.search_all_subfolders = String::new();
+        }
+        let (joins, where_clause, sql_params) = Self::build_search_query_parts(&scope);
+        let dated = format!(
+            "SELECT DISTINCT a.id AS id, b.path AS path,
+                COALESCE(NULLIF(a.taken_date, 0), NULLIF(a.created_at, 0), a.modified_at) AS ts
+             FROM afiles a
+             LEFT JOIN afolders b ON a.folder_id = b.id
+             LEFT JOIN albums c ON b.album_id = c.id
+             {joins}{where_clause}"
+        );
+        let final_params: Vec<&dyn ToSql> = sql_params.iter().map(|p| p.as_ref()).collect();
+        // The bar unit. A bounded range (Calendar's rolling Timeline window, Build 45) goes by the
+        // range itself - a sparse year's photo span would shrink it: over 1800 days months, over 260
+        // weeks, else days. Otherwise by the photos' span: over two years months, over 62 days weeks.
+        let (days, month_over, week_over) = if scope.start_date > 0 && scope.end_date > scope.start_date {
+            ((scope.end_date - scope.start_date) / 86_400, 1800, 260)
+        } else {
+            let span: (Option<i64>, Option<i64>) = conn.query_row(
+                &format!("SELECT MIN(ts), MAX(ts) FROM ({dated}) WHERE ts > 0 AND CAST(strftime('%Y', ts, 'unixepoch', 'localtime') AS INTEGER) BETWEEN 1970 AND 2100"),
+                final_params.as_slice(), |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+            (match span { (Some(a), Some(b)) => (b - a) / 86_400, _ => 0 }, 730, 62)
+        };
+        let (unit, key) = if days > month_over {
+            ("month", "date(ts, 'unixepoch', 'localtime', 'start of month')")
+        } else if days > week_over {
+            ("week", "date(ts, 'unixepoch', 'localtime', '-6 days', 'weekday 1')")
+        } else {
+            ("day", "date(ts, 'unixepoch', 'localtime')")
+        };
+        let query = format!(
+            "WITH f AS ({dated}), m AS (
+                SELECT id, path, ts, {key} AS b FROM f WHERE ts IS NOT NULL AND ts > 0
+            ), r AS (
+                SELECT b, path, id,
+                    ROW_NUMBER() OVER (PARTITION BY b ORDER BY ts, id) AS k,
+                    COUNT(*) OVER (PARTITION BY b) AS n
+                FROM m WHERE CAST(substr(b, 1, 4) AS INTEGER) BETWEEN 1970 AND 2100
+            )
+            SELECT CAST(substr(b, 1, 4) AS INTEGER), CAST(substr(b, 6, 2) AS INTEGER), CAST(substr(b, 9, 2) AS INTEGER),
+                n, path, id FROM r WHERE k = 1 ORDER BY b ASC"
+        );
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(final_params.as_slice(), |row| Ok(ADateHistogramBucket {
+            year: row.get(0)?,
+            month: row.get(1)?,
+            day: row.get(2)?,
+            unit: unit.to_string(),
+            count: row.get(3)?,
+            first_folder_path: row.get(4)?,
+            first_file_id: row.get(5)?,
+        })).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     // get query timeline markers
     pub fn get_query_time_line(params: &QueryParams) -> Result<Vec<ATimeLine>, String> {
         // Only process for time-based sorts (0=taken_date, 1=created_at, 2=modified_at)
         if params.sort_type > 2 || params.people_all || params.folders_all {
             return Ok(Vec::new());
+        }
+
+        // Fast in-memory columnar projection query (Picasa DB3 .pmp style)
+        if let Ok(conn) = open_conn() {
+            if let Ok(Some(timelines)) = crate::t_storage::projections::query_timeline(&conn, params) {
+                return Ok(timelines);
+            }
         }
 
         let (joins, where_clause, sql_params) = Self::build_search_query_parts(params);
@@ -9017,6 +9801,7 @@ impl ATag {
         .map_err(|e| e.to_string())?;
 
         tx.commit().map_err(|e| e.to_string())?;
+        crate::t_storage::projections::hook_set_file_tags(file_id, target_tag_ids);
         Ok(())
     }
 
@@ -9159,6 +9944,7 @@ impl ATag {
             params![file_id],
         )
         .map_err(|e| e.to_string())?;
+        crate::t_storage::projections::hook_add_tag(file_id, tag_id);
         Ok(())
     }
 
@@ -9188,6 +9974,9 @@ impl ATag {
                 params![file_id],
             )
             .map_err(|e| e.to_string())?;
+        }
+        if result > 0 {
+            crate::t_storage::projections::hook_remove_tag(file_id, tag_id);
         }
         Ok(result)
     }
@@ -9298,6 +10087,14 @@ impl ATag {
         }
 
         tx.commit().map_err(|e| e.to_string())?;
+        for file_id in file_ids {
+            for tag_id in add_tag_ids {
+                crate::t_storage::projections::hook_add_tag(*file_id, *tag_id);
+            }
+            for tag_id in remove_tag_ids {
+                crate::t_storage::projections::hook_remove_tag(*file_id, *tag_id);
+            }
+        }
         Ok(states)
     }
 
@@ -9327,11 +10124,14 @@ impl ATag {
                      WHERE id = ?1",
                 )
                 .map_err(|e| e.to_string())?;
-            for file_id in file_ids {
+            for file_id in &file_ids {
                 stmt.execute(params![file_id]).map_err(|e| e.to_string())?;
             }
         }
         tx.commit().map_err(|e| e.to_string())?;
+        for fid in file_ids {
+            crate::t_storage::projections::hook_remove_tag(fid, tag_id);
+        }
         Ok(result)
     }
 
@@ -9411,7 +10211,7 @@ pub struct Person {
     pub thumbnail: Option<String>, // Base64 encoded face thumbnail
     pub needs_review: bool, // Automatically grouped faces have not been named or merged by the user.
     #[serde(default)]
-    pub suggestions: i64, // Pending face suggestions (orange "?"); named people only.
+    pub suggestions: i64, // Pending face suggestions (Picasa-style orange "?"); named people only.
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -10865,6 +11665,7 @@ fn create_conn() -> Result<(String, Connection), String> {
     // Folder Manager rules are referenced by every album visibility query;
     // make sure the table exists on any library opened (also by lap-cli).
     let _ = crate::t_folder_rules::migrate(&conn);
+    let _ = conn.execute("ALTER TABLE afiles ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0", []);
     Ok((path, conn))
 }
 
@@ -10894,10 +11695,44 @@ pub(crate) fn open_conn() -> Result<PooledConn, String> {
 
 /// create all tables if not exists
 pub fn create_db() -> Result<(), String> {
+    create_db_with_check(true)
+}
+
+/// Startup variant: skip the full page scan (about 1s on a 650MB library, and it
+/// blocks the window from loading). Migration-time corruption is still caught;
+/// call `verify_db_integrity` afterwards, off the startup path.
+pub fn create_db_deferred_check() -> Result<(), String> {
+    create_db_with_check(false)
+}
+
+/// Run the full quick_check deferred by `create_db_deferred_check`.
+/// Returns true when it newly marked the current database as corrupted.
+pub fn verify_db_integrity() -> bool {
+    let Ok(path) = t_storage::get_current_db_path() else {
+        return false;
+    };
+    if !Path::new(&path).exists() || is_path_corrupted(&path) {
+        return false;
+    }
+    match database_is_corrupt(&path) {
+        Ok(true) => {
+            eprintln!("verify_db_integrity: corruption detected for '{}'", path);
+            mark_db_corrupted(&path);
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            eprintln!("verify_db_integrity: check skipped ({})", e);
+            false
+        }
+    }
+}
+
+fn create_db_with_check(check_pages: bool) -> Result<(), String> {
     let path = t_storage::get_current_db_path()?;
     // Re-evaluating this library: clear any stale corrupt mark for it before checking.
     clear_db_corrupted(&path);
-    if Path::new(&path).exists() {
+    if check_pages && Path::new(&path).exists() {
         // An inconclusive pre-check (Err) must NOT abort: a read-only quick_check can fail on a
         // perfectly healthy WAL db that needs recovery after an unclean shutdown. Fall through to
         // create_db_internal, which opens read-write (running WAL recovery + migrations) and whose
@@ -11067,6 +11902,7 @@ fn create_db_internal() -> Result<(), String> {
             motion_photo_offset INTEGER,
             proxy_path TEXT,
             edits TEXT,
+            is_hidden INTEGER NOT NULL DEFAULT 0,
             ocr_text TEXT,
             ai_tags TEXT,
             ai_objects TEXT,
@@ -11142,6 +11978,10 @@ fn create_db_internal() -> Result<(), String> {
     );
     let _ = conn.execute(
         "ALTER TABLE afiles ADD COLUMN edits TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE afiles ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0",
         [],
     );
     // Migration: Add faces_excluded column to afolders if it doesn't exist
@@ -11491,6 +12331,7 @@ fn create_db_internal() -> Result<(), String> {
 
     // Run schema migrations after base tables are ensured.
     crate::t_migration::check_and_migrate(&conn)?;
+    crate::t_search::ensure_cache_version(&conn)?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_afiles_content_identifier ON afiles(content_identifier)",
         [],
@@ -11520,6 +12361,7 @@ mod tag_group_query_tests {
             CREATE TABLE afiles(id INTEGER PRIMARY KEY, folder_id INTEGER, live_photo_video_id INTEGER, width INTEGER, height INTEGER);
             INSERT INTO afiles VALUES(1,1,NULL,1000,1000), (2,1,NULL,100,100), (3,1,NULL,1000,1000), (4,2,NULL,1000,1000), (5,1,3,1000,1000), (6,1,NULL,1000,1000);
             ALTER TABLE afiles ADD COLUMN file_type INTEGER DEFAULT 1;
+            ALTER TABLE afiles ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0;
             CREATE TABLE atags(id INTEGER PRIMARY KEY, group_id INTEGER);
             INSERT INTO atags VALUES(10,1), (11,1), (12,2);
             CREATE TABLE afile_tags(file_id INTEGER, tag_id INTEGER, PRIMARY KEY(file_id,tag_id));
@@ -11558,7 +12400,7 @@ mod album_filter_tests {
                 (4,1,'/photos/Other/Exports'),(5,1,'/photos/100%_done'),(6,1,'/photos/100XXdone'),
                 (7,1,'/photos/客户/深层'),(8,2,'/other');
             CREATE TABLE afiles(id INTEGER PRIMARY KEY, folder_id INTEGER, file_type INTEGER,
-                width INTEGER, height INTEGER, live_photo_video_id INTEGER, last_scan_time INTEGER DEFAULT 0, rating INTEGER DEFAULT 5);
+                width INTEGER, height INTEGER, live_photo_video_id INTEGER, last_scan_time INTEGER DEFAULT 0, rating INTEGER DEFAULT 5, is_hidden INTEGER NOT NULL DEFAULT 0);
             INSERT INTO afiles(id,folder_id,file_type,width,height,live_photo_video_id) VALUES
                 (1,1,1,159,159,NULL),(2,1,1,160,100,NULL),(3,1,1,100,160,NULL),(4,1,1,NULL,100,NULL),
                 (5,1,1,0,100,NULL),(6,2,1,1000,1000,NULL),(7,3,1,1000,1000,NULL),(8,4,1,1000,1000,NULL),
@@ -11570,6 +12412,27 @@ mod album_filter_tests {
             ALTER TABLE afiles ADD COLUMN media_subtype TEXT;
             UPDATE afiles SET media_subtype='raw_jpeg_pair' WHERE id=13;").unwrap();
         conn
+    }
+
+    #[test]
+    fn search_index_preserves_order_dates_sizes_and_album_visibility() {
+        let conn = fixture();
+        conn.execute_batch("ALTER TABLE afiles ADD COLUMN taken_date INTEGER;
+            ALTER TABLE afiles ADD COLUMN created_at INTEGER;
+            ALTER TABLE afiles ADD COLUMN modified_at INTEGER;
+            ALTER TABLE afiles ADD COLUMN size INTEGER;
+            ALTER TABLE afiles ADD COLUMN rotate INTEGER DEFAULT 0;
+            UPDATE afiles SET taken_date=1000,created_at=2000,modified_at=3000,size=id*10;
+            UPDATE afiles SET taken_date=0 WHERE id=3;
+            UPDATE afiles SET taken_date=0,created_at=0 WHERE id=4;
+            UPDATE afiles SET taken_date=NULL,created_at=NULL,modified_at=NULL WHERE id=5;").unwrap();
+        // Keep invisible text IDs for visual exclusions, marking them so the
+        // frontend never publishes folder-excluded or too-small placeholders.
+        let rows = AFile::get_search_index_on(&conn, &[5,6,4,1,3,2,2,999]).unwrap();
+        assert_eq!(rows, vec![(5,0,50,0,100,0,true),(6,1000,60,1000,1000,0,false),
+            (4,3000,40,0,100,0,true),(1,1000,10,159,159,0,false),
+            (3,2000,30,100,160,0,true),(2,1000,20,160,100,0,true)]);
+        assert!(AFile::get_search_index_on(&conn, &[]).unwrap().is_empty());
     }
 
     fn visible(conn: &Connection) -> Vec<i64> {
@@ -11747,6 +12610,157 @@ mod album_filter_tests {
         assert!(AFolder::is_faces_excluded_with_conn(&conn, 1).unwrap());
         assert!(!AFolder::is_faces_excluded_with_conn(&conn, 2).unwrap());
     }
+
+    #[test]
+    fn hidden_pictures_filtered_across_queries_until_show_hidden_enabled() {
+        set_show_hidden_pictures(false);
+
+        struct ResetGuard;
+        impl Drop for ResetGuard {
+            fn drop(&mut self) {
+                set_show_hidden_pictures(false);
+            }
+        }
+        let _guard = ResetGuard;
+
+        // 1. Predicates and visibility checks using album_filter_tests fixture
+        let conn = fixture();
+        assert!(visible(&conn).contains(&2));
+        assert!(AFile::is_album_visible_on(&conn, 2).unwrap());
+
+        // a) With set_show_hidden_pictures(false): marking a file as hidden excludes it
+        conn.execute("UPDATE afiles SET is_hidden = 1 WHERE id = 2", []).unwrap();
+        assert!(!visible(&conn).contains(&2));
+        assert!(!AFile::is_album_visible_on(&conn, 2).unwrap());
+
+        let matches_query: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a WHERE a.id = 2 AND {})", AFile::album_query_predicate("a")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(!matches_query);
+
+        let matches_filter: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a WHERE a.id = 2 AND {})", AFile::album_filter_predicate("a")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(!matches_filter);
+
+        let matches_joined: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a JOIN afolders b ON b.id = a.folder_id JOIN albums c ON c.id = b.album_id WHERE a.id = 2 AND {})",
+                AFile::album_joined_filter_predicate("a", "b", "c")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(!matches_joined);
+
+        // b) album_scan_predicate('a') STILL matches the hidden file when is_hidden = 1 and set_show_hidden_pictures(false)
+        let matches_scan: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a WHERE a.id = 2 AND {})", AFile::album_scan_predicate("a")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(matches_scan, "album_scan_predicate must still match hidden file to preserve it during scan sweeps");
+
+        // 2. folder_sections_on count verification
+        let folder_conn = Connection::open_in_memory().unwrap();
+        crate::t_folder_rules::migrate(&folder_conn).unwrap();
+        folder_conn.execute_batch("
+            CREATE TABLE albums (id INTEGER PRIMARY KEY, path TEXT, file_types INTEGER, small_image_filter INTEGER, excluded_folders TEXT);
+            INSERT INTO albums VALUES (1, '/p', 7, NULL, '[]');
+            CREATE TABLE afolders (id INTEGER PRIMARY KEY, album_id INTEGER, name TEXT, path TEXT, is_favorite INTEGER, is_excluded_from_search INTEGER);
+            INSERT INTO afolders VALUES (1, 1, 'f1', '/p/f1', 0, 0);
+            CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, name TEXT, file_type INTEGER DEFAULT 1,
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER, modified_at INTEGER, created_at INTEGER,
+                is_hidden INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO afiles (id, folder_id, name, width, height, size, taken_date, is_hidden) VALUES
+                (101, 1, 'photo1.jpg', 100, 100, 10, 1000, 0),
+                (102, 1, 'photo2.jpg', 100, 100, 10, 2000, 0);
+        ").unwrap();
+
+        let mut folder_params = QueryParams::default();
+        folder_params.folders_all = true;
+        folder_params.folder_sort = 0;
+        let sections = AFile::folder_sections_on(&folder_conn, &folder_params).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].count, 2);
+
+        folder_conn.execute("UPDATE afiles SET is_hidden = 1 WHERE id = 102", []).unwrap();
+        let sections_hidden = AFile::folder_sections_on(&folder_conn, &folder_params).unwrap();
+        assert_eq!(sections_hidden.len(), 1);
+        assert_eq!(sections_hidden[0].count, 1);
+
+        // 3. people_groups_on count verification
+        let people_conn = Connection::open_in_memory().unwrap();
+        crate::t_folder_rules::migrate(&people_conn).unwrap();
+        people_conn.execute_batch("
+            CREATE TABLE albums (id INTEGER PRIMARY KEY, path TEXT, file_types INTEGER, small_image_filter INTEGER, excluded_folders TEXT);
+            INSERT INTO albums VALUES (1, '/photos', 7, NULL, '[]');
+            CREATE TABLE afolders (id INTEGER PRIMARY KEY, album_id INTEGER, path TEXT, is_excluded_from_search INTEGER);
+            INSERT INTO afolders VALUES (1, 1, '/photos', 0);
+            CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, file_type INTEGER DEFAULT 1,
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER,
+                is_hidden INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO afiles (id, folder_id, width, height, size, taken_date, is_hidden) VALUES
+                (201, 1, 1000, 1000, 100, 10, 0),
+                (202, 1, 1000, 1000, 100, 20, 0);
+            CREATE TABLE persons (id INTEGER PRIMARY KEY, name TEXT, is_anchored INTEGER);
+            INSERT INTO persons VALUES (1, 'Alice', 1);
+            CREATE TABLE faces (id INTEGER PRIMARY KEY, file_id INTEGER, person_id INTEGER, suggested_person_id INTEGER, suggested_at INTEGER, resolved_at INTEGER);
+            INSERT INTO faces VALUES (1, 201, 1, NULL, NULL, NULL), (2, 202, 1, NULL, NULL, NULL);
+            CREATE TABLE face_rejections (face_id INTEGER, person_id INTEGER, created_at INTEGER, PRIMARY KEY(face_id, person_id));
+            CREATE TABLE face_ignores (face_id INTEGER PRIMARY KEY, ignored_at INTEGER);
+        ").unwrap();
+
+        let mut people_params = QueryParams::default();
+        people_params.people_all = true;
+        let p_groups = AFile::people_groups_on(&people_conn, &people_params).unwrap();
+        assert_eq!(p_groups.len(), 1);
+        assert_eq!(p_groups[0].count, 2);
+
+        people_conn.execute("UPDATE afiles SET is_hidden = 1 WHERE id = 202", []).unwrap();
+        let p_groups_hidden = AFile::people_groups_on(&people_conn, &people_params).unwrap();
+        assert_eq!(p_groups_hidden.len(), 1);
+        assert_eq!(p_groups_hidden[0].count, 1);
+
+        // c) With set_show_hidden_pictures(true): the hidden file is included again
+        set_show_hidden_pictures(true);
+
+        assert!(visible(&conn).contains(&2));
+        assert!(AFile::is_album_visible_on(&conn, 2).unwrap());
+
+        let matches_query_shown: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a WHERE a.id = 2 AND {})", AFile::album_query_predicate("a")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(matches_query_shown);
+
+        let matches_filter_shown: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a WHERE a.id = 2 AND {})", AFile::album_filter_predicate("a")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(matches_filter_shown);
+
+        let matches_joined_shown: bool = conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM afiles a JOIN afolders b ON b.id = a.folder_id JOIN albums c ON c.id = b.album_id WHERE a.id = 2 AND {})",
+                AFile::album_joined_filter_predicate("a", "b", "c")),
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(matches_joined_shown);
+
+        let sections_shown = AFile::folder_sections_on(&folder_conn, &folder_params).unwrap();
+        assert_eq!(sections_shown[0].count, 2);
+
+        let p_groups_shown = AFile::people_groups_on(&people_conn, &people_params).unwrap();
+        assert_eq!(p_groups_shown[0].count, 2);
+
+        // d) Always reset set_show_hidden_pictures(false) before the test returns
+        set_show_hidden_pictures(false);
+    }
 }
 
 #[cfg(test)]
@@ -11764,7 +12778,10 @@ mod faceted_search_tests {
             CREATE TABLE afiles (
                 id INTEGER PRIMARY KEY, folder_id INTEGER, name TEXT, comments TEXT,
                 ocr_text TEXT, ai_objects TEXT, ai_tags TEXT, file_type INTEGER DEFAULT 1,
-                live_photo_video_id INTEGER, width INTEGER, height INTEGER
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER,
+                geo_name TEXT, geo_admin1 TEXT, geo_cc TEXT,
+                e_make TEXT, e_model TEXT, e_lens_make TEXT, e_lens_model TEXT,
+                is_hidden INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE atags (id INTEGER PRIMARY KEY, name TEXT UNIQUE, group_id INTEGER, created_at INTEGER);
             CREATE TABLE afile_tags (file_id INTEGER, tag_id INTEGER, PRIMARY KEY (file_id, tag_id));
@@ -11786,6 +12803,112 @@ mod faceted_search_tests {
                 (30, 1, 'photo_30.jpg', 'car photo', 'Repair Receipt', 'red car', 'vehicle');
         ").unwrap();
         conn
+    }
+
+    #[test]
+    fn ids_and_camera_tokens_match_exact_photos_and_fail_closed() {
+        let conn=create_test_db();
+        conn.execute_batch("UPDATE afiles SET e_make='Canon',e_model='S110',e_lens_make='Canon',e_lens_model='EF50' WHERE id=10;
+            UPDATE afiles SET e_make='Nikon',e_model='D90',e_lens_make='Nikkor',e_lens_model='Zoom' WHERE id=20;").unwrap();
+        let query=|kind:&str,value:&str| {
+            let params=QueryParams { search_query:Some("ignored summary color:red".into()),search_tokens:Some(vec![SearchToken {token_type:kind.into(),value:value.into()}]),..Default::default() };
+            let (joins,conditions,values)=AFile::build_search_query_parts_with_color_conn(&params,Some(&conn));
+            conn.prepare(&format!("SELECT a.id FROM afiles a JOIN afolders b ON b.id=a.folder_id {joins} {conditions} ORDER BY a.id")).unwrap()
+                .query_map(params_from_iter(values.iter()),|r| r.get::<_,i64>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+        };
+        assert_eq!(query("ids","30, 10,10,invalid"),vec![10,30]);
+        assert_eq!(query("id","20"),vec![20]);
+        for value in ["", "invalid", "10) OR 1=1 --", "9999999999999999999999999999999"] { assert!(query("ids",value).is_empty()); }
+        for kind in ["camera","make","model"] { assert_eq!(query(kind,"canon s110"),vec![10]); }
+        assert_eq!(query("lens","nikkor"),vec![20]);
+        assert_eq!(query("lens","ef50"),vec![10]);
+    }
+
+    #[test]
+    fn scene_and_place_tokens_match_tags_and_geography_without_raw_fallback() {
+        let conn = create_test_db();
+        conn.execute_batch("UPDATE afiles SET ai_tags='scene: beach, place: Prague' WHERE id=20;
+            UPDATE afiles SET geo_name='London',geo_admin1='England',geo_cc='GB' WHERE id=30;").unwrap();
+        let query = |kind: &str, value: &str| {
+            let params = QueryParams { search_tokens: Some(vec![SearchToken {token_type:kind.into(),value:value.into()}]), ..Default::default() };
+            let (joins, conditions, values) = AFile::build_search_query_parts_with_color_conn(&params,Some(&conn));
+            conn.prepare(&format!("SELECT a.id FROM afiles a JOIN afolders b ON b.id=a.folder_id {joins} {conditions} ORDER BY a.id")).unwrap()
+                .query_map(params_from_iter(values.iter()), |r| r.get::<_,i64>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+        };
+        assert_eq!(query("scene","beach"),vec![20]);
+        assert_eq!(query("scenes","indoor"),vec![10]);
+        assert_eq!(query("place","prague"),vec![20]);
+        for value in ["London","England","GB"] { assert_eq!(query("places",value),vec![30]); }
+        assert!(query("scene","photo_10").is_empty());
+        assert!(query("place","Repair Receipt").is_empty());
+    }
+
+    #[test]
+    fn instant_color_search_uses_cached_synthetic_thumbnails() {
+        let conn = create_test_db();
+        conn.execute_batch("CREATE TABLE athumbs(file_id INTEGER PRIMARY KEY,error_code INTEGER,
+            thumb_key TEXT,thumb_mtime INTEGER,thumb_size INTEGER,updated_at INTEGER,thumb_data BLOB);
+            INSERT INTO afiles(id,folder_id,name) VALUES(40,1,'gray.jpg');").unwrap();
+        for (id,rgb) in [(10,[255,0,0]),(20,[0,0,255]),(30,[0,255,0]),(40,[128,128,128])] {
+            let image = image::RgbImage::from_pixel(16,16,image::Rgb(rgb));
+            let jpeg = crate::t_jpeg::encode_rgb8(&image,95).unwrap();
+            conn.execute("INSERT INTO athumbs VALUES(?1,0,'fixture',1,16,1,?2)",params![id,jpeg]).unwrap();
+        }
+        let query = |text: &str, tokens: Option<Vec<SearchToken>>| {
+            let params = QueryParams {search_query:Some(text.into()),search_tokens:tokens,..Default::default()};
+            let (joins,conditions,values) = AFile::build_search_query_parts_with_color_conn(&params,Some(&conn));
+            conn.prepare(&format!("SELECT a.id FROM afiles a JOIN afolders b ON b.id=a.folder_id {joins} {conditions} ORDER BY a.id"))
+                .unwrap().query_map(params_from_iter(values.iter()),|r| r.get::<_,i64>(0))
+                .unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+        };
+        for (text,expected) in [("color:red",vec![10]),("color:blue",vec![20]),
+            ("color:green",vec![30]),("color:bw",vec![40]),("color:grey",vec![40]),
+            ("COLOR:RED color:blue",vec![10,20]),("photo_10 color:red",vec![10]),
+            ("photo_20 color:red",vec![])] {
+            assert_eq!(query(text,None),expected,"{text}");
+        }
+        assert_eq!(query("color:blue",Some(vec![SearchToken {token_type:"color".into(),value:"red".into()}])),vec![10]);
+        assert_eq!(query("",Some(vec![SearchToken {token_type:"raw".into(),value:"color:green".into()}])),vec![30]);
+        refresh_color_index(&conn,|_| panic!("Cached classifications must not reload thumbnails")).unwrap();
+        let replacement = crate::t_jpeg::encode_rgb8(&image::RgbImage::from_pixel(8,8,image::Rgb([0,0,255])),95).unwrap();
+        conn.execute("UPDATE athumbs SET thumb_key='replacement',thumb_data=?1 WHERE file_id=10",[replacement]).unwrap();
+        assert!(query("color:red",None).is_empty());
+        assert_eq!(query("color:blue",None),vec![10,20]);
+    }
+
+    #[test]
+    fn color_classifier_covers_palette_and_rejects_colorful_bw_false_positive() {
+        for (name,rgb) in [("red",[255,0,0]),("orange",[255,128,0]),("yellow",[255,255,0]),
+            ("green",[0,255,0]),("blue",[0,0,255]),("purple",[128,0,255]),("pink",[255,0,128]),
+            ("black",[0,0,0]),("white",[255,255,255]),("gray",[128,128,128])] {
+            let jpeg = crate::t_jpeg::encode_rgb8(&image::RgbImage::from_pixel(16,16,image::Rgb(rgb)),100).unwrap();
+            assert_ne!(thumbnail_color_mask(&jpeg).unwrap() & color_bit(name).unwrap(),0,"{name}");
+        }
+        let colorful = image::RgbImage::from_fn(32,16,|x,_| image::Rgb(if x<16 {[255,0,0]} else {[0,255,255]}));
+        let jpeg = crate::t_jpeg::encode_rgb8(&colorful,100).unwrap();
+        assert_eq!(thumbnail_color_mask(&jpeg).unwrap() & color_bit("bw").unwrap(),0);
+    }
+
+    #[test]
+    fn picasa_catalog_metadata_sync_preserves_photo_sidecar() {
+        let root = std::env::temp_dir().join(format!("lap089-sidecar-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE afolders(id INTEGER PRIMARY KEY,path TEXT);
+            CREATE TABLE afiles(id INTEGER PRIMARY KEY,folder_id INTEGER,name TEXT,is_favorite INTEGER,comments TEXT);
+            INSERT INTO afiles VALUES(1,1,'photo.jpg',1,'new caption');").unwrap();
+        conn.execute("INSERT INTO afolders VALUES(1,?1)",[root.to_str().unwrap()]).unwrap();
+        let sidecar = root.join(".picasa.ini");
+        fs::write(&sidecar,"[photo.jpg]\nfaces=keep\nfilters=keep\n").unwrap();
+        AFile::sync_picasa_metadata(&conn,1,true,true);
+        let text = fs::read_to_string(&sidecar).unwrap();
+        for value in ["faces=keep","filters=keep","star=yes","caption=new caption"] { assert!(text.contains(value)); }
+        conn.execute("UPDATE afiles SET is_favorite=0,comments=NULL",[]).unwrap();
+        AFile::sync_picasa_metadata(&conn,1,true,true);
+        let text = fs::read_to_string(&sidecar).unwrap();
+        assert!(!text.contains("star="));
+        assert!(!text.contains("caption="));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -11892,7 +13015,8 @@ mod people_view_tests {
             CREATE TABLE afolders (id INTEGER PRIMARY KEY, album_id INTEGER, path TEXT, is_excluded_from_search INTEGER);
             INSERT INTO afolders VALUES (1, 1, '/photos', 0), (2, 1, '/photos/hidden', 0);
             CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, file_type INTEGER DEFAULT 1,
-                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER);
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER,
+                is_hidden INTEGER NOT NULL DEFAULT 0);
             INSERT INTO afiles (id, folder_id, width, height, size, taken_date) VALUES
                 (1,1,1000,1000,100,10), (2,1,1000,1000,100,20), (3,1,1000,1000,100,30), (4,1,1000,1000,100,40),
                 (5,1,1000,1000,100,50), (6,1,1000,1000,100,60), (7,1,1000,1000,100,70), (8,1,1000,1000,100,80),
@@ -11977,6 +13101,29 @@ mod people_view_tests {
     }
 
     #[test]
+    fn person_face_sort_orders_a_persons_photos_by_date_only_when_asked() {
+        let conn = fixture();
+        // Bob: confirmed 2 (taken 20), 3 (30), 7 (no taken date, added at 100); suggestion 6.
+        conn.execute_batch("ALTER TABLE afiles ADD COLUMN created_at INTEGER;
+            UPDATE afiles SET created_at = id; UPDATE afiles SET taken_date = NULL, created_at = 100 WHERE id = 7;").unwrap();
+        let bob = |sort: i64| {
+            let mut p = params(0, 0);
+            p.person_face_sort = sort;
+            let in_section = sections(&conn, &p).into_iter().find(|s| s.0 == 2).unwrap().1;
+            let mut single = QueryParams::default();
+            single.person_id = 2;
+            single.sort_type = 0;
+            single.person_face_sort = sort;
+            assert_eq!(AFile::get_query_file_ids_on(&conn, &single).unwrap(), in_section, "single-person view and People view agree");
+            in_section
+        };
+        assert_eq!(bob(0), vec![7, 2, 3, 6], "default: the usual taken-date order (undated first), unchanged");
+        assert_eq!(bob(1), vec![7, 3, 2, 6], "newest first: the added date stands in for a missing taken date");
+        assert_eq!(bob(2), vec![2, 3, 7, 6], "oldest first");
+        // the suggestion stays after the confirmed photos in every order
+    }
+
+    #[test]
     fn global_ignores_hide_people_pairs_without_hiding_the_photo() {
         let conn = fixture();
         conn.execute("INSERT INTO face_ignores VALUES (2, 1), (8, 1)", []).unwrap();
@@ -12022,8 +13169,9 @@ mod people_view_tests {
         review.person_id = 1;
         review.person_suggestions = true;
         assert_eq!(AFile::get_query_file_ids_on(&conn, &review).unwrap(), vec![9, 8, 5]);
-        conn.execute("UPDATE faces SET person_id = 1, suggested_person_id = NULL, resolved_at = 600 WHERE id = 7", []).unwrap();
-        // Confirmed faces join the confirmed block in photo date order.
+        // A tick (confirm_with_cascade) drops suggested_at.
+        conn.execute("UPDATE faces SET person_id = 1, suggested_person_id = NULL, suggested_at = NULL, resolved_at = 600 WHERE id = 7", []).unwrap();
+        // Ticked faces join the confirmed block in photo date order.
         assert_eq!(sections(&conn, &params(0, 500))[0].1, vec![9, 1, 3, 8, 5]);
         assert_eq!(AFile::get_query_file_ids_on(&conn, &review).unwrap(), vec![8, 5]);
         conn.execute("UPDATE face_rejections SET created_at = unixepoch() - 6", []).unwrap();
@@ -12035,6 +13183,22 @@ mod people_view_tests {
         assert_eq!(AFile::get_query_file_ids_on(&conn, &review).unwrap(), vec![8]);
         // Bob's suggestion never leaks into Ann's section.
         assert!(!sections(&conn, &params(0, 500))[0].1.contains(&6));
+    }
+
+    #[test]
+    fn confirm_all_keeps_every_tile_in_place_for_the_session() {
+        let conn = fixture();
+        conn.execute_batch("ALTER TABLE faces ADD COLUMN suggestion_score REAL;
+            ALTER TABLE faces ADD COLUMN embedding BLOB;").unwrap();
+        let since = conn.query_row("SELECT unixepoch() - 1", [], |r| r.get::<_, i64>(0)).unwrap();
+        // Ann: confirmed 1 and 3, then her suggestions 9 (oldest photo) and 5.
+        let before = sections(&conn, &params(0, since))[0].1.clone();
+        assert_eq!(before, vec![1, 3, 9, 5]);
+        crate::t_face_suggest::confirm(&conn, 1, None).unwrap();
+        assert_eq!(sections(&conn, &params(0, since))[0].1, before);
+        // A later session lists them all as confirmed photos, by date.
+        assert_eq!(sections(&conn, &params(0, i64::MAX - 1))[0].1, vec![9, 1, 3, 5]);
+        assert_eq!(sections(&conn, &params(0, 0))[0].1, vec![9, 1, 3, 5]);
     }
 
     #[test]
@@ -12110,7 +13274,8 @@ mod folder_view_tests {
                 (7, 1, 'hide', '/p/hide', 0, 0), (8, 2, 'c', '/q/c', 0, 0), (9, 2, 'q', '/q', 0, 0);
             CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, name TEXT, file_type INTEGER DEFAULT 1,
                 live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER,
-                taken_date INTEGER, modified_at INTEGER, created_at INTEGER);
+                taken_date INTEGER, modified_at INTEGER, created_at INTEGER,
+                is_hidden INTEGER NOT NULL DEFAULT 0);
             INSERT INTO afiles (id, folder_id, name, width, height, size, taken_date, modified_at, created_at) VALUES
                 (1, 2, 'a1', 100, 100, 10, 100, 1, 1),
                 (2, 2, 'a2', 100, 100, 10, 200, 1, 1),
@@ -12141,7 +13306,7 @@ mod folder_view_tests {
     #[test]
     fn folders_view_lists_only_folders_with_own_pictures_newest_first() {
         let conn = fixture();
-        // Default: by picture date, newest first; /p/b has no taken date and
+        // Picasa default: by picture date, newest first; /p/b has no taken date and
         // falls back to its file date (300). /p (pictures only in subfolders) and
         // /p/empty are not listed; both roots merge into one list.
         assert_eq!(list(&conn, 3), vec![
@@ -12217,6 +13382,196 @@ mod folder_view_tests {
             let t = std::time::Instant::now();
             let ids = AFile::get_query_file_ids_on(&conn, &AFile::folder_section_params(&p, &section.path)).unwrap();
             println!("section {} ({}): {} ids in {:?}", section.path, section.count, ids.len(), t.elapsed());
+        }
+    }
+}
+
+#[cfg(test)]
+mod quarter_group_tests {
+    use super::*;
+    use chrono::{Local, TimeZone};
+
+    #[test]
+    fn quarter_groups_start_at_local_midnight_on_jan_apr_jul_oct() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for (y, m, d, first) in [(2025, 1, 1, 1), (2025, 3, 31, 1), (2025, 4, 1, 4), (2025, 6, 30, 4),
+                                 (2025, 8, 15, 7), (2025, 9, 30, 7), (2025, 10, 2, 10), (2025, 12, 31, 10), (1999, 11, 5, 10)] {
+            let ts = Local.with_ymd_and_hms(y, m, d, 23, 30, 0).unwrap().timestamp();
+            let got: i64 = conn.query_row(&format!("SELECT CAST({} AS INTEGER)", quarter_bucket_sql("?1")), [ts], |r| r.get(0)).unwrap();
+            assert_eq!(got, Local.with_ymd_and_hms(y, first, 1, 0, 0, 0).unwrap().timestamp(), "{y}-{m}-{d}");
+        }
+    }
+
+    #[test]
+    fn quarter_groups_fall_back_to_the_added_date_when_a_photo_has_no_taken_date() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (taken_date INTEGER, created_at INTEGER)").unwrap();
+        let may = Local.with_ymd_and_hms(2024, 5, 20, 9, 0, 0).unwrap().timestamp();
+        let nov = Local.with_ymd_and_hms(2023, 11, 3, 9, 0, 0).unwrap().timestamp();
+        conn.execute("INSERT INTO t VALUES (?1, ?2), (NULL, ?2), (0, ?2), (NULL, NULL)", [may, nov]).unwrap();
+        let (key, _) = AFile::group_key_and_sort_expr(GROUP_BY_DATE_QUARTER, 0).unwrap();
+        let mut stmt = conn.prepare(&format!("SELECT {key} FROM t a ORDER BY rowid")).unwrap();
+        let keys: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        let apr = Local.with_ymd_and_hms(2024, 4, 1, 0, 0, 0).unwrap().timestamp().to_string();
+        let oct = Local.with_ymd_and_hms(2023, 10, 1, 0, 0, 0).unwrap().timestamp().to_string();
+        assert_eq!(keys, vec![apr, oct.clone(), oct, "unknown-quarter".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod date_histogram_tests {
+    use super::*;
+    use chrono::{Local, TimeZone};
+
+    fn ts(y: i32, m: u32, d: u32) -> i64 { Local.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap().timestamp() }
+
+    fn fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::t_folder_rules::migrate(&conn).unwrap();
+        conn.execute_batch("
+            CREATE TABLE albums (id INTEGER PRIMARY KEY, path TEXT, file_types INTEGER, small_image_filter INTEGER, excluded_folders TEXT);
+            INSERT INTO albums VALUES (1, '/photos', 7, NULL, '[]');
+            CREATE TABLE afolders (id INTEGER PRIMARY KEY, album_id INTEGER, path TEXT, is_excluded_from_search INTEGER);
+            INSERT INTO afolders VALUES (1, 1, '/photos/2014-07 Summer', 0), (2, 1, '/photos/2014-07 Beach', 0), (3, 1, '/photos/2002 Old', 0);
+            CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, file_type INTEGER DEFAULT 1,
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER,
+                created_at INTEGER, modified_at INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0);
+        ").unwrap();
+        let rows: [(i64, i64, Option<i64>, i64, i64, i64); 7] = [
+            // id, folder, taken, created, modified, hidden
+            (1, 1, Some(ts(2014, 7, 20)), 1, 1, 0),
+            (2, 2, Some(ts(2014, 7, 3)), 1, 1, 0),          // the month's earliest: Beach
+            (3, 1, Some(ts(2014, 8, 1)), 1, 1, 0),
+            (4, 3, Some(ts(2002, 3, 9)), 1, 1, 0),
+            (5, 3, None, ts(2002, 3, 1), 1, 0),            // no taken date: the added date
+            (6, 3, Some(0), 0, ts(2002, 12, 25), 0),       // only a file date
+            (7, 1, Some(ts(2014, 7, 1)), 1, 1, 1),          // hidden: not counted
+        ];
+        for (id, folder, taken, created, modified, hidden) in rows {
+            conn.execute("INSERT INTO afiles (id, folder_id, width, height, size, taken_date, created_at, modified_at, is_hidden) VALUES (?1, ?2, 1000, 1000, 100, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, folder, taken, created, modified, hidden]).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn date_histogram_counts_months_oldest_first_with_the_earliest_photos_folder() {
+        let conn = fixture();
+        let buckets = |p: &QueryParams| AFile::get_date_histogram_on(&conn, p).unwrap().into_iter()
+            .inspect(|b| assert!(b.unit == "month" && b.day == 1, "a 12-year view is in months: {b:?}"))
+            .map(|b| (b.year, b.month, b.count, b.first_folder_path.unwrap_or_default(), b.first_file_id.unwrap_or(0))).collect::<Vec<_>>();
+        let mut all = QueryParams::default();
+        all.folders_all = true;
+        assert_eq!(buckets(&all), vec![
+            (2002, 3, 2, "/photos/2002 Old".to_string(), 5),
+            (2002, 12, 1, "/photos/2002 Old".to_string(), 6),
+            (2014, 7, 2, "/photos/2014-07 Beach".to_string(), 2),
+            (2014, 8, 1, "/photos/2014-07 Summer".to_string(), 3),
+        ]);
+        // a flat view counts only what it shows: one folder, 12 days of photos -> days
+        let mut folder = QueryParams::default();
+        folder.search_folder = "/photos/2014-07 Summer".to_string();
+        let one = AFile::get_date_histogram_on(&conn, &folder).unwrap();
+        assert_eq!(one.iter().map(|b| (b.year, b.month, b.day, b.unit.as_str(), b.count)).collect::<Vec<_>>(),
+            vec![(2014, 7, 20, "day", 1), (2014, 8, 1, "day", 1)]);
+        assert!(one.iter().all(|b| b.first_folder_path.as_deref() == Some("/photos/2014-07 Summer")));
+    }
+
+    #[test]
+    fn date_histogram_uses_weeks_for_a_year_and_days_for_a_month() {
+        let conn = fixture();
+        // a year of photos in its own folder: weeks, each starting on a Monday
+        conn.execute("INSERT INTO afolders VALUES (4, 1, '/photos/2019', 0)", []).unwrap();
+        for (i, (m, d)) in [(1, 2), (1, 3), (1, 9), (3, 14), (7, 1), (7, 7), (12, 30)].iter().enumerate() {
+            conn.execute("INSERT INTO afiles (id, folder_id, width, height, size, taken_date, created_at, modified_at) VALUES (?1, 4, 1000, 1000, 100, ?2, 1, 1)",
+                rusqlite::params![100 + i as i64, ts(2019, *m, *d)]).unwrap();
+        }
+        let mut year = QueryParams::default();
+        year.search_folder = "/photos/2019".to_string();
+        let weeks = AFile::get_date_histogram_on(&conn, &year).unwrap();
+        assert!(weeks.iter().all(|b| b.unit == "week"), "{weeks:?}");
+        // 2019-01-02 (Wed) and 01-03 share the week of Monday 2018-12-31; 01-09 is the week of 01-07;
+        // 07-01 (Mon) and 07-07 (Sun) share a week; 12-30 is a Monday
+        assert_eq!(weeks.iter().map(|b| (b.year, b.month, b.day, b.count)).collect::<Vec<_>>(),
+            vec![(2018, 12, 31, 2), (2019, 1, 7, 1), (2019, 3, 11, 1), (2019, 7, 1, 2), (2019, 12, 30, 1)]);
+        assert_eq!(weeks[0].first_file_id, Some(100), "the week's earliest photo");
+        for b in &weeks {
+            let d = chrono::NaiveDate::from_ymd_opt(b.year, b.month as u32, b.day as u32).unwrap();
+            assert_eq!(d.format("%a").to_string(), "Mon");
+        }
+    }
+
+    #[test]
+    fn date_histogram_unit_follows_a_bounded_range_not_the_photos_span() {
+        let conn = fixture();
+        // two photos two days apart in 2019: by their span alone this would be days
+        conn.execute("INSERT INTO afolders VALUES (5, 1, '/photos/sparse', 0)", []).unwrap();
+        for (i, d) in [3, 5].iter().enumerate() {
+            conn.execute("INSERT INTO afiles (id, folder_id, width, height, size, taken_date, created_at, modified_at) VALUES (?1, 5, 1000, 1000, 100, ?2, 1, 1)",
+                rusqlite::params![200 + i as i64, ts(2019, 6, *d)]).unwrap();
+        }
+        let unit = |from: i64, days: i64| {
+            let mut p = QueryParams::default();
+            p.search_folder = "/photos/sparse".to_string();
+            p.start_date = from;
+            p.end_date = from + days * 86_400;
+            let b = AFile::get_date_histogram_on(&conn, &p).unwrap();
+            assert!(!b.is_empty());
+            b[0].unit.clone()
+        };
+        let from = ts(2017, 1, 2);
+        assert_eq!(unit(from, 220 * 7), "week", "a 220-week rolling window is in weeks");
+        assert_eq!(unit(ts(2019, 1, 1), 220), "day", "a 220-day rolling window is in days");
+        assert_eq!(unit(from, 2000), "month", "over 1800 days: months");
+        assert_eq!(unit(ts(2019, 1, 1), 261), "week", "over 260 days: weeks");
+    }
+}
+
+#[cfg(test)]
+mod grouped_ids_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn cached_group_ids_hold_each_groups_files_in_the_grid_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::t_folder_rules::migrate(&conn).unwrap();
+        conn.execute_batch("
+            CREATE TABLE albums (id INTEGER PRIMARY KEY, path TEXT, file_types INTEGER, small_image_filter INTEGER, excluded_folders TEXT);
+            INSERT INTO albums VALUES (1, '/photos', 7, NULL, '[]');
+            CREATE TABLE afolders (id INTEGER PRIMARY KEY, album_id INTEGER, path TEXT, is_excluded_from_search INTEGER);
+            INSERT INTO afolders VALUES (1, 1, '/photos', 0);
+            CREATE TABLE afiles (id INTEGER PRIMARY KEY, folder_id INTEGER, file_type INTEGER DEFAULT 1,
+                live_photo_video_id INTEGER, width INTEGER, height INTEGER, size INTEGER, taken_date INTEGER,
+                created_at INTEGER, modified_at INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0);
+        ").unwrap();
+        // 30 photos over 7 months, out of id order, two on the same second
+        let day = 86_400i64;
+        let base = chrono::Local.with_ymd_and_hms(2020, 1, 15, 12, 0, 0).unwrap().timestamp();
+        for i in 0..30i64 {
+            let t = base + ((i * 37) % 30) * 7 * day + if i == 7 { 0 } else { i };
+            conn.execute("INSERT INTO afiles (id, folder_id, width, height, size, taken_date, created_at, modified_at) VALUES (?1, 1, 1000, 1000, 10, ?2, 1, 1)",
+                rusqlite::params![100 - i, t]).unwrap();
+        }
+        for (group_by, sort_order) in [(GROUP_BY_DATE_MONTH, 1i64), (GROUP_BY_DATE_MONTH, 0), (GROUP_BY_DATE_QUARTER, 1), (GROUP_BY_DATE_DAY, 0)] {
+            let mut params = QueryParams::default();
+            params.sort_type = 0;
+            params.sort_order = sort_order;
+            params.calendar_sort = sort_order;
+            params.group_by = group_by;
+            let (groups, starts, ids) = AFile::grouped_ids_on(&conn, &params).expect("built");
+            assert_eq!(ids.len(), 30);
+            assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), 30);
+            let (group_expr, _) = AFile::group_key_and_sort_expr(group_by, sort_order).unwrap();
+            for group in &groups {
+                // what the per-group query returns, in the same order
+                let sql = format!("SELECT a.id FROM afiles a LEFT JOIN afolders b ON a.folder_id = b.id WHERE {group_expr} = ?1 GROUP BY a.id ORDER BY {}",
+                    AFile::build_order_clause(&params));
+                let mut stmt = conn.prepare(&sql).unwrap();
+                let want: Vec<i64> = stmt.query_map([&group.id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+                let start = starts[&group.id];
+                assert_eq!(&ids[start..start + group.count as usize], &want[..], "group {} ({group_by}, {sort_order})", group.id);
+            }
         }
     }
 }

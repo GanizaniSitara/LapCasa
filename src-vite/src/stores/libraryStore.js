@@ -91,7 +91,8 @@ export const useLibraryStore = defineStore('libraryStore', {
 
     /** @type {{ year: number | null, month: number | null, date: number | null }} */
     calendar: {
-      year: null,             // selected year
+      year: null,             // selected year (null: All Dates)
+      quarter: null,          // selected quarter (1-4) when month is -1, else null
       month: null,            // selected month (1-12)
       date: null,             // selected date (1-31), -1 means selecting a month
     },

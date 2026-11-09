@@ -19,7 +19,7 @@ export const useConfigStore = defineStore('configStore', {
     },
 
     leftPanel: {
-      show: false,                // left content panel expanded
+      show: true,                 // left content panel expanded: folders shown in a fresh profile (LAP-105)
       width: 320,                 // left pane width
     },
 
@@ -28,7 +28,7 @@ export const useConfigStore = defineStore('configStore', {
       height: 220,                // expanded tray height (px)
     },
 
-    leftStack: {                  // Stacked left pane: People, Albums, Folders
+    leftStack: {                  // Picasa stacked left pane: People, Albums, Folders
       peopleCollapsed: false,
       unnamedCollapsed: true,     // Unnamed People sub-list (thousands of groups)
       albumsCollapsed: false,
@@ -53,6 +53,7 @@ export const useConfigStore = defineStore('configStore', {
       histogramChannels: 15,     // histogram channel mask (L=1, R=2, G=4, B=8; 0=none, 15=all)
       showBasicInfo: true,       // show basic info
       showMetadata: true,        // show metadata
+      showAiTags: false,         // experimental AI details are opt-in
       showMap: true,             // show map
       mapTheme: 0,               // 0: standard, 2: satellite
     },
@@ -66,7 +67,7 @@ export const useConfigStore = defineStore('configStore', {
     },
 
     calendar: {
-      view: 'years',      // years | months | days
+      view: 'years',      // years | quarters | months | days
     },
 
     camera: {
@@ -99,6 +100,7 @@ export const useConfigStore = defineStore('configStore', {
       saveAs: 0,                // image editor save as (0: Overwrite existing file, 1: Save as new file)
       format: 0,                // image editor format (0: JPEG, 1: PNG, 2: WEBP)
       quality: 0,               // jpeg quality (0: High, 1: Medium, 2: Low), [90, 80, 60]
+      curvesOpen: false,        // Curves under the histogram unfolded (LAP-105)
     },
 
     imageViewer: {
@@ -113,7 +115,7 @@ export const useConfigStore = defineStore('configStore', {
 
       // general settings
       language: 'en',             // default language
-      appearance: 1,              // appearance (0: light; 1: dark)
+      appearance: 0,              // appearance (0: light; 1: dark)
       lightTheme: 0,              // light theme color index
       darkTheme: 0,               // dark theme color index
       scale: 1,                   // root font-size scale
@@ -121,6 +123,7 @@ export const useConfigStore = defineStore('configStore', {
       showStatusBar: true,        // show status bar
       processLibraryInBackground: false,
       debugMode: false,           // debug mode
+      showHiddenPictures: false,
 
       // navigation settings
       folderSort: 0,              // folder_sort_options: 0=name asc, 1=name desc, 2=date asc(oldest first), 3=date desc(newest first)
@@ -132,7 +135,9 @@ export const useConfigStore = defineStore('configStore', {
       // grid view settings
       thumbnailSize: 512,         // gallery thumbnail quality: 256, 512, or 1024
       rawThumbnailSource: 'processed', // processed | embedded
-      mapProvider: 'global',      // global | tianditu
+      mapProvider: 'offline',     // offline | osm | esri | tianditu
+      mapPrivacyVersion: 0,
+      localMapPath: '',
       tiandituToken: '',
       mapMarkerSize: 64,          // map photo marker size in px
       grid: {
@@ -141,12 +146,13 @@ export const useConfigStore = defineStore('configStore', {
         personFaceColumns: null,
         style: 0,                // 0: card view, 1: tile view, 2: justified view, 3: masonry view
         viewMode: 'grid',        // grid | filmstrip | map
-        scaling: 0,              // 0: Fit Entire Image, 1: Crop to Fill, 2: Stretch to Fill
-        scalingFitDefault: false, // main.js sets it once the whole-picture default was applied to saved settings
+        scaling: 0,              // 0: Fit Entire Image (Picasa), 1: Crop to Fill, 2: Stretch to Fill
+        scalingPicasaDefault: false, // main.js sets it once the Picasa whole-picture default was applied to saved settings
         thumbnailCorners: 0,     // 0: Follow theme, 1: Square
         showLabels: true,        // show saved primary/secondary thumbnail captions
         personFaces: true,       // person view: crop thumbnails to the face (false: whole pictures)
-        personFaceSizePosition: null, // face view slider position; null = default tile size
+        nativeGrid: true,        // LAP-062: People/Folders drawn by the native grid window (Windows)
+        personFaceSizePosition: null, // face view slider position; null = view default
         labelPrimary: 1,         // card view: primary label (1: Name)
         labelSecondary: 3,       // card view: secondary label (3: Dimension)
         thumbnailBadge: 0,       // thumbnail badge (0: empty, 1: file format, 2: ISO, 3: shutter, 4: aperture, 5: focal length, 6: exposure)
@@ -157,6 +163,8 @@ export const useConfigStore = defineStore('configStore', {
       mouseWheelMode: 1,         // 0: previous/next, 1: zoom in/out (default)
       slideShowInterval: 1,      // slide show interval in seconds [1, 3, 5, 10, 30, 60]
       slideShowTransition: 0,    // 0: Slide, 1: Fade, 2: None
+      slideShowPanZoom: false,   // Picasa's Pan and Zoom (Ken Burns): each slide zooms slowly towards its faces
+      personFaceSort: 0,         // LAP-006: a person's photos 0 = usual order, 1 = newest first, 2 = oldest first
       navigatorViewMode: 0,      // 0: Auto, 1: Always show, 2: Always hide
       navigatorViewSize: 240,    // navigator view size (160, 240, 320, 400)
       viewBackground: 0,         // 0: default, 1: black, 2: dark gray, 3: medium gray, 4: light gray, 5: white
@@ -170,7 +178,7 @@ export const useConfigStore = defineStore('configStore', {
 
       // image search settings
       imageSearch: {
-        model: 0,                  // 0: default English-only model, 1: multilingual model
+        model: 0,                  // English photo-description model
         thresholdIndex: 2,         // image search threshold index (default is Standard)
       },
 
@@ -283,6 +291,9 @@ export const useConfigStore = defineStore('configStore', {
     setShowSubfolderFiles(showSubfolderFiles) {
       this.settings.showSubfolderFiles = showSubfolderFiles;
     },
+    setShowHiddenPictures(val) {
+      this.settings.showHiddenPictures = Boolean(val);
+    },
 
     // video settings
     setVideoMuted(videoMuted) {
@@ -300,7 +311,11 @@ export const useConfigStore = defineStore('configStore', {
       this.settings.rawThumbnailSource = rawThumbnailSource === 'embedded' ? 'embedded' : 'processed';
     },
     setMapProvider(mapProvider) {
-      this.settings.mapProvider = mapProvider === 'tianditu' ? 'tianditu' : 'global';
+      this.settings.mapProvider = ['osm', 'esri', 'tianditu'].includes(mapProvider) ? mapProvider : 'offline';
+      this.settings.mapPrivacyVersion = 1;
+    },
+    setLocalMapPath(path) {
+      this.settings.localMapPath = String(path || '');
     },
     setTiandituToken(tiandituToken) {
       this.settings.tiandituToken = String(tiandituToken || '').trim();
@@ -348,6 +363,9 @@ export const useConfigStore = defineStore('configStore', {
     },
     setSlideShowTransition(slideShowTransition) {
       this.settings.slideShowTransition = slideShowTransition;
+    },
+    setSlideShowPanZoom(slideShowPanZoom) {
+      this.settings.slideShowPanZoom = slideShowPanZoom;
     },
     setAutoPlayVideo(autoPlayVideo) {
       this.settings.autoPlayVideo = autoPlayVideo;

@@ -53,7 +53,7 @@ brew install --cask lap
 - **Interaktive Kartenansicht** für Fotos und Videos mit Standortdaten, gruppiert nach den aktuellen Filtern.
 - **Intelligente Alben** speichern regelbasierte Ansichten mit eigener Gruppierung und Sortierung.
 - **Sammlungen und Tags** zum gemeinsamen Organisieren ausgewählter Dateien, ohne Originale zu verschieben oder zu kopieren.
-- **Lokale KI-Suche** mit Textanfragen, visueller Ähnlichkeit, Motiven, Gesichtsgruppierung und optionaler Suche in über 50 Sprachen.
+- **Lokale KI-Suche** mit Textanfragen, visueller Ähnlichkeit, Motiven, Gesichtsgruppierung. Textbeschreibungen werden auf Englisch gesucht.
 - **Apple Live Photos und Google Motion Photos** mit Bewegungswiedergabe und gemeinsamem Filter für intelligente Alben.
 - **RAW + JPEG/HEIC-Paare** als ein Eintrag, dessen zugehörige Dateien bei Dateiaktionen zusammenbleiben.
 - **Wählbare RAW-Miniaturen und Vorschauen** aus RAW-Rendering oder eingebetteter Kameravorschau.

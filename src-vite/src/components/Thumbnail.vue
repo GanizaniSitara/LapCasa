@@ -3,7 +3,7 @@
     :class="[
       'border-2 flex flex-col items-center cursor-pointer group',
       isActive || isSelected ? 'rounded-lg' : thumbnailCornerClass,
-      isTransitionDisabled ? 'transition-none' : 'transition-[background-color,color] ease-in-out duration-150 ',
+      'transition-none',
       filmstrip || config.settings.grid.style === 0 ? 'p-1 w-fit h-fit' : 'w-full h-full',
       isActive || isSelected
         ? (isContentActive ? 'border-primary' : 'border-primary/50')
@@ -12,6 +12,7 @@
     ]"
     :data-selected="isSelected ? 'true' : undefined"
     :data-file-id="file.id"
+    @pointerenter="menuReady = true"
     @click="(event: MouseEvent) => $emit('clicked', { shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey })"
     @dblclick="handleDoubleClick"
     @contextmenu="handleContextMenu"
@@ -22,10 +23,10 @@
       :class="[
         thumbnailCornerClass,
         'relative isolate flex items-center justify-center overflow-hidden',
-        // Whole-picture mode: no filler around the fitted picture, while it
+        // Whole-picture mode (Picasa): no filler around the fitted picture, while it
         // loads the placeholder icon still shows.
-        isFitWhole && isThumbnailLoaded ? '' : 'bg-base-200/70',
-        // Lightbox: face tiles get a white frame and a soft shadow
+        isFitWhole ? '' : 'bg-base-200/70',
+        // Picasa lightbox: face tiles get a white frame and a soft shadow
         faceCrop ? 'ring-2 ring-white shadow-[0_1px_4px_rgba(0,0,0,0.35)]' : '',
         confirmedFeedback ? 'face-confirmed-feedback' : '',
       ]"
@@ -38,13 +39,17 @@
         v-if="!isThumbnailLoaded && !suppressPlaceholder"
         class="absolute inset-0 flex items-center justify-center text-base-content/20 pointer-events-none"
       >
-        <component :is="placeholderIcon" class="w-8 h-8 opacity-30 animate-pulse" />
+        <component :is="placeholderIcon" class="w-8 h-8 opacity-30" />
       </div>
 
       <!-- image -->
-      <img
+      <component
+        :is="preparedImage ? 'canvas' : 'img'"
+        :ref="paintPreparedImage"
         v-if="thumbnailSrc"
         :src="faceSrc || thumbnailSrc"
+        fetchpriority="high"
+        decoding="async"
         draggable="false"
         :class="{
           'group-hover:scale-115': shouldScaleThumbnail,
@@ -52,15 +57,13 @@
           'object-contain': wholePicture || (!faceCrop && !isGeometryGridStyle && config.settings.grid.scaling === 0),
           'object-cover': !wholePicture && (faceCrop || isGeometryGridStyle || config.settings.grid.scaling === 1),
           'object-fill': !wholePicture && !faceCrop && !isGeometryGridStyle && config.settings.grid.scaling === 2,
-          'transition-all': !suppressPlaceholder && !isTransitionDisabled && normalizedRotate === 0,
-          'opacity-0': !isThumbnailLoaded,
-          'opacity-100': isThumbnailLoaded && !isDimmedIgnored,
-          'opacity-30 grayscale': isThumbnailLoaded && isDimmedIgnored,
-          // A little shadow around each whole picture
+          'opacity-30 grayscale': isDimmedIgnored,
+          'opacity-50': isDimmedHidden,
+          // Picasa: a little shadow around each whole picture
           'shadow-[0_1px_4px_rgba(0,0,0,0.35)]': isFitWhole && isThumbnailLoaded,
         }"
-        :style="{ ...(faceSrc ? { width: '100%', height: '100%', objectFit: 'fill', opacity: 1 } : (faceCrop ? { ...imgStyle, ...faceCrop } : (isFitWhole && !props.file.rotate ? fitWholeStyle : imgStyle))), ...(suppressPlaceholder && !isThumbnailLoaded ? { opacity: 0 } : {}) }"
-        :loading="suppressPlaceholder ? 'eager' : 'lazy'"
+        :style="faceSrc ? { ...faceSrcStyle, opacity: hiddenOpacity } : (faceCrop ? { ...imgStyle, ...faceCrop } : (isFitWhole && !props.file.rotate ? fitWholeStyle : imgStyle))"
+        loading="eager"
         @load="handleThumbnailLoad"
         @error="retryThumbnail"
       />
@@ -193,7 +196,7 @@
         </div>
       </div>
 
-      <!-- Suggestion review: small "?" in the bottom-left corner of the face -->
+      <!-- Picasa suggestion review: small "?" in the bottom-left corner of the face -->
       <div
         v-if="isSuggestionTile"
         class="pointer-events-none absolute left-1 bottom-1 z-20 w-4 h-4 inline-flex items-center justify-center rounded-full bg-orange-500 text-white text-[10px] font-bold leading-none ring-1 ring-white"
@@ -203,6 +206,7 @@
       <!-- Selected faces keep their right-click menu. -->
       <div v-if="!selectMode || facePersonId" class="absolute right-0.5 top-0.5">
         <ContextMenu
+          v-if="menuReady || isSelected"
           ref="contextMenuRef"
           :class="[
             !isSelected ? 'invisible group-hover:visible bg-base-300/30 rounded-box' : 'bg-base-300/30 rounded-box'
@@ -219,7 +223,7 @@
     <template v-if="!filmstrip">
     <!-- Ignored face: tick = it is this person after all -->
     <div v-if="facePersonId === -1" class="h-7 flex items-center justify-center" @dblclick.stop>
-      <button type="button" class="face-review-button !w-auto px-2 text-xs text-gray-700" title="Undo the ignore without changing the face's identity"
+      <button type="button" class="face-review-button !w-auto px-2 text-xs text-gray-700" title="Undo Picasa's ignore without changing the face's identity"
         data-testid="restore-globally-ignored" :data-file-id="file.id"
         :disabled="!personFaces.people.get(-1)?.ignored.has(file.id)"
         @click.stop="restoreGlobalIgnore([file.id])">Undo</button>
@@ -243,7 +247,7 @@
       >Undo</button>
     </div>
 
-    <!-- Suggestion review: tick confirms the match, x ignores it -->
+    <!-- Picasa suggestion review: tick confirms the match, x ignores it -->
     <div v-else-if="isSuggestionTile" class="h-7 flex items-center justify-center gap-2" @dblclick.stop>
       <button
         type="button"
@@ -293,7 +297,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch, toRef, onBeforeUnmount, type CSSProperties, type Component } from 'vue';
+import { computed, nextTick, ref, watch, toRef, onBeforeMount, onBeforeUnmount, type CSSProperties, type Component } from 'vue';
+import { decodedSearchThumbnail, rememberSearchThumbnail, searchThumbnailSource } from '@/common/searchThumbnails';
 import { useI18n } from 'vue-i18n';
 import { useUIStore } from '@/stores/uiStore';
 import { config } from '@/common/config';
@@ -301,7 +306,7 @@ import { THUMBNAIL_BADGE } from '@/common/constants';
 import { isMac, shortenFilename, formatFileSize, formatDimensionText, formatDuration, formatTimestamp, formatCaptureSettings, formatCaptureSettingValue, formatCameraInfo, getAssetSrc, getThumbUrl, getLapUrl, getFaceThumbUrl, getFileExtension, imageEditState } from '@/common/utils';
 import { isWebViewVideoPlaybackDisabled, getGStreamerAvailability } from '@/common/video';
 import { claimHoverPreview, releaseHoverPreview } from '@/common/hoverPreview';
-import { faceCropStyle, personFaces, FACE_TILE_ASPECT, suggestedFaceId, ignoredFaceId, confirmIgnored, restoreGlobalIgnore, isSessionIgnored, undoIgnore, hasFaceBox, isConfirmedFor } from '@/common/personFaces';
+import { faceCropStyle, faceSourceAspect, personFaces, FACE_TILE_ASPECT, suggestedFaceId, ignoredFaceId, confirmIgnored, restoreGlobalIgnore, isSessionIgnored, undoIgnore, hasFaceBox, isConfirmedFor } from '@/common/personFaces';
 import ContextMenu from '@/components/ContextMenu.vue';
 import { useFileMenuItems } from '@/common/fileMenu';
 
@@ -369,6 +374,9 @@ let transitionTimeout: NodeJS.Timeout | null = null;
 
 const containerRef = ref<HTMLElement | null>(null);
 const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null);
+// Hidden menu controls are created on interaction, rather than for every tile
+// before a search's first frame. Selected tiles retain their visible control.
+const menuReady = ref(false);
 const previewVideoRef = ref<HTMLVideoElement | null>(null);
 const containerWidth = ref(0);
 const containerHeight = ref(0);
@@ -404,7 +412,7 @@ const isGeometryGridStyle = computed(() => config.settings.grid.style === 2 || c
 // The person this tile stands for: its section in the continuous People view (the same
 // photo can be in several sections), otherwise the current person (0 outside person views).
 const facePersonId = computed(() => Number(props.file?.face_person_id ?? personFaces.personId ?? 0));
-// Person view with "show faces" on: crop to this person's face (rotated thumbnails left whole).
+// Person view with "show faces" on: crop to this person's face (rotated pictures too).
 const suggestedFace = computed(() => suggestedFaceId(props.file?.id, facePersonId.value));
 // Ignored face, shown only in the person view's "Ignored" list.
 const isIgnoredTile = computed(() =>
@@ -414,7 +422,7 @@ const isIgnoredTile = computed(() =>
 const isDimmedIgnored = computed(() =>
   isSessionIgnored(props.file?.id, facePersonId.value) && config.settings.grid.style === 0
 );
-// Pending suggestion in the person view (listed after the confirmed photos).
+// Pending suggestion in the person view (listed after the confirmed photos, as in Picasa).
 const isSuggestionTile = computed(() =>
   suggestedFace.value !== undefined && config.settings.grid.style === 0
 );
@@ -426,11 +434,27 @@ watch(isSuggestionTile, (pending, wasPending) => {
   if (confirmedFeedbackTimer) clearTimeout(confirmedFeedbackTimer);
   confirmedFeedbackTimer = setTimeout(() => { confirmedFeedback.value = false; }, 700);
 });
+const normalizedRotate = computed(() => {
+  const rotate = Number(props.file.rotate || 0) % 360;
+  return rotate < 0 ? rotate + 360 : rotate;
+});
+
+// Portrait tile in the card grid (as Picasa); other grid styles keep their own cell shape.
+const faceTileAspect = computed(() => (config.settings.grid.style === 0 ? FACE_TILE_ASPECT : 1));
 const faceCrop = computed(() => {
-  if (props.filmstrip || config.settings.grid.personFaces === false || props.file.rotate) return undefined;
-  // Portrait tile in the card grid; other grid styles keep their own cell shape.
-  const aspect = config.settings.grid.style === 0 ? FACE_TILE_ASPECT : 1;
-  return faceCropStyle(props.file.id, props.file.width, props.file.height, aspect, facePersonId.value);
+  if (props.filmstrip || config.settings.grid.personFaces === false || normalizedRotate.value % 90) return undefined;
+  return faceCropStyle(props.file.id, props.file.width, props.file.height, faceTileAspect.value, facePersonId.value, normalizedRotate.value);
+});
+// The face image is cut from the unrotated picture, so the user's rotation is applied here.
+const faceSrcStyle = computed((): CSSProperties => {
+  const rotation = normalizedRotate.value;
+  const base = { objectFit: 'fill' as const, opacity: 1 };
+  if (rotation % 180 === 90) {
+    const aspect = faceTileAspect.value;
+    return { ...base, position: 'absolute', left: '50%', top: '50%', width: `${100 / aspect}%`, height: `${100 * aspect}%`,
+      maxWidth: 'none', maxHeight: 'none', transform: `translate(-50%, -50%) rotate(${rotation}deg)` };
+  }
+  return { ...base, width: '100%', height: '100%', ...(rotation ? { transform: `rotate(${rotation}deg)` } : {}) };
 });
 const faceThumbnailFailed = ref(false);
 // Load an already cropped, small image through the direct index, never the original in the webview.
@@ -446,7 +470,7 @@ const faceSrc = computed(() => {
     fy: String(box.y),
     fw: String(box.width),
     fh: String(box.height),
-    fa: String(config.settings.grid.style === 0 ? FACE_TILE_ASPECT : 1),
+    fa: String(faceSourceAspect(faceTileAspect.value, normalizedRotate.value)),
     fid: String(state.confirmedFaces.get(props.file.id) ?? state.suggestions.get(props.file.id) ?? state.ignored.get(props.file.id) ?? 0),
     fs: String(props.gridSize
       * window.devicePixelRatio <= 128 ? 128 : config.settings.thumbnailSize),
@@ -478,6 +502,19 @@ const thumbnailSrc = ref(
   (props.file?.id ? getLapUrl(Number(props.file.id), false, config.settings.thumbnailSize, Number(props.file.modified_at || 0), props.file.edits) : '')
 );
 const isThumbnailLoaded = ref(false);
+const preparedImage = ref<HTMLImageElement>();
+let paintedCanvas: HTMLCanvasElement | undefined;
+let paintedSource = '';
+function paintPreparedImage(element: any) {
+  const image = preparedImage.value;
+  if (!(element instanceof HTMLCanvasElement) || !image
+    || (element === paintedCanvas && paintedSource === image.src)) return;
+  element.width = image.naturalWidth;
+  element.height = image.naturalHeight;
+  element.getContext('2d')?.drawImage(image, 0, 0);
+  paintedCanvas = element;
+  paintedSource = image.src;
+}
 const thumbnailAspect = ref(0);
 let thumbnailRetryCount = 0;
 
@@ -487,6 +524,8 @@ watch(
     const editsChanged = oldVals && oldVals[2] !== undefined && oldVals[2] !== props.file?.edits;
     if (editsChanged && props.file?.id) {
       thumbnailSrc.value = getThumbUrl(props.file.id, true, config.settings.thumbnailSize, Number(props.file.modified_at || 0), props.file.edits);
+    } else if (props.querySource === 'search') {
+      thumbnailSrc.value = searchThumbnailSource(props.file, config.settings.thumbnailSize);
     } else if (imageEditState(props.file.edits).revision && id) {
       thumbnailSrc.value = getLapUrl(Number(id), false, config.settings.thumbnailSize, Number(props.file.modified_at || 0), props.file.edits);
     } else if (src) {
@@ -501,20 +540,18 @@ watch(
   { immediate: true },
 );
 // Metadata hydration can change the whole-photo thumbnail without changing the face image.
-watch(() => faceSrc.value || thumbnailSrc.value, () => {
-  isThumbnailLoaded.value = false;
-  thumbnailAspect.value = 0;
+watch(() => faceSrc.value || thumbnailSrc.value, (source) => {
+  const image = props.querySource === 'search' ? decodedSearchThumbnail(source) : undefined;
+  preparedImage.value = image;
+  isThumbnailLoaded.value = Boolean(image);
+  thumbnailAspect.value = image ? image.naturalWidth / image.naturalHeight : 0;
 }, { immediate: true, flush: 'sync' });
 
-async function handleThumbnailLoad(event: Event) {
-  const source = faceSrc.value || thumbnailSrc.value;
+function handleThumbnailLoad(event: Event) {
   const image = event.target as HTMLImageElement;
-  if (props.suppressPlaceholder) {
-    await image.decode().catch(() => {});
-    if (source !== (faceSrc.value || thumbnailSrc.value)) return;
-  }
   thumbnailAspect.value = image.naturalWidth / image.naturalHeight;
   isThumbnailLoaded.value = true;
+  if (props.querySource === 'search') rememberSearchThumbnail(faceSrc.value || thumbnailSrc.value, image);
 }
 
 async function retryThumbnail() {
@@ -686,14 +723,16 @@ function handleDoubleClick(event: MouseEvent) {
   });
 }
 
-function handleContextMenu(event: MouseEvent) {
+async function handleContextMenu(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
   // Face exclusions remain available when keyboard selection keeps the panel closed.
   if (props.selectMode && (!props.isSelected || !facePersonId.value)) return;
+  menuReady.value = true;
   if (!props.isSelected) {
     emit('clicked', false);
   }
+  await nextTick();
   contextMenuRef.value?.open?.(event.clientX, event.clientY);
 }
 
@@ -711,6 +750,21 @@ const layoutStyle = computed(() => {
   if (style === 1) return { width: '100%', height: `${size}px` };
   return { width: '100%', height: '100%' };
 });
+
+onBeforeMount(() => {
+  if (props.querySource === 'search' && config.settings.grid.style === 0) {
+    const { width, height } = layoutStyle.value;
+    if (String(width).endsWith('px') && String(height).endsWith('px')) {
+      containerWidth.value = Number.parseFloat(String(width));
+      containerHeight.value = Number.parseFloat(String(height));
+    }
+  }
+});
+
+const isDimmedHidden = computed(() =>
+  Boolean(config.settings.showHiddenPictures && props.file?.is_hidden)
+);
+const hiddenOpacity = computed(() => (isDimmedHidden.value ? 0.5 : 1));
 
 const imgStyle = computed((): CSSProperties => {
   const { style } = config.settings.grid;
@@ -738,7 +792,7 @@ const imgStyle = computed((): CSSProperties => {
         maxHeight: 'none',
         flex: 'none',
         transform: `translate(-50%, -50%) rotate(${props.file.rotate}deg)`,
-        opacity: 1,
+        opacity: hiddenOpacity.value,
       };
     }
     
@@ -750,7 +804,7 @@ const imgStyle = computed((): CSSProperties => {
   return {
     ...layoutStyle.value,
     transform: `rotate(${props.file.rotate || 0}deg)`,
-    opacity: 1,
+    opacity: hiddenOpacity.value,
   } as CSSProperties;
 });
 
@@ -761,14 +815,14 @@ const fitWholeStyle = computed((): CSSProperties => {
   const height = containerHeight.value;
   if (!props.filmstrip && thumbnailAspect.value > 0 && width > 0 && height > 0) {
     const fittedWidth = Math.min(width, height * thumbnailAspect.value);
-    return { width: `${fittedWidth}px`, height: `${fittedWidth / thumbnailAspect.value}px`, opacity: 1 };
+    return { width: `${fittedWidth}px`, height: `${fittedWidth / thumbnailAspect.value}px`, opacity: hiddenOpacity.value };
   }
   return {
     width: props.filmstrip ? String(layoutStyle.value.width) : 'auto',
     height: props.filmstrip ? String(layoutStyle.value.height) : 'auto',
     maxWidth: String(layoutStyle.value.width),
     maxHeight: String(layoutStyle.value.height),
-    opacity: 1,
+    opacity: hiddenOpacity.value,
   };
 });
 
@@ -790,9 +844,10 @@ const menuItems = useFileMenuItems(
   isMac,
   t,
   (action) => emit('action', action),
+  { effectsClipboard: true },
 );
 
-// Person view: right-click "Not this person" on a confirmed face.
+// Person view: right-click "Not this person" on a confirmed face (Picasa).
 const tileMenuItems = computed(() => {
   const base = menuItems.value as any[];
   if (!facePersonId.value || (!props.selectMode && !isConfirmedFor(props.file?.id, facePersonId.value) && suggestedFace.value === undefined)) return base;
@@ -840,11 +895,6 @@ type ThumbnailBadge = {
   trailingIconClass?: string;
   trailingIconStyle?: CSSProperties;
 };
-
-const normalizedRotate = computed(() => {
-  const rotate = Number(props.file.rotate || 0) % 360;
-  return rotate < 0 ? rotate + 360 : rotate;
-});
 
 const videoDurationBadge = computed(() => {
   if (props.file?.file_type !== 2) return '';

@@ -357,6 +357,7 @@
     "title": "日历",
     "tabs": {
       "years": "年",
+      "quarters": "Quarters",
       "months": "月",
       "days": "日"
     },
@@ -433,7 +434,8 @@
         "镜头",
         "年",
         "文件类型",
-        "选片"
+        "选片",
+        "Quarter"
       ],
       "sort_type_options": [
         "拍摄日期",
@@ -677,6 +679,27 @@
       "copy": "复制到剪贴板",
       "paste": "粘贴",
       "edit_image": "编辑...",
+      "copy_all_effects": "复制所有效果",
+      "paste_all_effects": "粘贴所有效果",
+      "batch_edit": "批量编辑",
+      "rotate_clockwise": "顺时针旋转",
+      "rotate_counter_clockwise": "逆时针旋转",
+      "feeling_lucky": "手气不错",
+      "auto_contrast": "自动对比度",
+      "auto_color": "自动颜色",
+      "sharpen": "锐化",
+      "sepia": "怀旧",
+      "bw": "黑白",
+      "warmify": "暖化",
+      "film_grain": "胶片颗粒",
+      "undo_all_edits": "撤销所有编辑",
+      "effects_copied": "已复制效果",
+      "effects_pasted": "已粘贴效果",
+      "batch_edit_success": "已应用批量编辑",
+      "copy_failed": "复制效果失败",
+      "paste_failed": "粘贴效果失败",
+      "batch_edit_failed": "应用批量编辑失败",
+      "batch_edit_failed_count": "{count} 张照片无法编辑",
       "open_image_in_app": "在 {app} 中打开照片...",
       "open_video_in_app": "在 {app} 中打开视频...",
       "open_selected_images_in_app": "在 {app} 中打开照片...",
@@ -1191,6 +1214,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "AI 加速",
+      "gpu_description": "图形硬件、GPU 附加组件和 AI 引擎。",
+      "open_gpu": "打开 AI 加速",
+      "about_title": "关于 LapCasa",
+      "about_description": "版本、构建、许可证和致谢。",
+      "open_about": "打开关于"
+    },
     "general": {
       "title": "通用",
       "section_language": "语言",

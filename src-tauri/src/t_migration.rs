@@ -158,6 +158,11 @@ fn get_migrations() -> Vec<Migration> {
             description: "Album scan scope and pixel filters",
             sql: "",
         },
+        Migration {
+            version: 20,
+            description: "Repair verified RIM firmware orientation and cached dimensions",
+            sql: "",
+        },
     ]
 }
 
@@ -235,11 +240,22 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
 }
 
 pub fn check_and_migrate(conn: &Connection) -> Result<(), String> {
+    check_and_migrate_using(conn, crate::t_thumb_cache::invalidate_orientation)
+}
+
+fn check_and_migrate_using(conn: &Connection,
+    mut invalidate: impl FnMut(&[(i64, String)]) -> Result<(), String>) -> Result<(), String> {
     let current_version: i32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
 
     println!("Current DB version: {}", current_version);
+
+    // A stranded v19 library may already have been stamped v20 by main without
+    // receiving the scan-scope columns. Repair their presence, preserving values.
+    if current_version >= 18 {
+        migrate_album_scan_scope(conn)?;
+    }
 
     let migrations = get_migrations();
     let mut new_version = current_version;
@@ -476,18 +492,9 @@ pub fn check_and_migrate(conn: &Connection) -> Result<(), String> {
             } else if migration.version == 17 {
                 migrate_tag_groups(conn)?;
             } else if migration.version == 18 {
-                let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-                for (column, definition) in [
-                    ("file_types", "INTEGER NOT NULL DEFAULT 7"),
-                    ("small_image_filter", "INTEGER NOT NULL DEFAULT 0"),
-                    ("excluded_folders", "TEXT NOT NULL DEFAULT '[]'"),
-                ] {
-                    if !table_has_column(&tx, "albums", column)? {
-                        tx.execute(&format!("ALTER TABLE albums ADD COLUMN {column} {definition}"), [])
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-                tx.commit().map_err(|e| e.to_string())?;
+                migrate_album_scan_scope(conn)?;
+            } else if migration.version == 20 {
+                migrate_rim_orientation(conn, &mut invalidate)?;
             } else if !migration.sql.trim().is_empty() {
                 conn.execute_batch(migration.sql)
                     .map_err(|e| format!("Migration {} failed: {}", migration.version, e))?;
@@ -507,7 +514,215 @@ pub fn check_and_migrate(conn: &Connection) -> Result<(), String> {
         println!("Database is up to date.");
     }
 
+    // Cache availability must not prevent opening a migrated library. A failed
+    // eviction remains in SQLite and is retried when this library opens again.
+    if current_version >= 20 {
+        retry_rim_cache_evictions(conn, &mut invalidate);
+    }
+
     Ok(())
+}
+
+fn migrate_album_scan_scope(conn: &Connection) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for (column, definition) in [
+        ("file_types", "INTEGER NOT NULL DEFAULT 7"),
+        ("small_image_filter", "INTEGER NOT NULL DEFAULT 0"),
+        ("excluded_folders", "TEXT NOT NULL DEFAULT '[]'"),
+    ] {
+        if !table_has_column(&tx, "albums", column)? {
+            tx.execute(&format!("ALTER TABLE albums ADD COLUMN {column} {definition}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn migrate_rim_orientation(conn: &Connection,
+    invalidate: impl FnOnce(&[(i64, String)]) -> Result<(), String>) -> Result<(), String> {
+    let candidates = {
+        // The stranded version 19 may already have changed stored orientations.
+        // Verify the source again, including legitimate rotations it overrode.
+        let mut stmt = conn.prepare("SELECT a.id, d.path, a.name, a.e_orientation, COALESCE(a.width,0), COALESCE(a.height,0) FROM afiles a
+            JOIN afolders d ON d.id=a.folder_id
+            WHERE (a.e_make LIKE '%Research In Motion%' OR a.e_make LIKE '%BlackBerry%')
+            AND a.e_orientation IN (1,6)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, Option<i32>>(3)?, r.get::<_, u32>(4)?, r.get::<_, u32>(5)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    ensure_rim_cache_evictions(&tx)?;
+    for (id, folder, name, old_orientation, old_width, old_height) in candidates {
+        let path = std::path::Path::new(&folder).join(name);
+        let Some(path) = path.to_str() else { continue; };
+        let Ok((w, h)) = image::image_dimensions(path) else { continue; };
+        let Some(exif) = crate::t_image::read_exif_permissive(path) else { continue; };
+        if !crate::t_image::is_rim_camera(&exif) { continue; }
+        let orientation = crate::t_image::normalized_image_orientation(&exif, w, h);
+        let (width, height) = if orientation > 4 { (h, w) } else { (w, h) };
+        let metadata_matches = old_orientation == Some(orientation) && (old_width, old_height) == (width, height);
+        if metadata_matches && !crate::t_image::has_rim_orientation_defect(&exif, w, h) { continue; }
+        // Rescanning may have normalized metadata without replacing old cache entries.
+        if !metadata_matches {
+            tx.execute("UPDATE afiles SET e_orientation=?1,width=?2,height=?3 WHERE id=?4", rusqlite::params![orientation,width,height,id])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute("DELETE FROM athumbs WHERE file_id=?1", [id]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT OR REPLACE INTO orientation_cache_evictions(file_id,source_path) VALUES(?1,?2)",
+            rusqlite::params![id,path]).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    retry_rim_cache_evictions(conn, invalidate);
+    Ok(())
+}
+
+fn ensure_rim_cache_evictions(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS orientation_cache_evictions (
+        file_id INTEGER PRIMARY KEY, source_path TEXT NOT NULL)").map_err(|e| e.to_string())
+}
+
+fn retry_rim_cache_evictions(conn: &Connection,
+    invalidate: impl FnOnce(&[(i64, String)]) -> Result<(), String>) {
+    let result = (|| -> Result<(), String> {
+        // Existing v20 libraries may have no queue. Optional cache work must not
+        // create tables or make opening a read-only/temporarily locked library fail.
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='orientation_cache_evictions')",
+            [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if !exists { return Ok(()); }
+        let pending = conn.prepare("SELECT file_id,source_path FROM orientation_cache_evictions ORDER BY file_id")
+            .map_err(|e| e.to_string())?.query_map([], |r| Ok((r.get(0)?,r.get(1)?)))
+            .map_err(|e| e.to_string())?.collect::<Result<Vec<(i64,String)>,_>>().map_err(|e| e.to_string())?;
+        if pending.is_empty() { return Ok(()); }
+        invalidate(&pending)?;
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (id,path) in &pending {
+            tx.execute("DELETE FROM orientation_cache_evictions WHERE file_id=?1 AND source_path=?2",
+                rusqlite::params![id,path]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    })();
+    if let Err(error) = result {
+        eprintln!("RIM cache eviction deferred until the library next opens: {error}");
+    }
+}
+
+#[cfg(test)]
+mod rim_migration_tests {
+    use super::*;
+    #[test]
+    fn lap106_stamped_19_or_20_repairs_missing_scan_scope_without_resetting_preferences() {
+        for (version,partial) in [(19,false),(19,true),(20,false),(20,true)] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch("CREATE TABLE albums(id INTEGER); INSERT INTO albums VALUES(1);
+                CREATE TABLE afolders(id INTEGER,path TEXT);
+                CREATE TABLE afiles(id INTEGER,folder_id INTEGER,name TEXT,e_orientation INTEGER,e_make TEXT,width INTEGER,height INTEGER);
+                CREATE TABLE athumbs(file_id INTEGER);").unwrap();
+            conn.pragma_update(None,"user_version",version).unwrap();
+            if partial {
+                conn.execute_batch("ALTER TABLE albums ADD COLUMN file_types INTEGER NOT NULL DEFAULT 7;
+                    UPDATE albums SET file_types=3;").unwrap();
+            }
+            check_and_migrate(&conn).unwrap();
+            assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_,i32>(0)).unwrap(), 20);
+            assert_eq!(conn.query_row("SELECT file_types,small_image_filter,excluded_folders FROM albums", [],
+                |r| Ok((r.get::<_,i32>(0)?,r.get::<_,i32>(1)?,r.get::<_,String>(2)?))).unwrap(),
+                (if partial {3} else {7},0,"[]".to_owned()));
+            conn.execute_batch("UPDATE albums SET small_image_filter=1,excluded_folders='[\"kept\"]'; PRAGMA user_version=19;").unwrap();
+            check_and_migrate(&conn).unwrap();
+            assert_eq!(conn.query_row("SELECT excluded_folders FROM albums", [], |r| r.get::<_,String>(0)).unwrap(), "[\"kept\"]");
+        }
+    }
+    fn rim_fixture() -> (Connection, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("lap106-rim-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let fields = [
+            exif::Field {tag:exif::Tag::Make,ifd_num:exif::In::PRIMARY,value:exif::Value::Ascii(vec![b"Research In Motion".to_vec()])},
+            exif::Field {tag:exif::Tag::Software,ifd_num:exif::In::PRIMARY,value:exif::Value::Ascii(vec![b"Rim Exif Version1.00a".to_vec()])},
+            exif::Field {tag:exif::Tag::Orientation,ifd_num:exif::In::PRIMARY,value:exif::Value::Short(vec![6])},
+        ];
+        let mut writer=exif::experimental::Writer::new();
+        for f in &fields {writer.push_field(f);}
+        let mut exif=std::io::Cursor::new(Vec::new());writer.write(&mut exif,true).unwrap();
+        let mut block=b"Exif\0\0".to_vec();block.extend(exif.into_inner());
+        for (name,w,h) in [("bad.jpg",80,60),("portrait.jpg",60,80)] {
+            let p=root.join(name);
+            image::RgbImage::from_pixel(w,h,image::Rgb([40,80,120])).save(&p).unwrap();
+            let jpeg=std::fs::read(&p).unwrap();
+            let mut bytes=vec![0xff,0xd8,0xff,0xe1];bytes.extend(((block.len()+2) as u16).to_be_bytes());
+            bytes.extend(&block);bytes.extend(&jpeg[2..]);std::fs::write(p,bytes).unwrap();
+        }
+        let conn=Connection::open(root.join("library.db")).unwrap();
+        conn.execute_batch("CREATE TABLE albums(id INTEGER,file_types INTEGER DEFAULT 7,small_image_filter INTEGER DEFAULT 0,excluded_folders TEXT DEFAULT '[]');CREATE TABLE afolders(id INTEGER,path TEXT);CREATE TABLE afiles(id INTEGER,folder_id INTEGER,name TEXT,e_orientation INTEGER,e_make TEXT,e_software TEXT,width INTEGER,height INTEGER);CREATE TABLE athumbs(file_id INTEGER);
+            INSERT INTO afiles VALUES(1,1,'bad.jpg',6,'Research In Motion','Rim Exif Version1.00a',60,80),(2,1,'portrait.jpg',6,'Research In Motion','Rim Exif Version1.00a',80,60),(3,1,'missing.jpg',6,'Research In Motion','Rim Exif Version1.00a',60,80),(4,1,'portrait.jpg',1,'Research In Motion','Rim Exif Version1.00a',60,80);
+            INSERT INTO afiles VALUES(5,1,'bad.jpg',0,'Research In Motion','Rim Exif Version1.00a',80,60);
+            INSERT INTO afiles VALUES(6,1,'bad.jpg',1,'Research In Motion','Rim Exif Version1.00a',80,60);
+            INSERT INTO athumbs VALUES(1),(2),(3),(4),(5),(6); PRAGMA user_version=19;").unwrap();
+        conn.execute("INSERT INTO afolders VALUES(1,?1)",[root.to_str().unwrap()]).unwrap();
+        assert!(get_migrations().iter().any(|m| m.version == 20));
+        (conn, root)
+    }
+    #[test]
+    fn lap106_cache_failure_commits_metadata_and_retries_after_reopen() {
+        let (conn,root)=rim_fixture();
+        check_and_migrate_using(&conn, |_| Err("cache unavailable".into())).unwrap();
+        assert_eq!(conn.query_row("PRAGMA user_version",[],|r|r.get::<_,i32>(0)).unwrap(),20);
+        assert_eq!(conn.query_row("SELECT e_orientation FROM afiles WHERE id=1",[],|r|r.get::<_,i32>(0)).unwrap(),1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM athumbs",[],|r|r.get::<_,i32>(0)).unwrap(),3);
+        drop(conn);
+        let conn=Connection::open(root.join("library.db")).unwrap();
+        check_and_migrate_using(&conn, |files| {
+            assert_eq!(files.iter().map(|(id,_)|*id).collect::<Vec<_>>(),vec![1,4,6]);
+            Ok(())
+        }).unwrap();
+        let mut calls=0;
+        check_and_migrate_using(&conn, |_| {calls+=1;Ok(())}).unwrap();
+        assert_eq!(calls,0,"completed deferred evictions must not run again");
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn lap106_v20_open_does_not_create_optional_cache_tables_or_fail_on_retry_writes() {
+        for pending in [false,true] {
+            let conn=Connection::open_in_memory().unwrap();
+            conn.execute_batch("CREATE TABLE albums(id INTEGER,file_types INTEGER,small_image_filter INTEGER,excluded_folders TEXT);PRAGMA user_version=20;").unwrap();
+            if pending {
+                ensure_rim_cache_evictions(&conn).unwrap();
+                conn.execute("INSERT INTO orientation_cache_evictions VALUES(1,'/test/photo.jpg')",[]).unwrap();
+            }
+            conn.execute_batch("PRAGMA query_only=ON").unwrap();
+            let mut calls=0;
+            check_and_migrate_using(&conn, |_| {calls+=1;Ok(())}).unwrap();
+            assert_eq!(calls,if pending {1}else{0});
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='orientation_cache_evictions'",[],|r|r.get::<_,i32>(0)).unwrap(),if pending {1}else{0});
+            if pending {
+                assert_eq!(conn.query_row("SELECT COUNT(*) FROM orientation_cache_evictions",[],|r|r.get::<_,i32>(0)).unwrap(),1,"failed cache bookkeeping stays pending");
+                conn.execute_batch("PRAGMA query_only=OFF").unwrap();
+                check_and_migrate_using(&conn, |_| Ok(())).unwrap();
+                assert_eq!(conn.query_row("SELECT COUNT(*) FROM orientation_cache_evictions",[],|r|r.get::<_,i32>(0)).unwrap(),0);
+            }
+        }
+    }
+    #[test]
+    fn lap106_versioned_repair_verifies_pixels_and_does_not_repeat_completed_evictions() {
+        let (conn,root)=rim_fixture();
+        check_and_migrate_using(&conn, |files| {
+            assert_eq!(files.iter().map(|(id,_)|*id).collect::<Vec<_>>(),vec![1,4,6],"pre-normalized metadata may still have stale cache rows");
+            Ok(())
+        }).unwrap();
+        conn.execute("INSERT INTO athumbs VALUES(1)",[]).unwrap();
+        let mut calls=0;
+        check_and_migrate_using(&conn, |_| {calls+=1;Ok(())}).unwrap();
+        assert_eq!(calls,0,"a completed v20 open must not repeat cache eviction");
+        let rows:Vec<(i32,i32,i32,i32)>=conn.prepare("SELECT id,e_orientation,width,height FROM afiles ORDER BY id").unwrap()
+            .query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows,vec![(1,1,80,60),(2,6,80,60),(3,6,60,80),(4,6,80,60),(5,0,80,60),(6,1,80,60)]);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM athumbs",[],|r|r.get::<_,i32>(0)).unwrap(),4);
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 // Idempotent and atomic, including when a previous migration run was interrupted.
@@ -552,7 +767,10 @@ mod album_filter_migration_tests {
     #[test]
     fn album_filter_migration_is_restartable_and_defaults_to_off() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE albums(id INTEGER PRIMARY KEY); INSERT INTO albums VALUES(1); PRAGMA user_version=17;").unwrap();
+        conn.execute_batch("CREATE TABLE albums(id INTEGER PRIMARY KEY); INSERT INTO albums VALUES(1);
+            CREATE TABLE afolders(id INTEGER,path TEXT);
+            CREATE TABLE afiles(id INTEGER,folder_id INTEGER,name TEXT,e_orientation INTEGER,e_make TEXT,width INTEGER,height INTEGER);
+            CREATE TABLE athumbs(file_id INTEGER); PRAGMA user_version=17;").unwrap();
         check_and_migrate(&conn).unwrap();
         let settings: (i64, Option<i64>, String) = conn.query_row(
             "SELECT file_types,small_image_filter,excluded_folders FROM albums", [],
@@ -561,6 +779,7 @@ mod album_filter_migration_tests {
         // Simulate migration completing before the version was persisted.
         conn.execute_batch("PRAGMA user_version=17;").unwrap();
         check_and_migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),18);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+            get_migrations().last().unwrap().version as i64);
     }
 }

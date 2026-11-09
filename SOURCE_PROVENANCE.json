@@ -1,52 +1,121 @@
 {
-  "version": "0.4.1",
-  "build_commit": "dd45a7e2a40b2b22b32b606b34002169e16e5e93",
+  "status": "unpublished-source-checkpoint",
+  "public_cleared": false,
+  "base_application_commit": "a18fe868390c142ae0a5b3dd9d8a23d9126c6c90",
+  "base_internal_build": 80,
   "upstream": "https://github.com/julyx10/lap",
-  "application_logic_unchanged": true,
-  "publication_changes": [
-    ".gitignore",
-    "CONTRIBUTING.md",
-    "PRIVACY.md",
-    "README.md",
-    "importers/picasa/README.md",
-    "src-tauri/Cargo.toml",
-    "src-tauri/src/bin/lap_cli.rs",
-    "src-tauri/src/t_advanced_ai.rs",
-    "src-tauri/src/t_cmds.rs",
-    "src-tauri/src/t_edit_recipe.rs",
-    "src-tauri/src/t_edit_tools.rs",
-    "src-tauri/src/t_enhance.rs",
-    "src-tauri/src/t_face_suggest.rs",
-    "src-tauri/src/t_face_thumb.rs",
-    "src-tauri/src/t_folder_rules.rs",
-    "src-tauri/src/t_image.rs",
-    "src-tauri/src/t_sqlite.rs",
-    "src-vite/src/common/api.js",
-    "src-vite/src/common/folderSections.ts",
-    "src-vite/src/common/personFaces.ts",
-    "src-vite/src/components/AiProgressCorner.vue",
-    "src-vite/src/components/AlbumFolder.vue",
-    "src-vite/src/components/AlbumList.vue",
-    "src-vite/src/components/Content.vue",
-    "src-vite/src/components/FlatFolderList.vue",
-    "src-vite/src/components/FolderManager.vue",
-    "src-vite/src/components/FolderSectionHeader.vue",
-    "src-vite/src/components/GridView.vue",
-    "src-vite/src/components/LeftPaneStack.vue",
-    "src-vite/src/components/Person.vue",
-    "src-vite/src/components/PersonSectionHeader.vue",
-    "src-vite/src/components/SmartAlbumList.vue",
-    "src-vite/src/components/Thumbnail.vue",
-    "src-vite/src/components/TitleBar.vue",
-    "src-vite/src/main.js",
-    "src-vite/src/stores/configStore.js",
-    "src-vite/src/views/Home.vue",
-    "src-vite/src/views/ImageEditor.vue"
+  "application_logic_unchanged": false,
+  "changes": [
+    {
+      "path": "src-tauri/src/bin/lap_cli.rs",
+      "reason": "Remove owner-library fallback; explicit --db and configured library resolution are retained."
+    },
+    {
+      "path": "src-tauri/src/t_picasa.rs",
+      "reason": "Remove workstation interpreter fallback; explicit LAP_PICASA_PYTHON and ordinary interpreter discovery remain."
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "reason": "Exclude private VM-only relay target alongside its excluded source."
+    },
+    {
+      "path": "src-tauri/src/t_edit_balance.rs",
+      "reason": "Remove workstation-only comment path."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Ignored runtime-key audit requires an explicit disposable database."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Ignored runtime-key audit requires an explicit disposable cache."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Ignored audit reads only an explicitly selected fixture trace."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Anonymise in-memory regression fixture name."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Anonymise regression fixture filename, preserving numeric precision cases."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Use generic fixture path in SQL input."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Keep encoded browser fixture consistent with its generic SQL path."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Retain canonical cache-identity guard with an explicit disposable fixture path."
+    },
+    {
+      "path": "src-tauri/src/t_xmp.rs",
+      "reason": "Replace owner-photo opt-in discovery with explicit disposable caption fixtures."
+    },
+    {
+      "path": "src-tauri/src/t_xmp.rs",
+      "reason": "Use generic synthetic caption text in byte-level regression tests."
+    },
+    {
+      "path": "src-tauri/src/t_xmp.rs",
+      "reason": "Use generic synthetic caption text in byte-level regression tests."
+    },
+    {
+      "path": "src-tauri/tests/benchmark_scroll.rs",
+      "reason": "Real-library benchmark is opt-in through an explicit disposable profile, never the owner profile."
+    },
+    {
+      "path": "src-tauri/src/t_face_thumb.rs",
+      "reason": "Retain the opt-in fixture-directory suffix guard with a generic disposable directory name."
+    },
+    {
+      "path": "src-tauri/src/t_image.rs",
+      "reason": "Retain the opt-in fixture-directory suffix guard with a generic disposable directory name."
+    },
+    {
+      "path": "importers/picasa/README.md",
+      "reason": "Reuse existing public, generic importer instructions; no importer logic changed."
+    },
+    {
+      "path": "src-tauri/tauri.conf.json",
+      "reason": "Public default packaging excludes model weights; consent-managed installation remains unchanged."
+    },
+    {
+      "path": "src-tauri/src/t_edit_recipe.rs",
+      "reason": "Previous-public recipe/settings compatibility, verified by baseline failures and focused green checks."
+    },
+    {
+      "path": "src-tauri/src/t_image.rs",
+      "reason": "Previous-public recipe/settings compatibility, verified by baseline failures and focused green checks."
+    },
+    {
+      "path": "src-vite/src/views/ImageEditor.vue",
+      "reason": "Previous-public recipe/settings compatibility, verified by baseline failures and focused green checks."
+    },
+    {
+      "path": "src-vite/src/main.js",
+      "reason": "Previous-public recipe/settings compatibility, verified by baseline failures and focused green checks."
+    },
+    {
+      "path": "src-tauri/src/t_face_suggest.rs",
+      "reason": "Generic test names and anonymised explanatory comments; inference behavior unchanged."
+    }
   ],
   "excluded": [
-    "private verification evidence and history",
-    "workstation VM relay",
-    "scratch files and duplicate build/model downloads"
+    "src-tauri/.cargo/config.toml",
+    "src-tauri/scratch/test_ocr.rs",
+    "src-tauri/src/100%",
+    "src-tauri/src/Folders",
+    "src-vite/.vscode/extensions.json",
+    "src-vite/src/i.complete",
+    "src-vite/src/removed",
+    "src-vite/src/{"
   ],
   "submodules": [
     {
@@ -66,8 +135,38 @@
       "commit": "9217719d3a58633923b096af4c1d50d304768a64"
     }
   ],
-  "previous_release": {
-    "version": "0.4.0",
-    "build_commit": "342e242f08da407e5cbc9f3849fc81972b443d66"
-  }
+  "identity_sha256": {
+    "src-tauri/src/model_catalog.json": "1f57a0e7c4858ff9092ff3850b591d6c70c67bc4b2f3285d00edee4161446169",
+    "src-tauri/src/t_models.rs": "890b851b1f7b89123654ed32e02106ff4d5f2033763b73c34adba650d2935ad5",
+    "src-tauri/src/slabs.rs": "e2d65b0bace98fa165aad4c695a8e435b01adba0f86060d7df5a9cecf647f487"
+  },
+  "stored_keys_preserved": [
+    "picasa",
+    "scalingPicasaDefault"
+  ],
+  "built_from_this_source": false,
+  "version": "0.5.0-beta.1",
+  "public_branch_base": "841fedf",
+  "production_build_status_at_source_checkpoint": "not-yet-built",
+  "published_profile_identifier": "com.lapcasa.dev",
+  "identifier_reason": "Retain the existing public identifier and its settings/library location; the historical suffix does not select a development build.",
+  "compatibility_changes": [
+    "Read previous-public tools fields in recipes and undo/redo snapshots without changing originals on read; keep current picasa serialization.",
+    "Accept tools as an EditParams input alias.",
+    "Preserve the previous-public scalingFitDefault flag so a saved grid preference is not reset."
+  ],
+  "resource_changes": "Default plus Windows and macOS overrides exclude model weights.",
+  "upstream_documents_retained": "Existing public docs/i18n/issue templates and FFmpeg source helpers retained, with current English introduction.",
+  "validation_at_source_checkpoint": {
+    "focused_native_readers": 4,
+    "frontend_regressions": 50,
+    "complete_crate_tests": "pending",
+    "production_artifact_gate": "pending"
+  },
+  "publication_pending": [
+    "Exact FFmpeg external corresponding source/build definitions",
+    "Seven standalone attribution follow-ups",
+    "Crop icon provenance or approved replacement",
+    "Exact production build/full gate/standard-user and copied-library upgrade/recovery/CPU-GPU review"
+  ]
 }

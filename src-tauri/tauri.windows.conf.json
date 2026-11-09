@@ -4,6 +4,7 @@
       {
         "label": "main",
         "title": "LapCasa",
+        "visible": false,
         "minWidth": 800,
         "minHeight": 600,
         "decorations": false,
@@ -15,7 +16,6 @@
   },
   "bundle": {
     "resources": {
-      "resources/models/*": "models",
       "resources/ffmpeg/*": "ffmpeg"
     }
   }

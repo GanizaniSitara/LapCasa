@@ -1,28 +1,33 @@
-LapCasa 0.4.0
+LapCasa 0.5.0-beta.1 - UNPUBLISHED PREPARATION
 
-Application source: GPL-3.0-or-later. See LICENSE.
-Derived from Lap by julyx10 and contributors: https://github.com/julyx10/lap
+Application: GPL-3.0-or-later. Based on Lap by julyx10 and contributors.
+See LICENSE and the original notices in the corresponding source files.
 
-Bundled and linked components retain their upstream copyrights and license terms.
-This application license does not replace the licenses of pretrained weights.
+Dependency inventory: third-party/inventory.json. Full recovered licence,
+copyright, NOTICE and PATENTS texts are preserved in third-party/licenses/.
+The inventory includes build tools conservatively; not every entry is a
+runtime component. Seven published-permissive grants have incomplete
+recovered standalone text; see third-party/attribution-followups.json and
+third-party/unresolved-license-grants/. These remain release follow-ups.
 
-Rust dependencies and versions: src-tauri/Cargo.lock
-JavaScript dependencies and versions: src-vite/pnpm-lock.yaml
-Native source dependencies and exact revisions: .gitmodules and Git submodule pins
+Native source pins: SOURCE_PROVENANCE.json and .gitmodules.
+DirectML 1.15.4 DLL redistribution: third-party/licenses/runtime/DirectML-1.15.4/.
+Its binary distribution terms are distinct from its source-code licence.
+ONNX Runtime 1.22.0: third-party/licenses/runtime/onnxruntime-1.22.0/.
+FFmpeg/ffprobe 8.1 essentials by Gyan Doshi: GPLv3, statically linked;
+third-party/licenses/runtime/FFmpeg-8.1/ contains the original licence and
+build README. Complete corresponding source/build materials for its external
+libraries remain pending. This preparation is NOT cleared for distribution.
 
-ONNX Runtime: https://github.com/microsoft/onnxruntime
-DirectML: https://github.com/microsoft/DirectML
-FFmpeg: https://ffmpeg.org/legal.html
-FFmpeg sidecar source/build information: https://github.com/julyx10/lap-binaries
-LibRaw: https://github.com/LibRaw/LibRaw
-libjpeg-turbo: https://github.com/libjpeg-turbo/libjpeg-turbo
-libheif: https://github.com/strukturag/libheif
-libde265: https://github.com/strukturag/libde265
+No pretrained model weights are included. Optional packs have separate terms
+shown before consent and download. Acceptance grants no rights beyond those
+terms. See docs/model-downloads.txt and the exact model catalogue.
 
-Pretrained models:
-CLIP: https://huggingface.co/Xenova/clip-vit-base-patch32
-InsightFace buffalo_s: https://github.com/deepinsight/insightface
-YOLOv10n: https://huggingface.co/onnx-community/yolov10n
-PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
+Offline map overview: Natural Earth 5.1.2, public domain; docs/offline-maps.txt.
+Online maps require an explicit provider choice and retain provider attribution.
 
-Consult these upstream projects for model-specific usage terms and notices.
+Remaining release checks are recorded in RELEASE-PREPARATION.txt.
+
+Geographic names and coordinates: GeoNames, https://www.geonames.org/
+Creative Commons Attribution 4.0. Reduced coordinate/name/admin/country extract.
+See third-party/licenses/data/GeoNames/ for the licence and provenance.

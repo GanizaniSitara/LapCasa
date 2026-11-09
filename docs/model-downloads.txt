@@ -1,0 +1,68 @@
+Optional model downloads
+========================
+
+Settings > Search > Model downloads lists Find photos by description,
+People, Object detection, OCR — text in photos and Select subjects for
+editing. Review licence shows the
+purpose, provider, size, full supplied terms and any usage restriction.
+Acceptance is unchecked by default. Decline, Escape and closing the dialog
+perform no download. Accept and download requires an acknowledgement that
+the intended use is permitted. This does not grant rights outside the terms.
+
+There is no startup model download or model wizard. Browsing, saved People
+information and ordinary metadata search do not require these optional
+models. New AI inference needs the corresponding pack, and some existing
+AI workflows also require the separately consented GPU add-on.
+
+Download sources, sizes and SHA256 hashes are built into model_catalog.json.
+Acceptance is bound to a digest of the terms and the complete file set.
+Downloads go to a unique staging folder under the current user's app data;
+size/hash failures and cancellation discard that attempt. A complete pack,
+licence text and acceptance receipt are published by a directory rename.
+An OS file lock serializes publication and repair across app processes.
+Failed attempts never replace existing installed packs. Downloads can be
+retried explicitly; automatic network retries and download resumption are
+not part of this change. An abrupt process exit can leave an unused staging
+folder, which is never treated as an installed pack.
+
+Existing bundled/development models remain usable without deleting or
+modifying them. Model-free distributions load consented downloaded packs
+from the current user's app profile. No application profile or library is
+sent to model providers. Normal HTTPS download metadata, including the IP
+address, is visible to the provider and its download/CDN infrastructure.
+
+People uses InsightFace weights whose published terms limit them to
+non-commercial research unless separately authorised. The code's MIT
+licence does not cover those weights. The dialog displays this restriction;
+clicking Accept is not an alternative to obtaining necessary permission.
+
+OCR compatibility
+-----------------
+The detection and recognition files are identical to the existing resources.
+The downloadable orientation classifier is the public SWHL/RapidOCR export
+at revision1cfba2e90fc938db55889873735088de210cc173, SHA256
+e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c.
+Existing builds keep their smaller known export, SHA256
+e263cad54b85e6dd6ce5aed66154785682a221be2216300ce321e58a9d022296.
+CPU comparisons on354 constant/random/public-safe text fixtures made the
+same production rotation decisions (probability[1] > probability[0] and
+probability[1] >0.9); maximum output difference was6.23e-6. This is a bounded
+compatibility check, not a full OCR quality benchmark or bit-identical model
+claim. See the release task's retained QA evidence.
+
+Public packaging
+----------------
+The optional tauri.model-free.conf.json overlay removes resources/models/*
+using Tauri's JSON Merge Patch configuration mechanism. Pass that overlay
+explicitly to a provisioned Tauri build/bundle command for public packaging.
+Do not use the inherited portable packager's all-resources copy for a
+model-free release. A portable public archive must explicitly omit models,
+profiles, libraries, logs and private verification evidence, and include the
+runtime DLLs, FFmpeg and optional importer resources it actually needs.
+Review the archive manifest and test that exact model-free payload.
+
+Photo-description search uses English only. There is no multilingual model
+selector option or separate multilingual downloader.
+
+This feature is not a version bump, release approval, licence clearance or
+installer/updater implementation. No source or release is published here.

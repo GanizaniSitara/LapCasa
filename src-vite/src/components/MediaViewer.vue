@@ -389,6 +389,8 @@
           :isZoomFit="isZoomFit"
           :isSlideShow="isSlideShow"
           :slideShowTransitionMode="slideShowTransitionMode"
+          :kenBurns="Boolean(config.settings.slideShowPanZoom)"
+          :slideSeconds="getSlideShowInterval(config.settings.slideShowInterval)"
           @update:isZoomFit="(val: boolean) => $emit('update:isZoomFit', val)"
           @scale="(e) => $emit('scale', e)"
           @viewport-change="(e) => $emit('viewport-change', e)"

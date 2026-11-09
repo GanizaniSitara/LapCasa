@@ -22,6 +22,14 @@ export async function setBackgroundProcessing(enabled) {
   await invoke('set_background_processing', { enabled: Boolean(enabled) });
 }
 
+export async function getFileAiInfo(fileId) {
+  return await invoke('get_file_ai_info', { fileId });
+}
+
+export async function setExperimentalAiConfig(flags) {
+  return await invoke('set_experimental_ai_config', flags);
+}
+
 export async function getAiProgress() {
   try {
     return await invoke('get_ai_progress');
@@ -501,6 +509,49 @@ export async function openFilesWithApp(filePaths, appPath) {
   }
 }
 
+// Send to > Email: a Mailkeep draft with the photos attached as shown, edits rendered (never sent);
+// returns the draft id
+export async function emailFilesDraft(fileIds) {
+  return await invoke('email_files_draft', { fileIds });
+}
+
+// Adjust Date and Time: the anchor photo gets newTakenDate (Unix seconds), the others shift with it
+export async function adjustFilesTakenDate(fileIds, anchorFileId, newTakenDate) {
+  return await invoke('adjust_files_taken_date', { fileIds, anchorFileId, newTakenDate });
+}
+
+// Geotag: the files at latitude/longitude (optional place name); null coordinates clear the geotags
+export async function setFilesLocation(fileIds, latitude, longitude, locationName) {
+  return await invoke('set_files_location', { fileIds, latitude, longitude, locationName });
+}
+
+// Create Picture Collage: layout 'grid' | 'mosaic'; returns the new collage's path
+export async function createPictureCollage(fileIds, layout, width, height, spacing, bgColor, includeCaptions) {
+  return await invoke('create_picture_collage', { fileIds, layout, width, height, spacing, bgColor, includeCaptions });
+}
+
+// Export Picture to Folder: the photos as shown into destFolder, longest edge at most maxDimension
+// (null keeps the size), JPEG quality; returns the exported files' paths
+export async function exportPicturesToFolder(fileIds, destFolder, maxDimension, quality) {
+  return await invoke('export_pictures_to_folder', { fileIds, destFolder, maxDimension, quality });
+}
+
+// Timeline ribbon (LAP-091): the view's photos per month, oldest first:
+// [{ year, month, count, first_folder_path, first_file_id }]
+export async function getDateHistogram(params) {
+  try {
+    return await invoke('get_date_histogram', { params });
+  } catch (error) {
+    console.error('getDateHistogram error:', error);
+    return [];
+  }
+}
+
+// Make a Poster: the photo cut into gridCols x gridRows enlarged sheets; returns the sheets' paths
+export async function createPosterTiles(fileId, gridCols, gridRows, overlapPx) {
+  return await invoke('create_poster_tiles', { fileId, gridCols, gridRows, overlapPx });
+}
+
 // get external app display name from platform metadata
 export async function getExternalAppDisplayName(appPath) {
   try {
@@ -833,7 +884,7 @@ export async function getGroupedQueryRows(params, offset, limit) {
   return null;
 }
 
-/// Flat Folders list: folders that directly hold pictures, in view order.
+/// Picasa-style flat Folders list: folders that directly hold pictures, in view order.
 export async function getFolderSections(params) {
   try {
     return await invoke('get_folder_sections', { params });
@@ -1125,6 +1176,15 @@ export async function editImage(params, confirmOverwrite = false) {
     console.log('Failed to edit image:', error);
     return false;
   }
+}
+
+export async function calculateInscribedCrop(width, height, angleDeg, aspectRatio = null) {
+  return await invoke('calculate_inscribed_crop', {
+    width,
+    height,
+    angleDeg,
+    aspectRatio,
+  });
 }
 
 export async function saveImageRecipe(fileId, params) {
@@ -1736,8 +1796,12 @@ export async function deleteTag(tagId) {
 
 // get tags for a file
 export async function getTagsForFile(fileId) {
+  const numericId = Number(fileId);
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return null;
+  }
   try {
-    const tags = await invoke('get_tags_for_file', { fileId });
+    const tags = await invoke('get_tags_for_file', { fileId: numericId });
     if (tags) {
       return tags;
     }
@@ -1928,27 +1992,6 @@ export async function setImageSearchModel(model) {
   }
 }
 
-export async function downloadMultilingualImageSearchModel() {
-  try {
-    return await invoke('download_multilingual_image_search_model');
-  } catch (error) {
-    console.error('downloadMultilingualImageSearchModel error:', error);
-    throw error;
-  }
-}
-
-export async function cancelMultilingualImageSearchModelDownload() {
-  try {
-    return await invoke('cancel_multilingual_image_search_model_download');
-  } catch (error) {
-    console.error('cancelMultilingualImageSearchModelDownload error:', error);
-  }
-}
-
-export async function listenImageSearchModelDownloadProgress(callback) {
-  return await listen('image_search_model_download_progress', callback);
-}
-
 // generate embedding
 export async function generateEmbedding(fileId) {
   try {
@@ -1964,7 +2007,8 @@ export async function generateEmbedding(fileId) {
 export async function searchSimilarImages(params) {
   try {
     if (params?.searchText) {
-      await setImageSearchModel(config.settings.imageSearch?.model || 0);
+      config.settings.imageSearch.model = 0;
+      await setImageSearchModel(0);
     }
     const results = await invoke('search_similar_images', { params });
     return results || [];
@@ -2133,14 +2177,15 @@ export async function listenIndexFinished(callback) {
 }
 
 // index faces for all images in library
+// Starts face indexing in the background. Returns null when it started, else the reason it did not.
 export async function indexFaces(clusterEpsilon) {
   try {
-    const result = await invoke('index_faces', { clusterEpsilon });
-    return result;
+    await invoke('index_faces', { clusterEpsilon });
+    return null;
   } catch (error) {
     console.error('Failed to index faces:', error);
+    return String(error || 'Face indexing could not start');
   }
-  return null;
 }
 
 // cancel face indexing
@@ -2278,7 +2323,7 @@ export async function getPersonFaceBoxes(personId) {
   return [];
 }
 
-// Face suggestions: recompute for all named people
+// Picasa-style face suggestions: recompute for all named people
 export async function computeFaceSuggestions(threshold = null) {
   try {
     return await invoke('compute_face_suggestions', { threshold });
@@ -2381,7 +2426,7 @@ export async function listAlbumSubfolders(path) {
   return invoke('list_album_subfolders', { path });
 }
 
-// Folder Manager (per-folder scan rules)
+// Folder Manager (Picasa-style per-folder scan rules)
 
 // direct subfolders of a folder read from disk: [{ name, path, mode, explicit_mode, has_subfolders }]
 export async function listFolderTree(path) {
@@ -2409,3 +2454,41 @@ export async function listDrives() {
 export async function addAlbumRoot(path, mode) {
   return invoke('add_album_root', { path, mode });
 }
+
+// LAP-062 native grid: cover the page's grid rectangle (CSS px), or hide it (null).
+export async function nativeGridPlace(rect, holes = []) {
+  try {
+    await invoke('native_grid_place', { rect, holes });
+  } catch (error) {
+    console.error('nativeGridPlace error:', error);
+  }
+}
+export async function nativeGridShow(params, tile, faceSize, libraryId) {
+  try { await invoke('native_grid_show', { params, tile, faceSize, libraryId }); } catch (error) { console.error('nativeGridShow error:', error); }
+}
+// LAP-064: re-read the native grid's rows after a scan added files (keeps the scroll position);
+// with a folder path, bring that folder into view if it now has a section. True when it did.
+export async function nativeGridRefresh(focus = null) {
+  try { return await invoke('native_grid_refresh', { focus }); } catch (error) { console.error('nativeGridRefresh error:', error); return false; }
+}
+
+export async function nativeGridScrollTo(rowIndex) {
+  try { await invoke('native_grid_scroll_to', { rowIndex }); } catch (error) { console.error('nativeGridScrollTo error:', error); }
+}
+// The page's scrollbar moves the native grid: ratio is 0..1 of its scroll range.
+export async function nativeGridScrollRatio(ratio) {
+  try { await invoke('native_grid_scroll_ratio', { ratio }); } catch (error) { console.error('nativeGridScrollRatio error:', error); }
+}
+// People's review marks for the native grid: { personId: { suggested: [fileId], dimmed: [fileId] } }.
+export async function nativeGridMarks(marks, reset) {
+  try { await invoke('native_grid_marks', { marks, reset }); } catch (error) { console.error('nativeGridMarks error:', error); }
+}
+
+export async function setFileHidden(fileId, isHidden) {
+  return invoke('set_file_hidden', { fileId, isHidden: Boolean(isHidden) });
+}
+
+export async function setShowHiddenPictures(show) {
+  return invoke('set_show_hidden_pictures', { show: Boolean(show) });
+}
+

@@ -18,9 +18,12 @@
         <span class="truncate">{{ currentFile.name }}</span>
         <template v-if="singleDateText"><span>&middot;</span><span>{{ singleDateText }}</span></template>
         <template v-if="currentFile.width && currentFile.height"><span>&middot;</span><span>{{ currentFile.width }} × {{ currentFile.height }}</span></template>
+        <template v-if="cameraText"><span>&middot;</span><span data-photo-camera>{{ cameraText }}</span></template>
+        <template v-if="lensText"><span>&middot;</span><span data-photo-lens>{{ lensText }}</span></template>
         <span>&middot;</span>
         <span>{{ $t('statusbar.on_disk', { size: formatFileSize(currentFile.size || 0) }) }}</span>
         <template v-if="showFilmStrip || showQuickView || showScale"><span>&middot;</span><span>{{ (imageScale * 100).toFixed(0) }}%</span></template>
+        <template v-if="showPosition && selectedItemIndex >= 0 && totalFileCount > 0"><span>&middot;</span><span>{{ selectedItemIndex + 1 }} of {{ totalFileCount }}</span></template>
       </div>
     </div>
     <div v-else-if="emptyMessage" class="flex items-center flex-1 min-w-0 text-white">
@@ -39,7 +42,19 @@
       </div>
 
       <button
-        v-if="!isEmbedded"
+        v-if="!isEmbedded && showEmailButton"
+        type="button"
+        class="btn btn-ghost btn-xs h-4 min-h-0 px-2 flex items-center gap-1.5 text-xs font-medium rounded transition-colors cursor-pointer select-none text-white/90 hover:text-white hover:bg-white/20"
+        title="Open selected photos in your email app; review before sending"
+        data-email-button
+        @click.stop="emit('send-email')"
+      >
+        <IconMail class="w-3.5 h-3.5" />
+        <span class="text-[11px]">Email</span>
+      </button>
+
+      <button
+        v-if="!isEmbedded && showInfoButton"
         type="button"
         :class="[
           'btn btn-ghost btn-xs h-4 min-h-0 px-2 flex items-center gap-1.5 text-xs font-medium rounded transition-colors cursor-pointer select-none',
@@ -67,10 +82,11 @@ import {
   IconUpdate,
   IconUpdateDot,
   IconInformation,
+  IconMail,
 } from '@/common/icons';
 import AiProgressCorner from '@/components/AiProgressCorner.vue';
 
-const emit = defineEmits(['toggle-info', 'toggle-scan']);
+const emit = defineEmits(['toggle-info', 'toggle-scan', 'send-email']);
 
 const props = defineProps({
   fileList: {
@@ -109,11 +125,23 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  showPosition: {
+    type: Boolean,
+    default: false,
+  },
   isEmbedded: {
     type: Boolean,
     default: false,
   },
   isInfoOpen: {
+    type: Boolean,
+    default: false,
+  },
+  showInfoButton: {
+    type: Boolean,
+    default: true,
+  },
+  showEmailButton: {
     type: Boolean,
     default: false,
   },
@@ -169,6 +197,13 @@ const hasRealSelectedFile = computed(() => {
   const file = currentFile.value;
   return !!file && !file.isPlaceholder;
 });
+function equipmentName(make?: string, model?: string) {
+  const brand = (make || '').trim();
+  const name = (model || '').trim();
+  return name.toLowerCase().startsWith(brand.toLowerCase()) ? name : [brand, name].filter(Boolean).join(' ');
+}
+const cameraText = computed(() => equipmentName(currentFile.value?.e_make, currentFile.value?.e_model));
+const lensText = computed(() => equipmentName(currentFile.value?.e_lens_make, currentFile.value?.e_lens_model));
 const singleDateText = computed(() => {
   const file = currentFile.value;
   const date = file?.taken_date || file?.modified_at || file?.created_at;
@@ -177,6 +212,7 @@ const singleDateText = computed(() => {
 const statusText = computed(() => hasRealSelectedFile.value
   ? [currentFile.value.name, singleDateText.value,
       currentFile.value.width && currentFile.value.height ? `${currentFile.value.width} × ${currentFile.value.height}` : '',
+      cameraText.value, lensText.value,
       `${formatFileSize(currentFile.value.size || 0)} on disk`].filter(Boolean).join(' · ')
   : [`${props.totalFileCount.toLocaleString()} pictures`, dateRangeText.value,
       `${formatFileSize(props.totalFileSize)} on disk`].filter(Boolean).join(' · '));

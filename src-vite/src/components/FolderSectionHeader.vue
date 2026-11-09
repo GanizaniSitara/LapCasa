@@ -1,5 +1,5 @@
 <template>
-  <!-- Folders view: one header per folder, then that folder's pictures -->
+  <!-- Picasa Folders view: one header per folder, then that folder's pictures -->
   <div class="w-full h-full px-3 flex items-center border-t border-base-content/10 bg-base-200/40 select-none" :title="path">
     <div class="min-w-0 flex flex-col">
       <span class="truncate text-[1.35rem] leading-tight text-base-content/90" style="font-family: Georgia, 'Times New Roman', serif">{{ name }}</span>

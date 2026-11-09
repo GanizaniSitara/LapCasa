@@ -11,8 +11,8 @@
     tabindex="0"
     :aria-valuemin="min"
     :aria-valuemax="max"
-    :aria-valuenow="modelValue"
-    :aria-valuetext="`${modelValue}°`"
+    :aria-valuenow="Number(formattedValue)"
+    :aria-valuetext="`${formattedValue}°`"
     :aria-label="ariaLabel"
     @pointerdown="onPointerDown"
     @dblclick="onDoubleClick"
@@ -49,7 +49,7 @@
     <!-- thumb needle -->
     <div
       class="absolute z-10 w-[2px] -translate-x-1/2 rounded-full bg-primary"
-      :class="dragging ? '' : 'transition-[left] duration-150 ease-out'"
+      :class="dragging ? '' : ''"
       :style="{ left: thumbPct + '%', bottom: BASELINE + 'px', height: NEEDLE + 'px' }"
     ></div>
 
@@ -62,7 +62,7 @@
           : 'bg-base-100 text-base-content/80 border-base-content/10'
       "
       :style="{ left: badgeLeftPx + 'px', bottom: BASELINE + NEEDLE - 2 + 'px' }"
-    >{{ modelValue }}°</div>
+    >{{ formattedValue }}°</div>
   </div>
 </template>
 
@@ -85,12 +85,12 @@ const props = withDefaults(
     ariaLabel?: string;
   }>(),
   {
-    min: -45,
-    max: 45,
-    step: 1,
-    minorStep: 5,
-    majorStep: 15,
-    snapZero: 1,
+    min: -20,
+    max: 20,
+    step: 0.1,
+    minorStep: 1,
+    majorStep: 5,
+    snapZero: 0.05,
     disabled: false,
     ariaLabel: 'Angle',
   },
@@ -104,7 +104,11 @@ const emit = defineEmits<{
 const HEIGHT = 40;
 const BASELINE = 13; // ticks/needle stand here; labels live below
 const NEEDLE = 15;
-const BADGE_HALF = 17; // half badge width, for clamping inside the track
+const BADGE_HALF = 22; // half badge width, for clamping inside the track
+
+const formattedValue = computed(() => {
+  return Number(props.modelValue || 0).toFixed(1);
+});
 
 const rootRef = ref<HTMLElement | null>(null);
 const dragging = ref(false);
@@ -163,31 +167,18 @@ const badgeLeftPx = computed(() => {
 });
 
 const quantize = (raw: number): number => {
-  const v = Math.abs(raw) <= props.snapZero ? 0 : Math.round(raw / props.step) * props.step;
-  return Math.min(props.max, Math.max(props.min, Number(v.toFixed(2))));
+  const snap = props.snapZero !== undefined ? props.snapZero : (props.step / 2);
+  const v = Math.abs(raw) <= snap ? 0 : Math.round(raw / props.step) * props.step;
+  const clamped = Math.min(props.max, Math.max(props.min, v));
+  const decimals = Math.max(0, Math.min(4, Math.round(-Math.log10(props.step))));
+  return Number(clamped.toFixed(decimals));
 };
+
+let dragStartX = 0;
+let dragStartVal = 0;
 
 const setValue = (v: number) => {
   if (v !== props.modelValue) emit('update:modelValue', v);
-};
-
-const setValueFromClientX = (clientX: number) => {
-  const el = rootRef.value;
-  if (!el) return;
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0) return;
-  const pct = (clientX - rect.left) / rect.width;
-  setValue(quantize(props.min + pct * (props.max - props.min)));
-};
-
-const onPointerMove = (e: PointerEvent) => {
-  if (dragging.value) setValueFromClientX(e.clientX);
-};
-
-const onPointerUp = () => {
-  dragging.value = false;
-  window.removeEventListener('pointermove', onPointerMove);
-  window.removeEventListener('pointerup', onPointerUp);
 };
 
 const onPointerDown = (e: PointerEvent) => {
@@ -195,9 +186,44 @@ const onPointerDown = (e: PointerEvent) => {
   e.preventDefault();
   dragging.value = true;
   rootRef.value?.setPointerCapture?.(e.pointerId);
-  setValueFromClientX(e.clientX); // click-to-position, then drag
+
+  dragStartX = e.clientX;
+  dragStartVal = props.modelValue;
+
+  const el = rootRef.value;
+  if (el) {
+    const rect = el.getBoundingClientRect();
+    const span = props.max - props.min;
+    if (rect.width > 0 && span > 0) {
+      const currentThumbX = rect.left + ((props.modelValue - props.min) / span) * rect.width;
+      // If clicked far from thumb (> 16px), position to clicked track location first
+      if (Math.abs(e.clientX - currentThumbX) > 16) {
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const clickedVal = quantize(props.min + pct * span);
+        setValue(clickedVal);
+        dragStartVal = clickedVal;
+      }
+    }
+  }
+
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
+};
+
+const onPointerMove = (e: PointerEvent) => {
+  if (!dragging.value) return;
+  const dx = e.clientX - dragStartX;
+  // 1 pixel of mouse drag moves exactly 0.1 degrees (props.step).
+  // Holding Shift makes it 1.0 deg per step (coarse).
+  // This guarantees mouse dragging lands on every single 0.1 degree increment without skipping.
+  const sensitivity = e.shiftKey ? props.step * 10 : props.step;
+  setValue(quantize(dragStartVal + dx * sensitivity));
+};
+
+const onPointerUp = () => {
+  dragging.value = false;
+  window.removeEventListener('pointermove', onPointerMove);
+  window.removeEventListener('pointerup', onPointerUp);
 };
 
 const onDoubleClick = () => {
@@ -207,7 +233,7 @@ const onDoubleClick = () => {
 
 const onKeyDown = (e: KeyboardEvent) => {
   if (props.disabled) return;
-  const s = props.step;
+  const s = e.shiftKey ? props.step * 10 : props.step;
   let handled = true;
   switch (e.key) {
     case 'ArrowLeft':

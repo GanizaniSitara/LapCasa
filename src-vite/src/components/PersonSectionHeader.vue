@@ -1,5 +1,5 @@
 <template>
-  <!-- People view: one header per named person, then that person's face tiles -->
+  <!-- Picasa People view: one header per named person, then that person's face tiles -->
   <div
     class="w-full h-full px-2 flex items-center gap-3 border-t border-b select-none"
     :class="suggestionCount > 0 ? 'border-orange-300 bg-orange-50 text-gray-900' : 'border-base-content/10 bg-base-200'"
@@ -73,7 +73,7 @@ const loaded = computed(() => personFaces.people.has(props.personId));
 const suggestionCount = computed(() => stateOf(props.personId).suggestions.size);
 const photoCount = computed(() => (props.personId > 0 && loaded.value ? stateOf(props.personId).confirmed : props.count));
 
-// The "?" button: show only this person's pending suggestions.
+// Same as Picasa's "?" button: show only this person's pending suggestions.
 function reviewSuggestions() {
   window.dispatchEvent(new CustomEvent('lapcasa-person-review', {
     detail: { personId: props.personId, name: props.label },

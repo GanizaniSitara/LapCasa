@@ -1,0 +1,83 @@
+{
+  "rust": [
+    {
+      "name": "anndists",
+      "version": "0.1.5",
+      "declared_license": "MIT/Apache-2.0",
+      "authors": [
+        "jeanpierre.both@gmail.com"
+      ],
+      "manifest_sha256": "9f6198eda94782ec6420d0ec27d8d8bed18a0f8f7b4a2d3253d02f5032ace549",
+      "package_manifest": "unresolved-license-grants/anndists@0.1.5/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "convert_case",
+      "version": "0.4.0",
+      "declared_license": "MIT",
+      "authors": [
+        "David Purdum <purdum41@gmail.com>"
+      ],
+      "manifest_sha256": "bbd8c27bde074b1c78539307cc2f1770efdaf890253cce4b9557cfdc32d4e605",
+      "package_manifest": "unresolved-license-grants/convert_case@0.4.0/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "fax",
+      "version": "0.2.6",
+      "declared_license": "MIT",
+      "authors": [
+        "Sebastian K <s3bk@protonmail.com>"
+      ],
+      "manifest_sha256": "0ea204979bda3a271442d39e327b479e65d5998bf9525c3272d5ce60a53a621d",
+      "package_manifest": "unresolved-license-grants/fax@0.2.6/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "fax_derive",
+      "version": "0.2.0",
+      "declared_license": "MIT",
+      "authors": [
+        "Sebastian K <s3bk@protonmail.com>"
+      ],
+      "manifest_sha256": "6cdaeb86f6147dd70051f5e61cc6d1f89b5f4dd1f1d175c7874d4798292b3e2a",
+      "package_manifest": "unresolved-license-grants/fax_derive@0.2.0/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "fxhash",
+      "version": "0.2.1",
+      "declared_license": "Apache-2.0/MIT",
+      "authors": [
+        "cbreeden <github@u.breeden.cc>"
+      ],
+      "manifest_sha256": "83bb4c3e7fbfb7380c175923ba7dfe150e4e09bd4ebfb45e65e5f8a494d36ab9",
+      "package_manifest": "unresolved-license-grants/fxhash@0.2.1/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "mac",
+      "version": "0.1.1",
+      "declared_license": "MIT/Apache-2.0",
+      "authors": [
+        "Jonathan Reem <jonathan.reem@gmail.com>"
+      ],
+      "manifest_sha256": "6d465c5e5a4b3e197049e9fb7393b2f996c1c654e6ded700afce046fac2f7969",
+      "package_manifest": "unresolved-license-grants/mac@0.1.1/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    },
+    {
+      "name": "simd_helpers",
+      "version": "0.1.0",
+      "declared_license": "MIT",
+      "authors": [
+        "Luca Barbato <lu_zero@gentoo.org>"
+      ],
+      "manifest_sha256": "42364d200c5cc7792960bdf10354a108b6c68ca49f2e1567967e2d5b1dba37a6",
+      "package_manifest": "unresolved-license-grants/simd_helpers@0.1.0/Cargo.toml",
+      "reason": "No standalone licence/copyright text found in published package or checked upstream root; do not invent a copyright notice."
+    }
+  ],
+  "legacy_boolbase_version_review": true,
+  "public_cleared": false
+}

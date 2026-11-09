@@ -357,6 +357,7 @@
     "title": "달력",
     "tabs": {
       "years": "년",
+      "quarters": "Quarters",
       "months": "월",
       "days": "일"
     },
@@ -433,7 +434,8 @@
         "렌즈",
         "년",
         "파일 유형",
-        "선별"
+        "선별",
+        "Quarter"
       ],
       "sort_type_options": [
         "촬영일",
@@ -677,6 +679,27 @@
       "copy": "클립보드에 복사",
       "paste": "붙여넣기",
       "edit_image": "편집...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "{app}에서 사진 열기...",
       "open_video_in_app": "{app}에서 동영상 열기...",
       "open_selected_images_in_app": "{app}에서 사진 열기...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "AI 가속",
+      "gpu_description": "그래픽 하드웨어, GPU 추가 기능 및 AI 엔진.",
+      "open_gpu": "AI 가속 열기",
+      "about_title": "LapCasa 정보",
+      "about_description": "버전, 빌드, 라이선스 및 기여자.",
+      "open_about": "앱 정보 열기"
+    },
     "general": {
       "title": "일반",
       "section_language": "언어",

@@ -1,3 +1,10 @@
+export const STATUS_BAR_PX = 18;
+
+/** Height of the blue status line the grid must clear. */
+export function bottomChromePx(showStatusBar: boolean): number {
+    return showStatusBar ? STATUS_BAR_PX : 0;
+}
+
 export interface Geometry {
     x: number;
     y: number;

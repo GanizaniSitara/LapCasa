@@ -104,7 +104,6 @@
         @mousedown.prevent="selectFacet(option)"
         @mouseenter="selectedIndex = idx"
       >
-        <span class="text-sm shrink-0 leading-none">{{ option.icon }}</span>
         <span class="font-medium shrink-0">{{ option.label }}:</span>
         <span class="truncate font-semibold text-base-content">"{{ option.value }}"</span>
       </div>
@@ -113,9 +112,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, type PropType } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, getCurrentInstance, type PropType } from 'vue';
 import { IconClose, IconSearch } from '@/common/icons';
 import { listen } from '@tauri-apps/api/event';
+import { cancelPlainSearch, submitPlainSearch } from '@/common/plainSearch';
 import { useUIStore } from '@/stores/uiStore';
 
 export interface SearchToken {
@@ -124,9 +124,8 @@ export interface SearchToken {
 }
 
 interface FacetOption {
-  type: 'person' | 'tag' | 'object' | 'text';
+  type: 'person' | 'tag' | 'object' | 'scene' | 'text';
   label: string;
-  icon: string;
   value: string;
 }
 
@@ -152,6 +151,7 @@ const emit = defineEmits([
 ]);
 
 const uiStore = useUIStore();
+const inputHandler = `SearchBox:${getCurrentInstance()!.uid}`;
 
 const containerRef = ref<HTMLElement | null>(null);
 const searchInputRef = ref<HTMLInputElement | null>(null);
@@ -171,12 +171,15 @@ const isExpanded = computed(() => {
 
 const facetOptions = computed<FacetOption[]>(() => {
   const query = inputValue.value.trim();
+  const scene = /^scene:\s*(.*)$/i.exec(query);
+  if (scene) return scene[1].trim() ? [{ type: 'scene', label: 'Scene', value: scene[1].trim() }] : [];
   if (!query) return [];
   return [
-    { type: 'person', label: 'Person', icon: '🧑', value: query },
-    { type: 'tag', label: 'Tag', icon: '🏷️', value: query },
-    { type: 'object', label: 'Object', icon: '🖼️', value: query },
-    { type: 'text', label: 'Text (OCR)', icon: '📝', value: query },
+    { type: 'person', label: 'Person', value: query },
+    { type: 'tag', label: 'Tag', value: query },
+    { type: 'object', label: 'Object', value: query },
+    { type: 'scene', label: 'Scene', value: query },
+    { type: 'text', label: 'Text (OCR)', value: query },
   ];
 });
 
@@ -208,6 +211,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (typingTimer) clearTimeout(typingTimer);
+  uiStore.removeInputHandler(inputHandler);
   if (unlistenKeydown) {
     unlistenKeydown();
   }
@@ -227,6 +232,7 @@ const getChipClass = (type: string) => {
     case 'tag':
       return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30';
     case 'object':
+    case 'scene':
       return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30';
     case 'text':
     case 'ocr':
@@ -253,6 +259,7 @@ const getChipLabel = (type: string) => {
     case 'person': return 'Person';
     case 'tag': return 'Tag';
     case 'object': return 'Object';
+    case 'scene': return 'Scene';
     case 'text':
     case 'ocr': return 'Text (OCR)';
     case 'raw': return 'Raw';
@@ -269,7 +276,8 @@ const focusInput = () => {
 
 const handleFocus = () => {
   isFocused.value = true;
-  uiStore.pushInputHandler('SearchBox');
+  uiStore.removeInputHandler(inputHandler);
+  uiStore.pushInputHandler(inputHandler);
   if (inputValue.value.trim().length > 0) {
     showDropdown.value = true;
   }
@@ -280,12 +288,20 @@ const handleBlur = () => {
     if (!containerRef.value?.contains(document.activeElement)) {
       isFocused.value = false;
       showDropdown.value = false;
-      uiStore.removeInputHandler('SearchBox');
+      uiStore.removeInputHandler(inputHandler);
     }
   }, 150);
 };
 
+let typingTimer: ReturnType<typeof setTimeout> | null = null;
 const handleInput = () => {
+  cancelPlainSearch();
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => {
+    typingTimer = null;
+    // Live typing uses the same raw-word path as Enter; facet selection stays explicit.
+    emitSearchTokens();
+  }, 180);
   if (inputValue.value.trim().length > 0) {
     showDropdown.value = true;
   } else {
@@ -313,13 +329,21 @@ const removeToken = (index: number) => {
   }
 };
 
-const emitSearchTokens = () => {
+const emitSearchTokens = (commitScene = false) => {
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = null;
   const payload: SearchToken[] = tokens.value.map(t => ({
     type: t.type,
     value: t.value,
   }));
   const raw = inputValue.value.trim();
-  if (raw.length > 0) {
+  const scene = /^scene:\s*(.*)$/i.exec(raw);
+  if (scene && (!commitScene || !scene[1].trim())) return;
+  if (scene?.[1].trim()) {
+    payload.push({ type: 'scene', value: scene[1].trim() });
+    tokens.value = payload;
+    inputValue.value = '';
+  } else if (raw.length > 0 && !scene) {
     payload.push({
       type: 'raw',
       value: raw,
@@ -327,20 +351,23 @@ const emitSearchTokens = () => {
   }
 
   emit('search-tokens', payload);
-  emit('update:modelValue', raw);
+  emit('update:modelValue', scene ? '' : raw);
   emit('search', payload);
+  submitPlainSearch();
 };
 
 const handleSearchSubmit = () => {
+  if (/^scene:\s*$/i.test(inputValue.value.trim())) return;
   const now = Date.now();
   if (now - lastSubmitTime < 100) return;
   lastSubmitTime = now;
 
   showDropdown.value = false;
   selectedIndex.value = -1;
-  emitSearchTokens();
+  emitSearchTokens(true);
   searchInputRef.value?.blur();
   isFocused.value = false;
+  uiStore.removeInputHandler(inputHandler);
 };
 
 const handleInputKeyDown = (event: KeyboardEvent) => {
@@ -380,7 +407,7 @@ const handleInputKeyDown = (event: KeyboardEvent) => {
 };
 
 function handleGlobalKeyDown(event: any) {
-  if (!uiStore.isInputActive('SearchBox')) return;
+  if (!isFocused.value || !uiStore.isInputActive(inputHandler)) return;
 
   const { key } = event.payload;
   switch (key) {
@@ -412,6 +439,7 @@ const clickCancel = () => {
   emitSearchTokens();
   searchInputRef.value?.blur();
   isFocused.value = false;
+  uiStore.removeInputHandler(inputHandler);
 };
 
 defineExpose({

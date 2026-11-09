@@ -113,6 +113,7 @@ export { default as IconMore } from '@/assets/icons/more.svg';
 export { default as IconOk } from '@/assets/icons/ok.svg';
 export { default as IconOrder } from '@/assets/icons/order.svg';
 export { default as IconPrint } from '@/assets/icons/print.svg';
+export { default as IconMail } from '@/assets/icons/mail.svg';
 export { default as IconRefresh } from '@/assets/icons/refresh.svg';
 export { default as IconRemove } from '@/assets/icons/minus.svg';
 export { default as IconSave } from '@/assets/icons/save.svg';
@@ -149,6 +150,7 @@ export { default as IconRestore } from '@/assets/icons/restore.svg';
 export { default as IconRotate } from '@/assets/icons/rotate-right.svg';
 export { default as IconRotateLeft } from '@/assets/icons/rotate-left-90.svg';
 export { default as IconRotateRight } from '@/assets/icons/rotate-right-90.svg';
+export { default as IconStraighten } from '@/assets/icons/straighten.svg';
 
 // ======================
 // SELECTION & TOGGLE ICONS

@@ -1,0 +1,10 @@
+{
+  "attribution": "GeoNames, https://www.geonames.org/",
+  "application_source_evidence": "t_sqlite.rs attributes geographic data to GeoNames; cities.csv is a reduced coordinate/name/admin/country extract; extraction date is unrecorded.",
+  "terms_source": "https://download.geonames.org/export/dump/readme.txt",
+  "terms_verified_with_web_tool": "GeoNames gazetteer README explicitly links CC-BY-4.0; direct Python retrieval returned HTTP403, so no verbatim README is claimed.",
+  "licence_text": {
+    "url": "https://creativecommons.org/licenses/by/4.0/legalcode.txt",
+    "sha256": "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411"
+  }
+}

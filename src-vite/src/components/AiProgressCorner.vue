@@ -1,5 +1,5 @@
 <template>
-  <!-- Corner: a tiny preview of the photo being processed, how many
+  <!-- Picasa-style corner: a tiny preview of the photo being processed, how many
        are left, and an X to stop background processing. -->
   <div
     v-if="visible"

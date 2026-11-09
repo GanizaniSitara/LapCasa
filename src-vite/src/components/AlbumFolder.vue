@@ -21,8 +21,8 @@
         @click="clickFolder(albumId, child)"
         @dblclick="!isFolderFiltering && expandFolder(child)"
         @contextmenu.prevent.stop="(e: MouseEvent) => handleFolderContextMenu(child, e)"
-        @mouseenter="hoveredFolderPath = child.path"
-        @mouseleave="hoveredFolderPath === child.path && (hoveredFolderPath = '')"
+        @mouseenter="hoveredFolderPath = child.path; prefetchOnHover(child.path)"
+        @mouseleave="hoveredFolderPath === child.path && (hoveredFolderPath = ''); cancelHoverPrefetch()"
       >
         <IconRight
           v-if="!flat"
@@ -190,6 +190,7 @@ import {
 
 // used for cross-component communication (Content.vue listens for this event)
 import { emit as tauriEmit } from '@tauri-apps/api/event';
+import { prefetchOnHover, cancelHoverPrefetch } from '@/common/thumbPrefetch';
 
 const NEW_FOLDER_CONTEXT = 'album-folder-new-folder-context';
 
@@ -202,7 +203,7 @@ const props = withDefaults(defineProps<{
   filterVisiblePaths?: string[];
   filterMatchedPaths?: string[];
   unavailable?: boolean;
-  // Flat Folders list: one row, no expand arrow, no folder icon, "Name (count)".
+  // Picasa flat Folders list: one row, no expand arrow, no folder icon, "Name (count)".
   flat?: boolean;
   // Flat list: how deep the folder sits below its top-level folder (indent only).
   flatDepth?: number;
@@ -426,7 +427,7 @@ const getMenuItemsForFolder = async (folder: any) => {
       }
     },
     {
-      // Right-click "Remove from LapCasa": hides the folder; files stay on disk.
+      // Picasa's right-click "Remove from Picasa": hides the folder; files stay on disk.
       label: "Remove from LapCasa",
       icon: IconFolderOff,
       action: () => {

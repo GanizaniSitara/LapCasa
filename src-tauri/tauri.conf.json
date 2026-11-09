@@ -1,6 +1,6 @@
 {
   "productName": "LapCasa",
-  "version": "0.4.1",
+  "version": "0.5.0-beta.1",
   "identifier": "com.lapcasa.dev",
   "build": {
     "beforeBuildCommand": "pnpm --dir ../src-vite build",
@@ -58,7 +58,6 @@
     ],
     "resources": {
       "../importers/picasa/picasa_import/": "picasa-import/picasa_import/",
-      "resources/models/*": "models",
       "resources/ffmpeg/*": "ffmpeg"
     }
   }

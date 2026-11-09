@@ -357,6 +357,7 @@
     "title": "Календарь",
     "tabs": {
       "years": "Годы",
+      "quarters": "Quarters",
       "months": "Месяцы",
       "days": "Дни"
     },
@@ -433,7 +434,8 @@
         "Объектив",
         "Год",
         "Тип файла",
-        "Отбор"
+        "Отбор",
+        "Quarter"
       ],
       "sort_type_options": [
         "Дата съёмки",
@@ -677,6 +679,27 @@
       "copy": "Скопировать в буфер",
       "paste": "Вставить",
       "edit_image": "Редактировать...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Открыть фото в {app}...",
       "open_video_in_app": "Открыть видео в {app}...",
       "open_selected_images_in_app": "Открыть фотографии в {app}...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "Ускорение ИИ",
+      "gpu_description": "Графическое оборудование, дополнение GPU и движки ИИ.",
+      "open_gpu": "Открыть ускорение ИИ",
+      "about_title": "О LapCasa",
+      "about_description": "Версия, сборка, лицензия и благодарности.",
+      "open_about": "Открыть сведения"
+    },
     "general": {
       "title": "Общее",
       "section_language": "Язык",

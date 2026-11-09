@@ -228,7 +228,7 @@ const showPanel = computed({
   get: () => config.leftPanel.show,
   set: (value: boolean) => { config.leftPanel.show = value; },
 });
-const LEFT_PANEL_ANIMATION_MS = 200;
+const LEFT_PANEL_ANIMATION_MS = 0;
 const leftPanelMounted = ref(showPanel.value);
 const leftPanelVisualExpanded = ref(showPanel.value);
 const leftPanelLayoutExpanded = ref(showPanel.value);
@@ -299,10 +299,12 @@ const isDraggingCollectionSplitter = ref(false);
 const appName = ref('');
 const showDebugBadge = import.meta.env.DEV;
 let unlistenOpenPreferences: (() => void) | null = null;
+let unlistenOpenAcceleration: (() => void) | null = null;
 let unlistenOpenAbout: (() => void) | null = null;
 let unlistenLibrariesConfirmed: (() => void) | null = null;
 let unlistenLibrariesUpdated: (() => void) | null = null;
 let unlistenAlbumsRefreshed: (() => void) | null = null;
+let unlistenDatabaseCorrupted: (() => void) | null = null;
 let unlistenAddAlbumRequested: (() => void) | null = null;
 let unlistenEditAlbumRequested: (() => void) | null = null;
 let unlistenOpenFolderManager: (() => void) | null = null;
@@ -326,7 +328,7 @@ const activeSidebarButton = computed(() =>
   buttons.value.find(item => item.index === config.main.sidebarIndex) || buttons.value[SIDEBAR.LIBRARY]
 );
 
-// Stacked left pane: the Albums (smart albums), People and Folders rail icons all show one
+// Picasa left pane: the Albums (smart albums), People and Folders rail icons all show one
 // stacked column of those sections. The other icons keep their panels.
 const isStackSidebarIndex = (index: number) =>
   index === SIDEBAR.SMART_ALBUM || index === SIDEBAR.PERSON || index === SIDEBAR.ALBUM;
@@ -363,9 +365,15 @@ watch(() => config.libraryChangedVersion, async () => {
 });
 
 onMounted(async () => {
+  // Start the library check first: it gates mounting the grid, and each awaited
+  // listen() below is a separate IPC round trip.
+  void checkLibraryEmpty();
   window.addEventListener('keydown', handleHomeKeyDown);
   unlistenOpenPreferences = await listen('app-open-preferences', () => {
     void clickSettings();
+  });
+  unlistenOpenAcceleration = await listen('app-open-ai-acceleration', () => {
+    void clickSettings(0);
   });
   unlistenOpenAbout = await listen('app-open-about', () => {
     void clickSettings(7);
@@ -379,9 +387,12 @@ onMounted(async () => {
     else await onManageLibrariesUpdated();
   });
 
-  void checkLibraryEmpty();
+  // The full integrity check runs after startup; it reports here if it fails.
+  unlistenDatabaseCorrupted = await listen('database-corrupted', () => {
+    void checkLibraryEmpty();
+  });
 
-  // File > Add Folder: open the Folder Manager (whole-computer tree).
+  // Picasa-style File > Add Folder: open the Folder Manager (whole-computer tree).
   unlistenAddAlbumRequested = await listen('add-album-requested', async () => {
     if (config.main.sidebarIndex !== SIDEBAR.ALBUM) config.main.sidebarIndex = SIDEBAR.ALBUM;
     void openFolderManagerWindow();
@@ -396,7 +407,7 @@ onMounted(async () => {
     (panelRef.value as any)?.openAlbumEdit?.(albumId);
   });
 
-  // Open floating Folder Manager window
+  // Picasa-style: open floating Folder Manager window
   unlistenOpenFolderManager = await listen('open-folder-manager', (event: any) => {
     const path = String(event.payload?.path || '');
     void openFolderManagerWindow(path);
@@ -448,12 +459,16 @@ onBeforeUnmount(() => {
   document.removeEventListener('mouseup', stopDraggingCollectionSplitter);
   unlistenOpenPreferences?.();
   unlistenOpenPreferences = null;
+  unlistenOpenAcceleration?.();
+  unlistenOpenAcceleration = null;
   unlistenOpenAbout?.();
   unlistenOpenAbout = null;
   unlistenLibrariesConfirmed?.();
   unlistenLibrariesUpdated?.();
   unlistenAlbumsRefreshed?.();
   unlistenAlbumsRefreshed = null;
+  unlistenDatabaseCorrupted?.();
+  unlistenDatabaseCorrupted = null;
   unlistenAddAlbumRequested?.();
   unlistenAddAlbumRequested = null;
   unlistenOpenFolderManager?.();
@@ -638,7 +653,7 @@ const collectionTrayStyle = computed(() => {
 const showBottomCollectionTray = computed(() =>
   showPanel.value &&
   !libraryEmpty.value &&
-  !isStackedPane.value // the stacked pane has no bottom tray
+  !isStackedPane.value // the stacked pane has no bottom tray (Picasa has none either)
 );
 
 function toggleCollectionTray() {

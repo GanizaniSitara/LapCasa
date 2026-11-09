@@ -14,6 +14,7 @@ pub fn install_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         MenuItemBuilder::with_id("about", format!("About {}", app.package_info().name))
             .build(app)?;
     let home_item = MenuItemBuilder::with_id("help_homepage", "LapCasa Home").build(app)?;
+    let acceleration_item = MenuItemBuilder::with_id("ai_acceleration", "AI acceleration…").build(app)?;
     let release_notes_item =
         MenuItemBuilder::with_id("help_release_notes", "Release Notes").build(app)?;
     let readme_item = MenuItemBuilder::with_id("help_readme", "README").build(app)?;
@@ -50,6 +51,8 @@ pub fn install_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .close_window()
         .build()?;
     let help_submenu = SubmenuBuilder::new(app, "Help")
+        .item(&acceleration_item)
+        .separator()
         .item(&home_item)
         .item(&release_notes_item)
         .item(&readme_item)
@@ -84,6 +87,11 @@ pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         "preferences" => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.emit("app-open-preferences", ());
+            }
+        }
+        "ai_acceleration" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.emit("app-open-ai-acceleration", ());
             }
         }
         "help_homepage" => {

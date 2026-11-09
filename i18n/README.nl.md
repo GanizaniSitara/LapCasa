@@ -56,7 +56,7 @@ brew install --cask lap
 - **Interactieve kaartweergave** om foto's en video's met locatiegegevens te verkennen in clusters die je huidige filters volgen.
 - **Slimme albums** bewaren weergaven op basis van regels, met eigen groepering en sortering.
 - **Collecties en tags** om geselecteerde bestanden in bulk te ordenen zonder de originelen te verplaatsen of te dupliceren.
-- **Lokaal zoeken met AI** op tekst, visuele overeenkomst, onderwerpen, gezichtsgroepering en optioneel meertalig zoeken in meer dan 50 talen.
+- **Lokaal zoeken met AI** op tekst, visuele overeenkomst, onderwerpen, gezichtsgroepering. Zoeken met beschrijvingen gebruikt Engels.
 - **Apple Live Photos en Google Motion Photos** met afspelen van beweging en één gezamenlijk filter voor slimme albums.
 - **RAW + JPEG/HEIC-paren** weergegeven als één item, waarbij gekoppelde bestanden bij bestandsbewerkingen bij elkaar blijven.
 - **Instelbare RAW-miniaturen en -voorbeelden** via RAW-rendering of het ingesloten voorbeeld van de camera.

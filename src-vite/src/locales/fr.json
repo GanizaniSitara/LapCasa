@@ -357,6 +357,7 @@
     "title": "Calendrier",
     "tabs": {
       "years": "Années",
+      "quarters": "Quarters",
       "months": "Mois",
       "days": "Jours"
     },
@@ -433,7 +434,8 @@
         "Objectif",
         "Année",
         "Type de fichier",
-        "Sélection"
+        "Sélection",
+        "Quarter"
       ],
       "sort_type_options": [
         "Date de prise",
@@ -677,6 +679,27 @@
       "copy": "Copier dans presse-papiers",
       "paste": "Coller",
       "edit_image": "Modifier...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Ouvrir la photo dans {app}...",
       "open_video_in_app": "Ouvrir la vidéo dans {app}...",
       "open_selected_images_in_app": "Ouvrir les photos dans {app}...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "Accélération de l’IA",
+      "gpu_description": "Matériel graphique, module GPU et moteurs d’IA.",
+      "open_gpu": "Ouvrir l’accélération de l’IA",
+      "about_title": "À propos de LapCasa",
+      "about_description": "Version, compilation, licence et crédits.",
+      "open_about": "Ouvrir À propos"
+    },
     "general": {
       "title": "Général",
       "section_language": "Langue",

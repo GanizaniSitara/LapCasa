@@ -357,6 +357,7 @@
     "title": "Kalendarz",
     "tabs": {
       "years": "Lata",
+      "quarters": "Quarters",
       "months": "Miesiące",
       "days": "Dni"
     },
@@ -433,7 +434,8 @@
         "Obiektyw",
         "Rok",
         "Typ pliku",
-        "Selekcja"
+        "Selekcja",
+        "Quarter"
       ],
       "sort_type_options": [
         "Data wykonania",
@@ -677,6 +679,27 @@
       "copy": "Kopiuj do schowka",
       "paste": "Wklej",
       "edit_image": "Edytuj...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Otwórz zdjęcie w {app}...",
       "open_video_in_app": "Otwórz film w {app}...",
       "open_selected_images_in_app": "Otwórz zdjęcia w {app}...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "Przyspieszanie AI",
+      "gpu_description": "Sprzęt graficzny, dodatek GPU i silniki AI.",
+      "open_gpu": "Otwórz ustawienia przyspieszania AI",
+      "about_title": "O LapCasa",
+      "about_description": "Wersja, kompilacja, licencja i autorzy.",
+      "open_about": "Otwórz informacje"
+    },
     "general": {
       "title": "Ogólne",
       "section_language": "Język",

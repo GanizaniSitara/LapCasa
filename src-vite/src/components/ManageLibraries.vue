@@ -523,7 +523,6 @@ const cancelAddLibrary = () => {
 const focusLibrary = async (libraryId: string) => {
   await nextTick();
   libraryItemRefs.value[libraryId]?.scrollIntoView({
-    behavior: 'smooth',
     block: 'nearest',
   });
 };

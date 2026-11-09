@@ -10,7 +10,7 @@
  * author:  julyx10
  * date:    2024-08-08
  */
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg(all(feature = "vm-rig", feature = "gpu-providers"))]
 compile_error!("vm-rig excludes GPU providers; use --no-default-features --features vm-rig");
@@ -21,7 +21,12 @@ pub mod t_ai_png;
 pub mod t_apple_sidecar;
 pub mod t_cluster;
 pub mod t_cmds;
+pub mod t_collage;
 pub mod t_common;
+pub mod t_models;
+pub mod t_maps;
+mod t_email;
+pub mod t_search;
 pub mod t_config;
 pub mod t_dedup;
 pub mod t_embedded_jpeg;
@@ -33,6 +38,11 @@ pub mod t_heif;
 pub mod t_http;
 pub mod t_image;
 pub mod t_edit_recipe;
+pub mod t_edit_mask;
+pub mod t_edit_local;
+pub mod t_edit_balance;
+pub mod t_edit_select;
+pub mod t_gpu;
 pub mod t_curves;
 mod t_edit_tools;
 pub mod t_jpeg;
@@ -50,12 +60,78 @@ pub mod t_similar;
 pub mod t_sqlite;
 pub mod t_storage;
 pub mod t_thumb_cache;
+pub mod slabs;
 pub mod t_face_thumb;
 pub mod t_utils;
 pub mod t_video;
 pub mod t_xmp;
+pub mod scheduler;
+pub mod native_grid;
+pub mod lap_render;
+pub use self as lap_core;
 
+pub use crate as lap_cache;
 pub use t_cmds::merge_person;
+pub use t_storage as lap_storage;
+pub use t_storage::projections;
+
+/// Destroy every window except main (image viewer, settings, ...) as main closes.
+#[cfg(not(target_os = "macos"))]
+fn close_other_windows(app_handle: &tauri::AppHandle) {
+    for (_, window) in app_handle.webview_windows() {
+        if window.label() != "main" {
+            if let Err(err) = window.destroy() {
+                eprintln!("Failed to close window: {}", err);
+            }
+        }
+    }
+}
+
+/// Wait (at most `timeout`) for this process's WebView2 processes to exit.
+/// With their windows destroyed they shut down by themselves, but only finish if the
+/// app is still running; exiting first orphans them for several seconds.
+#[cfg(target_os = "windows")]
+fn wait_for_webview_processes(timeout: std::time::Duration) {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, WaitForMultipleObjects, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return };
+        let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut webview = Vec::new(); // (pid, parent pid) of every msedgewebview2.exe
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            if String::from_utf16_lossy(&entry.szExeFile[..len]).eq_ignore_ascii_case("msedgewebview2.exe") {
+                webview.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+        // The browser process is our child; its renderer, GPU and helper processes are its children.
+        let mut ours = vec![GetCurrentProcessId()];
+        let mut i = 0;
+        while i < ours.len() {
+            let parent = ours[i];
+            ours.extend(webview.iter().filter(|(_, p)| *p == parent).map(|(pid, _)| *pid));
+            i += 1;
+        }
+        let handles: Vec<HANDLE> = ours[1..].iter()
+            .filter_map(|pid| OpenProcess(PROCESS_SYNCHRONIZE, false, *pid).ok())
+            .take(64) // MAXIMUM_WAIT_OBJECTS
+            .collect();
+        if !handles.is_empty() {
+            WaitForMultipleObjects(&handles, true, timeout.as_millis() as u32);
+        }
+        for handle in handles {
+            let _ = CloseHandle(handle);
+        }
+    }
+}
 
 /// The main function is the entry point for the Tauri application.
 #[tokio::main]
@@ -68,7 +144,11 @@ pub async fn run() {
     let builder = t_protocol::register_protocols(builder);
 
     let run_result = builder
-        .plugin(tauri_plugin_window_state::Builder::default().build()) // macOS: ~/Library/Application Support/{APP_NAME}/window-state.json
+        // Restore main only after its frontend is mounted. Even maximizing a
+        // saved window can expose it before an explicit visibility restore.
+        .plugin(tauri_plugin_window_state::Builder::default()
+            .skip_initial_state("main")
+            .build()) // macOS: ~/Library/Application Support/{APP_NAME}/window-state.json
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
@@ -104,6 +184,30 @@ pub async fn run() {
         .setup(|_app| {
             t_video::init_ffmpeg_path(&_app.handle());
             t_config::set_app_identifier(&_app.config().identifier);
+            // Selection sessions load when the editor prepares a photo, not while Library opens.
+            #[cfg(not(feature = "vm-rig"))]
+            {
+                let handle = _app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(350));
+                    if !t_cmds::EXTERNAL_SEARCH_READY.load(std::sync::atomic::Ordering::Acquire) { continue; }
+                    match t_cmds::consume_external_search() {
+                        Ok(Some(payload)) => {
+                            let _ = handle.emit("external-search", &payload);
+                            // Activation is authorized only by an explicit CLI --show.
+                            if payload.get("focus").and_then(serde_json::Value::as_bool) == Some(true) {
+                                if let Some(window) = handle.get_webview_window("main") {
+                                    let _ = window.unminimize();
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("External search handoff: {error}"),
+                    }
+                });
+            }
             let background_enabled = !cfg!(feature = "vm-rig") && t_config::load_app_config()
                 .map(|config| config.process_library_in_background)
                 .unwrap_or(false);
@@ -133,9 +237,19 @@ pub async fn run() {
             // wheel+ctrlKey events for touchpad pinch. Touchscreen pinch is still
             // handled by our pointer-event logic (with `touch-action: none`).
 
-            // Create the database on startup
-            if let Err(e) = t_sqlite::create_db() {
+            // Create the database on startup. The full page scan runs later so
+            // it does not hold the window blank while the library opens.
+            if let Err(e) = t_sqlite::create_db_deferred_check() {
                 eprintln!("Failed to initialize database: {}", e);
+            }
+            {
+                let app_handle = _app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(15));
+                    if t_sqlite::verify_db_integrity() {
+                        let _ = app_handle.emit("database-corrupted", ());
+                    }
+                });
             }
 
             // Initialize video HTTP server for Linux
@@ -152,7 +266,8 @@ pub async fn run() {
             }
 
             // Initialize AI Engine only when background processing is enabled.
-            if background_enabled {
+            if background_enabled && t_ai::AiEngine::resource_model_dir(_app.handle())
+                .is_ok_and(|dir| t_models::available("search", &dir)) {
                 let app_handle_bg = _app.handle().clone();
                 std::thread::spawn(move || {
                 if !t_advanced_ai::background_enabled() {
@@ -216,34 +331,34 @@ pub async fn run() {
                 return;
             }
 
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Prevent the default close so we can decide what to do per platform.
-                api.prevent_close();
+            match event {
+                tauri::WindowEvent::Focused(true)
+                | tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Resized(_) => {
+                    crate::scheduler::record_interaction(crate::scheduler::InteractionSource::Window);
+                }
+                _ => {}
+            }
 
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // macOS convention: closing the window hides it; the app stays
                 // alive and can be reopened via the Dock icon (handled by
                 // RunEvent::Reopen). Real quit keeps using the native Quit menu.
                 #[cfg(target_os = "macos")]
                 {
+                    api.prevent_close();
                     let _ = window.hide();
                 }
 
+                // Elsewhere the main window closes normally and takes every other
+                // window (image viewer, settings, ...) with it; the app exits when the
+                // last one is gone. Destroying the windows releases their WebView2
+                // controllers, so the WebView processes shut down with the app instead
+                // of being orphaned (app_handle.exit() alone never drops them).
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let app_handle = window.app_handle();
-
-                    // Close every other window first (image viewer, settings, ...),
-                    // then exit the process.
-                    let windows = app_handle.webview_windows();
-                    for (_, other_window) in windows {
-                        if other_window.label() != "main" {
-                            if let Err(err) = other_window.close() {
-                                eprintln!("Failed to close window: {}", err);
-                            }
-                        }
-                    }
-
-                    app_handle.exit(0);
+                    let _ = api;
+                    close_other_windows(window.app_handle());
                 }
             }
         })
@@ -251,6 +366,17 @@ pub async fn run() {
             t_menu::handle_menu_event(app, event);
         })
         .invoke_handler(tauri::generate_handler![
+            t_maps::local_map_info,
+            t_maps::local_map_tile,
+            t_models::model_packs,
+            t_models::model_download,
+            t_models::model_cancel,
+            native_grid::native_grid_place,
+            native_grid::native_grid_show,
+            native_grid::native_grid_refresh,
+            native_grid::native_grid_scroll_to,
+            native_grid::native_grid_scroll_ratio,
+            native_grid::native_grid_marks,
             t_picasa::picasa_import_defaults,
             t_picasa::picasa_import_preview,
             t_picasa::picasa_import_apply,
@@ -259,6 +385,8 @@ pub async fn run() {
             t_cmds::get_app_config,
             t_cmds::set_background_processing,
             t_cmds::get_ai_progress,
+            t_cmds::get_file_ai_info,
+            t_cmds::set_experimental_ai_config,
             t_cmds::get_supported_format_extensions,
             t_cmds::get_ffmpeg_backed_image_extensions,
             t_cmds::check_gstreamer_available,
@@ -314,16 +442,28 @@ pub async fn run() {
             t_cmds::delete_folder,
             t_cmds::delete_folder_permanently,
             t_cmds::reveal_path,
+            t_cmds::take_external_search,
             t_cmds::open_external_url,
             t_cmds::set_desktop_wallpaper,
             t_cmds::get_external_app_display_name,
             t_cmds::open_file_with_app,
             t_cmds::open_files_with_app,
+            t_cmds::email_files_draft,
+            t_cmds::adjust_files_taken_date,
+            t_cmds::set_files_location,
+            t_cmds::create_picture_collage,
+            t_cmds::create_poster_tiles,
+            t_cmds::export_pictures_to_folder,
+            t_cmds::has_picasa_original,
+            t_cmds::revert_to_picasa_original,
+            t_cmds::get_date_histogram,
             // file query
             t_cmds::get_query_count_and_sum,
             t_cmds::get_query_time_line,
             t_cmds::get_query_files,
             t_cmds::search_files,
+            t_cmds::search_plain_photos,
+            t_cmds::cancel_plain_search,
             t_cmds::get_grouped_query_rows,
             t_cmds::get_folder_sections,
             t_cmds::get_group_file_ids,
@@ -368,6 +508,7 @@ pub async fn run() {
             t_cmds::get_folder_thumb_count,
             // file operations
             t_cmds::edit_image,
+            t_cmds::calculate_inscribed_crop,
             t_cmds::save_image_recipe,
             t_cmds::restore_image_recipe,
             t_cmds::get_rendered_faces,
@@ -415,9 +556,26 @@ pub async fn run() {
             t_cmds::get_folder_ai_excluded,
             t_cmds::set_folder_ai_excluded,
             t_cmds::set_file_favorite,
+            t_cmds::set_file_hidden,
+            t_cmds::set_show_hidden_pictures,
             t_cmds::set_file_rating,
             t_cmds::set_file_culling_flag,
             t_cmds::toggle_auto_enhance,
+            t_cmds::set_lucky_style,
+            t_cmds::copy_all_effects,
+            t_cmds::paste_all_effects,
+            t_cmds::batch_edit_images,
+            t_cmds::render_edit_draft,
+            t_cmds::save_effect_mask,
+            t_cmds::select_status,
+            t_cmds::select_prepare,
+            t_gpu::gpu_status,
+            t_gpu::gpu_dismiss_prompt,
+            t_gpu::gpu_install,
+            t_cmds::select_points,
+            t_cmds::select_region,
+            t_cmds::automask_balance,
+            t_cmds::automask_auto,
             t_cmds::batch_update_file_metadata,
             // tag
             t_cmds::get_tag_group_name,
@@ -453,8 +611,6 @@ pub async fn run() {
             t_cmds::check_ai_status,
             t_cmds::get_image_search_model_status,
             t_cmds::set_image_search_model,
-            t_cmds::download_multilingual_image_search_model,
-            t_cmds::cancel_multilingual_image_search_model_download,
             t_cmds::generate_embedding,
             t_cmds::search_similar_images,
             // person (face recognition)
@@ -506,15 +662,38 @@ pub async fn run() {
             t_cmds::backup_databases,
             t_cmds::parse_backup_file,
             t_cmds::restore_databases,
+            // scheduler / cooperative yielding
+            t_cmds::report_ui_interaction,
+            t_cmds::set_ui_interaction_active,
+            t_cmds::is_ui_interacting,
         ])
-        .build(tauri::generate_context!());
+        .build(tauri::tauri_build_context!());
 
     match run_result {
         Ok(app) => {
             app.run(move |_app_handle, event| match event {
+                // An explicit exit (app.exit(), the process plugin) ends the event loop
+                // with every window still open, orphaning the WebView2 processes. Close
+                // the windows instead; the last one to go requests the exit again, with
+                // no code, and the app exits then.
+                #[cfg(not(target_os = "macos"))]
+                tauri::RunEvent::ExitRequested { code: Some(_), api, .. }
+                    if !_app_handle.webview_windows().is_empty() =>
+                {
+                    api.prevent_exit();
+                    // Destroying skips CloseRequested, where the window-state plugin
+                    // records each window; record them while they still exist.
+                    use tauri_plugin_window_state::AppHandleExt;
+                    let _ = _app_handle.save_window_state(tauri_plugin_window_state::StateFlags::all());
+                    for (_, window) in _app_handle.webview_windows() {
+                        let _ = window.destroy();
+                    }
+                }
                 tauri::RunEvent::ExitRequested { .. } => {
                     if let Err(error) = t_thumb_cache::shutdown() { eprintln!("{error}"); }
                 }
+                #[cfg(target_os = "windows")]
+                tauri::RunEvent::Exit => wait_for_webview_processes(std::time::Duration::from_secs(5)),
                 // macOS: clicking the Dock icon of a running app reopens it.
                 // When the main window is hidden (closed-to-hide), show it again.
                 #[cfg(target_os = "macos")]

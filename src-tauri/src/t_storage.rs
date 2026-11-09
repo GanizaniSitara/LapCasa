@@ -18,6 +18,8 @@ use zip::write::FileOptions;
 
 use crate::t_config::{self, AppConfig, Library, LibraryState};
 
+pub mod projections;
+
 static DB_MIGRATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 struct DbMigrationGuard;

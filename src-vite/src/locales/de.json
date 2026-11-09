@@ -357,6 +357,7 @@
     "title": "Kalender",
     "tabs": {
       "years": "Jahre",
+      "quarters": "Quarters",
       "months": "Monate",
       "days": "Tage"
     },
@@ -433,7 +434,8 @@
         "Objektiv",
         "Jahr",
         "Dateityp",
-        "Auswahl"
+        "Auswahl",
+        "Quarter"
       ],
       "sort_type_options": [
         "Aufnahmedatum",
@@ -677,6 +679,27 @@
       "copy": "In die Zwischenablage",
       "paste": "Einfügen",
       "edit_image": "Bearbeiten...",
+      "copy_all_effects": "Copy All Effects",
+      "paste_all_effects": "Paste All Effects",
+      "batch_edit": "Batch Edit",
+      "rotate_clockwise": "Rotate Clockwise",
+      "rotate_counter_clockwise": "Rotate Counter-clockwise",
+      "feeling_lucky": "I'm Feeling Lucky",
+      "auto_contrast": "Auto Contrast",
+      "auto_color": "Auto Color",
+      "sharpen": "Sharpen",
+      "sepia": "Sepia",
+      "bw": "B&W",
+      "warmify": "Warmify",
+      "film_grain": "Film Grain",
+      "undo_all_edits": "Undo All Edits",
+      "effects_copied": "Effects copied",
+      "effects_pasted": "Effects pasted",
+      "batch_edit_success": "Batch edit applied",
+      "copy_failed": "Failed to copy effects",
+      "paste_failed": "Failed to paste effects",
+      "batch_edit_failed": "Failed to apply batch edit",
+      "batch_edit_failed_count": "{count} photos could not be edited",
       "open_image_in_app": "Foto in {app} öffnen...",
       "open_video_in_app": "Video in {app} öffnen...",
       "open_selected_images_in_app": "Fotos in {app} öffnen...",
@@ -1190,6 +1213,14 @@
     }
   },
   "settings": {
+    "search_preview": {
+      "gpu_title": "KI-Beschleunigung",
+      "gpu_description": "Grafikhardware, GPU-Erweiterung und KI-Engines.",
+      "open_gpu": "KI-Beschleunigung öffnen",
+      "about_title": "Über LapCasa",
+      "about_description": "Version, Build, Lizenz und Mitwirkende.",
+      "open_about": "Über öffnen"
+    },
     "general": {
       "title": "Allgemein",
       "section_language": "Sprache",

@@ -20,7 +20,7 @@
             {{ $t('settings.about.package.version') }}
           </div>
           <div class="flex items-center gap-2">
-            <span>{{ displayVersion }}</span>
+            <span data-build-version>{{ displayVersion }}</span>
           </div>
         </div>
 
@@ -92,6 +92,7 @@ const packageInfo = ref<any>({
   name: '',
   description: '',
   version: '',
+  build_number: '',
   commit_hash: '',
   license: '',
   authors: [],
@@ -101,8 +102,10 @@ const packageInfo = ref<any>({
 const buildTime = ref('');
 const displayVersion = computed(() => {
   const version = packageInfo.value.version || '';
+  const buildNumber = packageInfo.value.build_number || '';
+  const identity = buildNumber ? `${version} - Build ${buildNumber}` : version;
   const commitHash = packageInfo.value.commit_hash || packageInfo.value.commitHash || '';
-  return commitHash ? `${version} (${commitHash})` : version;
+  return commitHash ? `${identity} (${commitHash})` : identity;
 });
 const privacyUrl = computed(() => {
   const repo = packageInfo.value.repository || '';

@@ -25,6 +25,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, type CSSProperties } from 'vue';
 import type { IndexedGrid } from '@/common/sectionGrid';
+import { installWheelEasing } from '@/common/wheelEasing';
 
 const props = withDefaults(defineProps<{
   items: any[];
@@ -34,6 +35,7 @@ const props = withDefaults(defineProps<{
   direction?: 'vertical' | 'horizontal';
   keyField?: string;
   buffer?: number;
+  initialPaint?: boolean;
   emitUpdate?: boolean;
   geometry?: { x: number, y: number, width: number, height: number }[]; // Pre-calculated layout
   indexedGrid?: IndexedGrid;
@@ -44,6 +46,7 @@ const props = withDefaults(defineProps<{
   direction: 'vertical',
   keyField: 'id',
   buffer: 2, // Number of rows/cols to buffer
+  initialPaint: false,
   emitUpdate: false,
   transition: false,
 });
@@ -53,6 +56,7 @@ const emit = defineEmits(['update', 'scroll']);
 const scrollerRef = ref<HTMLElement | null>(null);
 const scrollOffset = ref(0);
 const containerSize = ref(0);
+let wheelEasing: ReturnType<typeof installWheelEasing> | null = null;
 
 // Computed properties
 const isVertical = computed(() => props.direction === 'vertical');
@@ -89,13 +93,15 @@ const geometryAxisMetrics = computed(() => {
 });
 
 const calculatedRange = computed(() => {
+  // Paint the whole viewport together before mounting offscreen rows.
+  const buffer = props.initialPaint ? 0 : props.buffer;
   if (props.indexedGrid) {
-    const bufferSize = Math.max(0, props.buffer * props.itemSize);
+    const bufferSize = Math.max(0, buffer * props.itemSize);
     return props.indexedGrid.range(Math.max(0, scrollOffset.value - bufferSize),
       scrollOffset.value + containerSize.value + bufferSize);
   }
   if (props.geometry || props.indexedGrid) {
-    const bufferSize = Math.max(0, props.buffer * props.itemSize);
+    const bufferSize = Math.max(0, buffer * props.itemSize);
     const viewportStart = Math.max(0, scrollOffset.value - bufferSize);
     const viewportEnd = scrollOffset.value + containerSize.value + bufferSize;
     const { starts, prefixMaxEnds } = geometryAxisMetrics.value;
@@ -131,8 +137,8 @@ const calculatedRange = computed(() => {
   const visibleCount = Math.ceil(containerSize.value / props.itemSize);
   
   // Add buffer
-  const bufferedStart = Math.max(0, start - props.buffer);
-  const bufferedEnd = Math.min(totalRows.value, start + visibleCount + props.buffer);
+  const bufferedStart = Math.max(0, start - buffer);
+  const bufferedEnd = Math.min(totalRows.value, start + visibleCount + buffer);
   
   return {
     start: bufferedStart,
@@ -258,6 +264,7 @@ watch(() => visibleRange.value, () => {
 
 // Watch totalCount to re-emit if data changes but range is same (e.g. initial load)
 watch(totalCount, () => {
+    wheelEasing?.cancel();
     emitUpdate();
 });
 
@@ -309,6 +316,10 @@ watch(() => props.indexedGrid, async (grid, oldGrid) => {
   // Update the virtual range before render, so resize doesn't mount the old
   // viewport's unrelated photos while its section moves to its new offset.
   const target = Math.max(0, offset + newBox.y - oldBox.y);
+  // Hydrating rows can refresh the index without moving the anchor. Writing
+  // scrollTop in that case cancels the browser's ongoing scroll animation.
+  if (Math.abs(target - offset) < 0.5) return;
+  wheelEasing?.cancel();
   scrollOffset.value = target;
   await nextTick();
   if (version !== geometryAnchorVersion) return;
@@ -379,6 +390,7 @@ watch(
     const delta = newStart - anchor.oldStart;
     if (!Number.isFinite(delta) || Math.abs(delta) < 0.5) return;
 
+    wheelEasing?.cancel();
     const targetOffset = Math.max(0, anchor.viewportStart + delta);
     if (isVertical.value) {
       scroller.scrollTop = targetOffset;
@@ -399,6 +411,7 @@ function onScroll(e: Event) {
 
 function updateContainerSize() {
   if (scrollerRef.value) {
+    wheelEasing?.cancel();
     containerSize.value = isVertical.value 
       ? scrollerRef.value.clientHeight 
       : scrollerRef.value.clientWidth;
@@ -407,6 +420,8 @@ function updateContainerSize() {
 
 // Watch for direction changes to reset/update size
 watch(() => props.direction, () => {
+  wheelEasing?.destroy();
+  wheelEasing = isVertical.value && scrollerRef.value ? installWheelEasing(scrollerRef.value) : null;
   nextTick(updateContainerSize);
 });
 
@@ -414,6 +429,7 @@ let resizeObserver: ResizeObserver | null = null;
 
 onMounted(() => {
   updateContainerSize();
+  if (isVertical.value && scrollerRef.value) wheelEasing = installWheelEasing(scrollerRef.value);
   emitUpdate();
   resizeObserver = new ResizeObserver(updateContainerSize);
   if (scrollerRef.value) {
@@ -422,6 +438,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  wheelEasing?.destroy();
   resizeObserver?.disconnect();
   resizeObserver = null;
 });
@@ -429,9 +446,11 @@ onBeforeUnmount(() => {
 // Expose scroll to item / position
 function scrollToPosition(value: number) {
   if (!scrollerRef.value) return;
+  wheelEasing?.cancel();
   if (isVertical.value) scrollerRef.value.scrollTop = value;
   else scrollerRef.value.scrollLeft = value;
-  scrollOffset.value = value;
+  // Browser clamping and the virtual pool must agree before the next paint.
+  scrollOffset.value = isVertical.value ? scrollerRef.value.scrollTop : scrollerRef.value.scrollLeft;
 }
 
 defineExpose({

@@ -1,7 +1,7 @@
 <template>
   <div data-editor-curves>
     <div class="flex mt-1 mb-1" role="group" aria-label="Curve channel">
-      <button v-for="c in curveChannels" :key="c" type="button" :aria-pressed="channel===c"
+      <button v-for="c in shownChannels" :key="c" type="button" :aria-pressed="channel===c"
         :data-curve-channel="c" class="flex-1 py-1 border border-base-content/20"
         :style="channel===c ? {background: colors[c], color: c==='rgb' ? '#15191c' : '#fff'} : {}"
         :disabled="disabled" @click="channel=c">{{ labels[c] }}</button>
@@ -12,6 +12,7 @@
       @dblclick="remove" @keydown.escape="cancel">
       <path d="M64 0V144 M128 0V144 M192 0V144 M0 36H256 M0 72H256 M0 108H256" stroke="#40484c" fill="none" />
       <path d="M0 144L256 0" stroke="#70787c" stroke-dasharray="3 3" />
+      <path v-if="resultPath" :d="resultPath" stroke="#4aa3ff" stroke-width="2" fill="none" data-curve-result />
       <path :d="path" :stroke="colors[channel]" stroke-width="2" fill="none" />
       <circle v-for="(p,i) in draft[channel]" :key="i" :cx="p[0]*256" :cy="(1-p[1])*144" r="4"
         :data-curve-point="i" :fill="colors[channel]" stroke="#fff" stroke-width="1" />
@@ -23,7 +24,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { curveChannels, curveLut, identityCurves, type Curves, type CurveChannel } from '@/common/curves';
-const props = defineProps<{ modelValue?: Curves; disabled?: boolean }>();
+// channels: which channel buttons to offer (all four by default); result: the curve that actually
+// applies (0..1 at evenly spaced inputs), drawn in blue under the editable one (LAP-107's sliders
+// bend the curve before these points apply).
+const props = defineProps<{ modelValue?: Curves; disabled?: boolean; channels?: CurveChannel[]; result?: number[] }>();
 const emit = defineEmits<{ preview: [curves: Curves | null]; change: [curves: Curves, channel: CurveChannel] }>();
 const labels = {rgb:'RGB',red:'Red',green:'Green',blue:'Blue'};
 const colors = {rgb:'#eee',red:'#e63d3d',green:'#1b9a4b',blue:'#397be8'};
@@ -32,6 +36,8 @@ const clone = (curves?: Curves): Curves => JSON.parse(JSON.stringify({...identit
 const draft = ref(clone(props.modelValue));
 let active = -1, snapshot = '', pointer: number | null = null;
 watch(() => props.modelValue, value => { if (pointer===null) draft.value=clone(value); }, {deep:true});
+const shownChannels = computed(() => props.channels || curveChannels);
+const resultPath = computed(() => props.result?.length ? props.result.map((y,i,a) => `${i?'L':'M'}${i/(a.length-1)*256},${(1-y)*144}`).join('') : '');
 const path = computed(() => curveLut(draft.value[channel.value]).map((y,x) => `${x?'L':'M'}${x/255*256},${(1-y/255)*144}`).join(''));
 function coordinate(e: PointerEvent | MouseEvent) {
   const r=(e.currentTarget as SVGElement).getBoundingClientRect();

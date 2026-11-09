@@ -174,11 +174,15 @@ export function formatDate(year: number, month: number, date: number, formatStr:
 }
 
 /// get the date range of a month
-export function getCalendarDateRange(year: number, month: number, date: number) {
+export function getCalendarDateRange(year: number, month: number, date: number, quarter?: number | null) {
   let startDate = 0;
   let endDate = 0;
 
-  if (month === -1) { // -1 means selecting a year
+  if (month === -1 && quarter && quarter >= 1 && quarter <= 4) { // a quarter (LAP-049)
+    startDate = new Date(year, (quarter - 1) * 3, 1).getTime() / 1000;
+    endDate = new Date(year, quarter * 3, 1).getTime() / 1000;
+  }
+  else if (month === -1) { // -1 means selecting a year
     startDate = new Date(year, 0, 1).getTime() / 1000;
     endDate = new Date(year + 1, 0, 1).getTime() / 1000;
   }
@@ -437,6 +441,8 @@ function touchThumbnailCacheEntry(key: string, dataUrl: string) {
   }
 }
 
+export function getThumbLibraryId() { return _thumbLibraryId; }
+
 export function setThumbLibraryId(id: string) {
   const nextId = id || 'default';
   if (_thumbLibraryId !== nextId) {
@@ -528,7 +534,7 @@ export function getThumbUrl(
   }
   const scheme = isWin ? 'http://thumb.localhost' : 'thumb://localhost';
   const base = `${scheme}/${_thumbLibraryId}/${fileId}`;
-  const params = new URLSearchParams({ ov: '2' });
+  const params = new URLSearchParams({ ov: '3' });
   if (fileVersion > 0) params.set('v', String(fileVersion));
   if (bustCache) params.set('t', String(Date.now()));
   const query = params.toString();
@@ -555,7 +561,7 @@ export function getLapUrl(
   }
   const scheme = isWin ? 'http://lap.localhost' : 'lap://localhost';
   const base = `${scheme}/${_thumbLibraryId}/${fileId}`;
-  const params = new URLSearchParams({ ov: '2' });
+  const params = new URLSearchParams({ ov: '3' });
   if (fileVersion > 0) params.set('v', String(fileVersion));
   if (bustCache) params.set('t', String(Date.now()));
   const query = params.toString();
@@ -569,14 +575,16 @@ export function getPreviewUrl(
   fileVersion = 0,
   rawThumbnailSource = 'processed',
   edits?: string | object | null,
+  full = false,
 ): string {
   if (!fileId || fileId <= 0) return '';
   const scheme = isWin ? 'http://preview.localhost' : 'preview://localhost';
   const base = `${scheme}/${_thumbLibraryId}/${fileId}`;
 
-  const params = new URLSearchParams({ ov: '2' });
+  const params = new URLSearchParams({ ov: '3' });
   if (fileVersion > 0) params.set('v', String(fileVersion));
   if (rawThumbnailSource === 'embedded') params.set('rawThumbnailSource', 'embedded');
+  if (full) params.set('full', '1');
   if (filePath) {
     const uiStore = useUIStore();
     const localVersion = uiStore.getFileVersion(filePath);
@@ -726,7 +734,7 @@ export function localeComp(lang: string, str1: string, str2: string) {
 export function scrollToFolder(folderId: number) {
   const folderElement = document.getElementById(`folder-${folderId}`);
   if (folderElement) {
-    folderElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    folderElement.scrollIntoView({ block: 'nearest' });
   }
 }
 

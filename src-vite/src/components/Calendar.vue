@@ -22,6 +22,16 @@
     <div ref="scrollable" v-if="Object.keys(calendar_dates).length > 0"
       class="flex-1 flex flex-col overflow-x-hidden overflow-y-auto"
     >
+      <!-- Browse by date (LAP-049): every photo of the library, whatever its folder -->
+      <div
+        :class="['sidebar-item', isAllDatesSelected ? 'sidebar-item-selected' : 'sidebar-item-hover']"
+        data-calendar-all-dates
+        @click="selectAllDates"
+      >
+        <IconCalendarMonth class="mx-1 w-4 h-4 shrink-0" />
+        <span class="sidebar-item-label">{{ localeMsg.calendar.all_dates || 'All Dates' }}</span>
+        <span class="sidebar-item-count">{{ totalCount.toLocaleString() }}</span>
+      </div>
       <template v-if="calendarView === 'years'">
         <ul>
           <li v-for="item in calendarYearsItems" :key="item.year">
@@ -40,34 +50,54 @@
               <span class="sidebar-item-count">{{ item.count.toLocaleString() }}</span>
             </div>
             <ul v-if="isYearExpanded(item.year)">
-              <li v-for="month in item.months" :key="`${item.year}-${month.month}`" class="pl-4">
+              <li v-for="quarter in item.quarters" :key="`${item.year}-Q${quarter.quarter}`" class="pl-4">
                 <div
                   :class="[
                     'sidebar-item sidebar-item-compact ml-2',
-                    isMonthSelected(item.year, month.month) ? 'sidebar-item-selected' : 'sidebar-item-hover',
+                    isQuarterSelected(item.year, quarter.quarter) ? 'sidebar-item-selected' : 'sidebar-item-hover',
                   ]"
-                  @click="selectMonth(item.year, month.month)"
+                  :data-calendar-quarter="`${item.year}-Q${quarter.quarter}`"
+                  @click="selectQuarter(item.year, quarter.quarter)"
                 >
                   <IconRight
-                    :class="['p-1 w-6 h-6 shrink-0 transition-transform', isMonthExpanded(item.year, month.month) ? 'rotate-90' : '']"
-                    @click.stop="toggleMonth(item.year, month.month)"
+                    :class="['p-1 w-6 h-6 shrink-0 transition-transform', isQuarterExpanded(item.year, quarter.quarter) ? 'rotate-90' : '']"
+                    @click.stop="toggleQuarter(item.year, quarter.quarter)"
                   />
-                  <span class="sidebar-item-label">{{ formatMonth(item.year, month.month) }}</span>
-                  <span class="sidebar-item-count">{{ month.count.toLocaleString() }}</span>
+                  <span class="sidebar-item-label">{{ formatQuarter(quarter.quarter) }}</span>
+                  <span class="sidebar-item-count">{{ quarter.count.toLocaleString() }}</span>
                 </div>
-                <ul v-if="isMonthExpanded(item.year, month.month)">
-                  <li v-for="day in month.days" :key="`${item.year}-${month.month}-${day.date}`" class="pl-8">
+                <ul v-if="isQuarterExpanded(item.year, quarter.quarter)">
+                  <li v-for="month in quarter.months" :key="`${item.year}-${month.month}`" class="pl-4">
                     <div
                       :class="[
                         'sidebar-item sidebar-item-compact ml-2',
-                        isDaySelected(item.year, month.month, day.date) ? 'sidebar-item-selected' : 'sidebar-item-hover',
+                        isMonthSelected(item.year, month.month) ? 'sidebar-item-selected' : 'sidebar-item-hover',
                       ]"
-                      @click="selectDay(item.year, month.month, day.date)"
+                      :data-calendar-month="`${item.year}-${month.month}`"
+                      @click="selectMonth(item.year, month.month)"
                     >
-                      <IconCalendarDay class="mx-1 w-4 h-4 shrink-0" />
-                      <span class="sidebar-item-label">{{ formatDay(item.year, month.month, day.date) }}</span>
-                      <span class="sidebar-item-count">{{ day.count.toLocaleString() }}</span>
+                      <IconRight
+                        :class="['p-1 w-6 h-6 shrink-0 transition-transform', isMonthExpanded(item.year, month.month) ? 'rotate-90' : '']"
+                        @click.stop="toggleMonth(item.year, month.month)"
+                      />
+                      <span class="sidebar-item-label">{{ formatMonth(item.year, month.month) }}</span>
+                      <span class="sidebar-item-count">{{ month.count.toLocaleString() }}</span>
                     </div>
+                    <ul v-if="isMonthExpanded(item.year, month.month)">
+                      <li v-for="day in month.days" :key="`${item.year}-${month.month}-${day.date}`" class="pl-8">
+                        <div
+                          :class="[
+                            'sidebar-item sidebar-item-compact ml-2',
+                            isDaySelected(item.year, month.month, day.date) ? 'sidebar-item-selected' : 'sidebar-item-hover',
+                          ]"
+                          @click="selectDay(item.year, month.month, day.date)"
+                        >
+                          <IconCalendarDay class="mx-1 w-4 h-4 shrink-0" />
+                          <span class="sidebar-item-label">{{ formatDay(item.year, month.month, day.date) }}</span>
+                          <span class="sidebar-item-count">{{ day.count.toLocaleString() }}</span>
+                        </div>
+                      </li>
+                    </ul>
                   </li>
                 </ul>
               </li>
@@ -75,6 +105,28 @@
           </li>
         </ul>
       </template>
+      <ul v-else-if="calendarView === 'quarters'">
+        <li v-for="item in calendarYearsItems" :key="item.year">
+          <div
+            :class="['sidebar-item', isYearSelected(item.year) ? 'sidebar-item-selected' : 'sidebar-item-hover']"
+            @click="selectYear(item.year)"
+          >
+            <IconCalendarMonth class="mx-1 w-4 h-4 shrink-0" />
+            <span class="sidebar-item-label">{{ formatDate(item.year, 1, 1, localeMsg.format.year) }}</span>
+            <span class="sidebar-item-count">{{ item.count.toLocaleString() }}</span>
+          </div>
+          <div
+            v-for="quarter in item.quarters"
+            :key="`${item.year}-Q${quarter.quarter}`"
+            :class="['sidebar-item sidebar-item-compact ml-6', isQuarterSelected(item.year, quarter.quarter) ? 'sidebar-item-selected' : 'sidebar-item-hover']"
+            :data-calendar-quarter="`${item.year}-Q${quarter.quarter}`"
+            @click="selectQuarter(item.year, quarter.quarter)"
+          >
+            <span class="sidebar-item-label">{{ formatQuarter(quarter.quarter) }}</span>
+            <span class="sidebar-item-count">{{ quarter.count.toLocaleString() }}</span>
+          </div>
+        </li>
+      </ul>
       <div
       v-else-if="calendarView === 'months'"
         class="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] items-start gap-2 px-1"
@@ -120,7 +172,7 @@ import { config, libConfig } from '@/common/config';
 import { getTakenDates } from '@/common/api';
 import { formatDate } from '@/common/utils';
 import { SIDEBAR } from '@/common/constants';
-import { IconCalendarDay, IconRight } from '@/common/icons';
+import { IconCalendarDay, IconCalendarMonth, IconRight } from '@/common/icons';
 
 import CalendarMonthly from '@/components/CalendarMonthly.vue';
 import CalendarDaily from '@/components/CalendarDaily.vue';
@@ -132,13 +184,14 @@ const props = defineProps({
 /// i18n
 const { locale, messages } = useI18n();
 const localeMsg = computed(() => messages.value[locale.value] as any);
-type CalendarView = 'years' | 'months' | 'days';
+type CalendarView = 'years' | 'quarters' | 'months' | 'days';
 const calendarView = computed<CalendarView>(() => {
   const view = config.calendar.view;
-  return view === 'years' || view === 'months' || view === 'days' ? view : 'years';
+  return view === 'years' || view === 'quarters' || view === 'months' || view === 'days' ? view : 'years';
 });
 const calendarTabs = computed(() => [
   { value: 'years' as const, label: localeMsg.value.calendar.tabs?.years || 'Years' },
+  { value: 'quarters' as const, label: localeMsg.value.calendar.tabs?.quarters || 'Quarters' },
   { value: 'months' as const, label: localeMsg.value.calendar.tabs?.months || 'Months' },
   { value: 'days' as const, label: localeMsg.value.calendar.tabs?.days || 'Days' },
 ]);
@@ -149,6 +202,7 @@ const calendar_dates = ref<CalendarDates>({});
 const isLoading = ref(true);
 const expandedYears = ref<number[]>([]);
 const expandedMonths = ref<string[]>([]);
+const expandedQuarters = ref<string[]>([]);
 let isCalendarMounted = true;
 let calendarRequestVersion = 0;
 
@@ -234,13 +288,24 @@ const calendarYearsItems = computed(() => {
           count: days.reduce((total, day) => total + Number(day.count || 0), 0),
         };
       });
+    // Q1 Jan-Mar ... Q4 Oct-Dec, each with its months, in the calendar's order
+    const quarters = [1, 2, 3, 4]
+      .map(quarter => {
+        const qMonths = monthItems.filter(m => Math.floor((m.month - 1) / 3) + 1 === quarter);
+        return { quarter, months: qMonths, count: qMonths.reduce((total, m) => total + m.count, 0) };
+      })
+      .filter(q => q.months.length > 0)
+      .sort((a, b) => ascending ? a.quarter - b.quarter : b.quarter - a.quarter);
     return {
       year,
       months: monthItems,
+      quarters,
       count: monthItems.reduce((total, month) => total + month.count, 0),
     };
   });
 });
+
+const totalCount = computed(() => calendarYearsItems.value.reduce((total, item) => total + item.count, 0));
 
 onMounted(async () => {
   console.log('Calendar.vue mounted');
@@ -276,7 +341,7 @@ watch(() => [config.main.sidebarIndex, libConfig.activePane], async () => {
 });
 
 watch(
-  () => [libConfig.calendar.year, libConfig.calendar.month, libConfig.calendar.date],
+  () => [libConfig.calendar.year, libConfig.calendar.quarter, libConfig.calendar.month, libConfig.calendar.date],
   () => {
     if (calendarView.value === 'years') expandSelectedCalendarPath();
     scrollToSelected();
@@ -304,8 +369,11 @@ function setCalendarView(view: CalendarView) {
     libConfig.calendar.date = -1;
   } else if (view === 'days' && libConfig.calendar.month === -1) {
     const year = libConfig.calendar.year;
+    const quarter = libConfig.calendar.quarter;
     if (year !== null && year !== undefined && calendar_dates.value[year]) {
-      const months = Object.keys(calendar_dates.value[year]).map(Number);
+      const months = Object.keys(calendar_dates.value[year]).map(Number)
+        .filter(m => !quarter || Math.floor((m - 1) / 3) + 1 === quarter);
+      libConfig.calendar.quarter = null;
       if (months.length > 0) {
         libConfig.calendar.month = config.settings.calendarSort % 2 === 0
           ? Math.min(...months)
@@ -320,7 +388,12 @@ function setCalendarView(view: CalendarView) {
 const monthKey = (year: number, month: number) => `${year}-${month}`;
 const isYearExpanded = (year: number) => expandedYears.value.includes(year);
 const isMonthExpanded = (year: number, month: number) => expandedMonths.value.includes(monthKey(year, month));
-const isYearSelected = (year: number) => libConfig.calendar.year === year && libConfig.calendar.month === -1;
+const quarterKey = (year: number, quarter: number) => `${year}-Q${quarter}`;
+const isQuarterExpanded = (year: number, quarter: number) => expandedQuarters.value.includes(quarterKey(year, quarter));
+const isAllDatesSelected = computed(() => libConfig.calendar.year === null || libConfig.calendar.year === undefined);
+const isYearSelected = (year: number) => libConfig.calendar.year === year && libConfig.calendar.month === -1 && !libConfig.calendar.quarter;
+const isQuarterSelected = (year: number, quarter: number) =>
+  libConfig.calendar.year === year && libConfig.calendar.month === -1 && libConfig.calendar.quarter === quarter;
 const isMonthSelected = (year: number, month: number) =>
   libConfig.calendar.year === year && libConfig.calendar.month === month && libConfig.calendar.date === -1;
 const isDaySelected = (year: number, month: number, day: number) =>
@@ -339,15 +412,39 @@ function toggleMonth(year: number, month: number) {
     : [...expandedMonths.value, key];
 }
 
+function toggleQuarter(year: number, quarter: number) {
+  const key = quarterKey(year, quarter);
+  expandedQuarters.value = isQuarterExpanded(year, quarter)
+    ? expandedQuarters.value.filter(value => value !== key)
+    : [...expandedQuarters.value, key];
+}
+
+function selectAllDates() {
+  libConfig.calendar.year = null;
+  libConfig.calendar.quarter = null;
+  libConfig.calendar.month = null;
+  libConfig.calendar.date = null;
+}
+
 function selectYear(year: number) {
   libConfig.calendar.year = year;
+  libConfig.calendar.quarter = null;
   libConfig.calendar.month = -1;
   libConfig.calendar.date = -1;
   if (!isYearExpanded(year)) toggleYear(year);
 }
 
+function selectQuarter(year: number, quarter: number) {
+  libConfig.calendar.year = year;
+  libConfig.calendar.quarter = quarter;
+  libConfig.calendar.month = -1;
+  libConfig.calendar.date = -1;
+  if (calendarView.value === 'years' && !isQuarterExpanded(year, quarter)) toggleQuarter(year, quarter);
+}
+
 function selectMonth(year: number, month: number) {
   libConfig.calendar.year = year;
+  libConfig.calendar.quarter = null;
   libConfig.calendar.month = month;
   libConfig.calendar.date = -1;
   if (!isMonthExpanded(year, month)) toggleMonth(year, month);
@@ -355,8 +452,15 @@ function selectMonth(year: number, month: number) {
 
 function selectDay(year: number, month: number, day: number) {
   libConfig.calendar.year = year;
+  libConfig.calendar.quarter = null;
   libConfig.calendar.month = month;
   libConfig.calendar.date = day;
+}
+
+// "Q3 (Jul-Sep)"
+function formatQuarter(quarter: number) {
+  const short = (m: number) => localeMsg.value.calendar.months?.[m - 1] || String(m);
+  return `Q${quarter} (${short(quarter * 3 - 2)}-${short(quarter * 3)})`;
 }
 
 function formatMonth(_year: number, month: number) {
@@ -375,6 +479,10 @@ function expandSelectedCalendarPath() {
   if (!Number.isFinite(year) || !calendar_dates.value[year]) return;
 
   if (!isYearExpanded(year)) expandedYears.value = [...expandedYears.value, year];
+  const quarter = month > 0 ? Math.floor((month - 1) / 3) + 1 : Number(libConfig.calendar.quarter || 0);
+  if (quarter > 0 && !isQuarterExpanded(year, quarter)) {
+    expandedQuarters.value = [...expandedQuarters.value, quarterKey(year, quarter)];
+  }
   if (month > 0 && calendar_dates.value[year][month] && !isMonthExpanded(year, month)) {
     expandedMonths.value = [...expandedMonths.value, monthKey(year, month)];
   }
@@ -407,11 +515,15 @@ function validateCalendarSelection() {
 
   if (year === null || year === undefined) return;
   const months = calendar_dates.value[year];
+  const quarter = libConfig.calendar.quarter;
   const isSelectedDateVisible = months
-    && (month === -1 || (months[month!] && (date === -1 || months[month!].some(item => item.date === date))));
+    && (month === -1
+      ? (!quarter || Object.keys(months).some(m => Math.floor((Number(m) - 1) / 3) + 1 === quarter))
+      : (months[month!] && (date === -1 || months[month!].some(item => item.date === date))));
 
   if (!isSelectedDateVisible) {
     libConfig.calendar.year = null;
+    libConfig.calendar.quarter = null;
     libConfig.calendar.month = null;
     libConfig.calendar.date = null;
   }

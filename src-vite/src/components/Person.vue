@@ -1,24 +1,23 @@
 <template>
   <div class="sidebar-panel relative overflow-hidden" :class="stacked ? 'h-auto!' : ''">
-    <!-- Face Indexing Progress Overlay -->
-    <div v-if="isIndexing" 
-      class="absolute inset-0 z-50 bg-base-200/80 backdrop-blur-md"
-    >
-      <div class="mt-8 px-2 flex flex-col items-center text-base-content/30">
-        <IconUpdate class="w-8 h-8 mb-2 animate-spin" />
-        <span class="text-sm text-center">
+    <!-- Face indexing progress: a line above the list, which stays usable (it runs in the
+         background, as in Picasa; an overlay used to block the People list meanwhile). -->
+    <div v-if="isIndexing" class="flex-none px-2 py-2">
+      <div class="p-2 rounded-box flex flex-row flex-wrap items-center gap-2 text-base-content/60">
+        <IconUpdate class="w-4 h-4 shrink-0 animate-spin" />
+        <span class="text-xs flex-1 min-w-0">
           {{ indexProgress.phase === 'clustering' 
             ? $t('face_index.clustering') 
             : $t('face_index.indexing', { current: indexProgress.current.toLocaleString(), total: indexProgress.total.toLocaleString() }) 
           }}
         </span>
-        <span v-if="indexProgress.phase === 'clustering' && clusterProgressText" class="text-xs text-center mt-1">
+        <span v-if="indexProgress.phase === 'clustering' && clusterProgressText" class="text-xs">
           {{ clusterProgressText }}
         </span>
-        <span v-else-if="indexProgress.faces_found > 0" class="text-xs text-center mt-1">
+        <span v-else-if="indexProgress.faces_found > 0" class="text-xs">
           {{ $t('face_index.faces_found', { count: indexProgress.faces_found.toLocaleString() }) }}
         </span>
-        <button class="btn btn-primary btn-sm mt-4" @click="clickCancelIndex">
+        <button class="btn btn-ghost btn-xs shrink-0 ml-auto" @click="clickCancelIndex">
           <IconClose class="w-4 h-4" />
           {{ $t('face_index.cancel') }}
         </button>
@@ -27,12 +26,13 @@
 
     <!-- Incomplete Indexing Warning Banner -->
     <div v-if="allPersons.length > 0 && incompleteCount > 0 && !isIndexing" class="flex-none px-2 py-2">
-        <div class="p-3 rounded-box flex flex-row items-center gap-2">
+        <!-- Wraps in a narrow left panel so the button is never cut off at its edge. -->
+        <div class="p-3 rounded-box flex flex-row flex-wrap items-center gap-2">
           <IconUpdate class="w-5 h-5 shrink-0" />
-          <span class="text-xs flex-1">
+          <span class="text-xs flex-1 min-w-[8rem]">
             {{ $t('face_index.incomplete', { count: incompleteCount.toLocaleString() }) }}
           </span>
-          <button class="btn btn-xs btn-primary" @click="clickIndexFaces">
+          <button class="btn btn-xs btn-primary shrink-0 ml-auto" @click="clickIndexFaces">
             {{ $t('face_index.resume') }}
           </button>
         </div>
@@ -51,17 +51,28 @@
         :iconStyle="{ transform: collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }"
         @click.stop="emit('toggle-collapse')"
       />
-      <!-- Stacked pane: "People (52)", counting named people only. -->
+      <!-- Stacked pane: Picasa's "People (52)", counting named people only. -->
       <span class="sidebar-panel-header-title flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" :class="stacked ? 'normal-case' : ''">
         <template v-if="stacked">{{ titlebar }}<template v-if="namedPersons.length > 0"> ({{ namedPersons.length.toLocaleString() }})</template></template>
         <template v-else>{{ titlebar }}<template v-if="allPersonCount > 0"> ({{ allPersonCount.toLocaleString() }})</template></template>
       </span>
 
+      <TButton
+        v-if="stacked"
+        :icon="IconSearch"
+        :buttonSize="'small'"
+        tooltip="Find people"
+        data-testid="people-search-toggle"
+        :selected="stackedFilterOpen"
+        @click.stop="toggleStackedFilter"
+      />
       <ContextMenu :menuItems="personPanelMenuItems" :iconMenu="IconMore" :smallIcon="true" />
     </div>
 
     <!-- Section body (hidden while the stacked pane's People section is closed) -->
     <div v-show="!(stacked && collapsed)" class="contents">
+    <!-- In the stacked pane the search and Show ignored sit behind the header's search icon. -->
+    <template v-if="!stacked || stackedFilterOpen">
     <div class="mx-1 mb-2 px-1 shrink-0">
       <div
         :class="[
@@ -97,6 +108,7 @@
       <input type="checkbox" data-testid="show-globally-ignored" :checked="libConfig.person?.id === -1" @change="toggleGloballyIgnored" />
       Show ignored
     </label>
+    </template>
     <div
       v-if="allPersons.length > 0"
       ref="personListRef"
@@ -106,6 +118,7 @@
       <!-- Named People Section -->
       <div class="mb-2">
         <div
+          v-if="!stacked"
           class="px-2 py-1.5 flex items-center justify-between text-xs font-bold uppercase tracking-wider text-base-content/60 select-none cursor-pointer hover:text-base-content"
           @click="isNamedSectionCollapsed = !isNamedSectionCollapsed"
         >
@@ -121,7 +134,7 @@
           </span>
         </div>
 
-        <ul v-show="!isNamedSectionCollapsed">
+        <ul v-show="stacked || !isNamedSectionCollapsed">
           <li
             v-for="person in namedPersons"
             :key="person.id"
@@ -147,22 +160,25 @@
               
               <!-- Name input or display -->
               <input v-if="selectedPerson && selectedPerson.id === person.id && isRenamingPerson"
-                ref="personInputRef"
+                :ref="(el: any) => { if (el) renameInputEl = el; }"
                 type="text"
                 maxlength="255"
                 class="input px-1 flex-1 focus:border text-base"
                 v-model="personNameDraft"
-                @keydown.enter="handleRenamePerson"
-                @keydown.esc="cancelRenamePerson"
+                @click.stop
+                @mousedown.stop
+                @keydown.stop
+                @keydown.enter.prevent="!$event.isComposing && handleRenamePerson()"
+                @keydown.esc.prevent="cancelRenamePerson"
                 @blur="handleRenamePerson"
               />
               <template v-else>
-                <!-- "Name (count)", bold while the person has suggestions -->
+                <!-- Picasa: "Name (count)", bold while the person has suggestions -->
                 <span class="sidebar-item-label text-xs" :style="person.suggestions > 0 ? { fontWeight: 700 } : undefined">
                   {{ getPersonDisplayName(person) }}<span v-if="person.count"> ({{ person.count.toLocaleString() }})</span>
                 </span>
                 <div class="ml-auto flex flex-row items-center gap-1 text-base-content/30">
-                  <!-- Orange "?": this person has unconfirmed face suggestions -->
+                  <!-- Picasa-style orange "?": this person has unconfirmed face suggestions -->
                   <span
                     v-if="person.suggestions > 0"
                     class="shrink-0 w-4 h-4 inline-flex items-center justify-center rounded-full bg-orange-500 text-white text-[10px] font-bold leading-none"
@@ -233,13 +249,16 @@
               
               <!-- Name input or display -->
               <input v-if="selectedPerson && selectedPerson.id === person.id && isRenamingPerson"
-                ref="personInputRef"
+                :ref="(el: any) => { if (el) renameInputEl = el; }"
                 type="text"
                 maxlength="255"
                 class="input px-1 flex-1 focus:border text-base"
                 v-model="personNameDraft"
-                @keydown.enter="handleRenamePerson"
-                @keydown.esc="cancelRenamePerson"
+                @click.stop
+                @mousedown.stop
+                @keydown.stop
+                @keydown.enter.prevent="!$event.isComposing && handleRenamePerson()"
+                @keydown.esc.prevent="cancelRenamePerson"
                 @blur="handleRenamePerson"
               />
               <template v-else>
@@ -320,9 +339,9 @@
   <!-- Merge person confirmation -->
   <MessageBox
     v-if="showMergeConfirmMsgbox"
-    :title="$t('menu.person.merge_title') || 'Merge People'"
+    :title="$t('msgbox.merge_person.title') || $t('menu.person.merge_title') || 'Merge People'"
     :message="mergeConfirmMessage"
-    :OkText="$t('menu.person.merge') || 'Merge'"
+    :OkText="$t('msgbox.merge_person.ok') || 'Merge'"
     :cancelText="$t('msgbox.cancel') || 'Cancel'"
     :warningOk="false"
     @ok="confirmMerge"
@@ -420,8 +439,10 @@ import { listen } from '@tauri-apps/api/event';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { config, libConfig } from '@/common/config';
-import { getPersonsPage, renamePerson, deletePerson, indexFaces, cancelFaceIndex, isFaceIndexing, listenFaceIndexProgress, listenFaceIndexFinished, listenClusterProgress, resetFaces, getFaceStats, computeFaceSuggestions } from '@/common/api';
+import { useUIStore } from '@/stores/uiStore';
+import { getPersonsPage, renamePerson, deletePerson, indexFaces, setBackgroundProcessing, cancelFaceIndex, isFaceIndexing, listenFaceIndexProgress, listenFaceIndexFinished, listenClusterProgress, resetFaces, getFaceStats, computeFaceSuggestions } from '@/common/api';
 import { SIDEBAR } from '@/common/constants';
+import { message } from '@tauri-apps/plugin-dialog';
 import { 
   IconPerson, 
   IconMore, 
@@ -485,7 +506,8 @@ const selectedPerson = ref<any>(null);
 const isRenamingPerson = ref(false);
 const originalPersonName = ref('');
 const personNameDraft = ref('');
-const personInputRef = ref<HTMLInputElement[]>([]);
+const renameInputEl = ref<HTMLInputElement | null>(null);
+const uiStore = useUIStore();
 const isIndexing = ref(false);
 const indexProgress = ref({
   current: 0,
@@ -508,6 +530,18 @@ const namedPersonCount = ref(0);
 const unnamedPersonCount = ref(0);
 const personSearch = ref('');
 const isPersonSearchFocused = ref(false);
+// Stacked pane: the search box stays open while it holds a query or ignored faces are shown.
+const stackedFilterOpenLocal = ref(false);
+const stackedFilterOpen = computed(() =>
+  stackedFilterOpenLocal.value || Boolean(personSearch.value) || libConfig.person?.id === -1);
+function toggleStackedFilter() {
+  if (stackedFilterOpen.value) {
+    stackedFilterOpenLocal.value = false;
+    personSearch.value = '';
+  } else {
+    stackedFilterOpenLocal.value = true;
+  }
+}
 const PERSON_PAGE_SIZE = 100;
 let personLoadRequest = 0;
 let personSearchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -600,9 +634,9 @@ function confirmModalMerge() {
 const mergeConfirmMessage = computed(() => {
   const srcName = getPersonDisplayName(pendingMergeSource.value);
   const tgtName = getPersonDisplayName(pendingMergeTarget.value);
-  const template = localeMsg.value.msgbox?.merge_person?.content;
+  const template = localeMsg.value?.msgbox?.merge_person?.content || messages.value['en']?.msgbox?.merge_person?.content;
   if (template) {
-    return template.replace('{source}', srcName).replace('{target}', tgtName);
+    return template.replaceAll('{source}', srcName).replaceAll('{target}', tgtName);
   }
   return `Are you sure you want to merge '${srcName}' into '${tgtName}'? All photos will be moved to '${tgtName}'.`;
 });
@@ -683,6 +717,16 @@ const personPanelMenuItems = computed(() => [
     action: () => clickFindSuggestions(),
     disabled: isIndexing.value || isFindingSuggestions.value,
   },
+  {
+    // LAP-006: the order of a person's photos (the People view and each person)
+    label: 'Order photos',
+    children: [
+      [0, 'Usual order'], [1, 'Newest first'], [2, 'Oldest first'],
+    ].map(([value, text]) => ({
+      label: `${Number(config.settings.personFaceSort || 0) === value ? '✓ ' : ''}${text}`,
+      action: () => { config.settings.personFaceSort = value; },
+    })),
+  },
   { label: "-", action: null },
   {
     label: localeMsg.value.menu.person.reset_index,
@@ -706,10 +750,10 @@ const getMoreMenuItems = (person: any) => [
       isRenamingPerson.value = true;
       originalPersonName.value = person.name || '';
       personNameDraft.value = originalPersonName.value;
+      uiStore.pushInputHandler('PersonRename');
       nextTick(() => {
-        if (personInputRef.value && personInputRef.value[0]) {
-          personInputRef.value[0].focus();
-        }
+        renameInputEl.value?.focus();
+        renameInputEl.value?.select();
       });
     }
   },
@@ -731,7 +775,7 @@ const getMoreMenuItems = (person: any) => [
   },
 ];
 
-// Suggestions: match unconfirmed faces against named people.
+// Picasa-style suggestions: match unconfirmed faces against named people.
 const isFindingSuggestions = ref(false);
 async function clickFindSuggestions() {
   isFindingSuggestions.value = true;
@@ -823,6 +867,7 @@ watch(personSearch, () => {
 });
 
 onUnmounted(() => {
+  uiStore.removeInputHandler('PersonRename');
   window.removeEventListener('lapcasa-global-ignores-changed', reloadGloballyIgnored);
   observedScroller?.removeEventListener('scroll', handleStackedScroll);
   isPersonMounted = false;
@@ -885,6 +930,10 @@ async function loadPersons(reset = true, validateSelectedPerson = false) {
         if (props.stacked && !isPeopleViewActive()) {
           // Another view is on screen: only show the remembered person as selected.
           if (index >= 0) selectedPerson.value = allPersons.value[index];
+        } else if (index < 0 && Number(libConfig.person?.id) > 0) {
+          // The remembered person is past the first page (Person 31xx from the Timeline):
+          // keep them, never replace them with the first person on the list.
+          selectedPerson.value = { id: libConfig.person!.id, name: libConfig.person!.name };
         } else {
           selectPerson(allPersons.value[index >= 0 ? index : 0]);
         }
@@ -959,6 +1008,7 @@ async function handleRenamePerson() {
 
   if (newName.length === 0 || newName === originalPersonName.value) {
     isRenamingPerson.value = false;
+    uiStore.removeInputHandler('PersonRename');
     selectedPerson.value.name = originalPersonName.value;
     return;
   }
@@ -974,6 +1024,7 @@ async function handleRenamePerson() {
     pendingMergeTarget.value = existingPerson;
     showMergeConfirmMsgbox.value = true;
     isRenamingPerson.value = false;
+    uiStore.removeInputHandler('PersonRename');
     selectedPerson.value.name = originalPersonName.value;
     return;
   }
@@ -981,7 +1032,13 @@ async function handleRenamePerson() {
   const result = await renamePerson(selectedPerson.value.id, newName);
   if (result) {
     isRenamingPerson.value = false;
+    uiStore.removeInputHandler('PersonRename');
+    if (libConfig.person && libConfig.person.id === selectedPerson.value.id) {
+      libConfig.person.name = newName;
+    }
+    selectedPerson.value.name = newName;
     await loadPersons();
+    emit('editDataChanged');
   }
 }
 
@@ -990,6 +1047,7 @@ function cancelRenamePerson() {
     selectedPerson.value.name = originalPersonName.value;
   }
   isRenamingPerson.value = false;
+  uiStore.removeInputHandler('PersonRename');
 }
 
 async function clickDeletePerson() {
@@ -1036,7 +1094,16 @@ async function clickIndexFaces() {
     const thresholds = config.faceClusterThresholds ?? [0.35, 0.45, 0.55, 0.65];
     const clusterEpsilon = thresholds[thresholdIndex] ?? 0.55;
     console.log('clusterEpsilon', clusterEpsilon);
-    await indexFaces(clusterEpsilon);
+    // The button is the user asking for it: face indexing only runs with background
+    // processing on, which this turns on (it pauses while the user browses).
+    await setBackgroundProcessing(true);
+    const error = await indexFaces(clusterEpsilon);
+    if (error && !/already running/i.test(error)) {
+      // It did not start: say why instead of spinning at 0/0 for ever.
+      isIndexing.value = false;
+      await message(error, { kind: 'warning' });
+      return;
+    }
     await loadPersons();
     await checkFaceStats();
   } catch (e) {
@@ -1135,7 +1202,31 @@ function hideBetaTooltip() {
   isBetaTooltipVisible.value = false;
 }
 
+// The People rail icon in the stacked pane: bring the selected person's row into view (opening
+// Unnamed and paging the list in as needed) instead of the top of People. False: no person row.
+async function revealSelectedPerson(): Promise<boolean> {
+  const id = Number(libConfig.person?.id);
+  if (!(id > 0)) return false;
+  // Coming from another view the stacked pane has just mounted: let its first page arrive.
+  for (let waited = 0; isLoadingPersons.value && waited < 10000; waited += 50) await new Promise(r => setTimeout(r, 50));
+  const known = allPersons.value.find(p => p.id === id) || selectedPerson.value;
+  if (known && !isNamedPerson(known)) isUnnamedSectionCollapsed.value = false;
+  while (!allPersons.value.some(p => p.id === id) && hasMorePersons.value) {
+    const loaded = allPersons.value.length;
+    await loadPersons(false);
+    if (allPersons.value.length === loaded) break;
+  }
+  const person = allPersons.value.find(p => p.id === id);
+  if (person && !isNamedPerson(person)) isUnnamedSectionCollapsed.value = false;
+  await nextTick();
+  const row = document.getElementById('person-' + id);
+  if (!row) return false;
+  row.scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
 defineExpose({
+  revealSelectedPerson,
   clickIndexFaces,
   clickCancelIndex,
   loadPersons,

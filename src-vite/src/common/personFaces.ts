@@ -1,4 +1,4 @@
-// Person view: face crops, "?" suggestions with tick / x, learning
+// Picasa-style person view: face crops, "?" suggestions with tick / x, learning
 // after each tick, undo of an accidental x, and the person's ignored faces.
 // Content.vue loads the people shown; Thumbnail.vue crops and shows the controls.
 // Confirmed faces regroup; ignored faces briefly dim with Undo, then leave review.
@@ -149,6 +149,12 @@ export function ensurePersonFaces(personId: number) {
   loading.set(personId, promise);
 }
 
+// Load a section's person if needed and wait until it is loaded.
+export async function whenPersonFacesLoaded(personId: number) {
+  ensurePersonFaces(personId);
+  await loading.get(personId);
+}
+
 // Make personId the current person. keepSession: moving within the People view
 // (scrolling or a sidebar click), so modes and dimmed tiles stay as they are.
 export async function loadPersonFaces(personId: number | null, keepSession = false) {
@@ -169,7 +175,7 @@ export async function loadPersonFaces(personId: number | null, keepSession = fal
   if (keepSession && personFaces.people.has(id)) return;
   await loadPersonState(id);
   if (personFaces.personId === id && stateOf(id).ignored.size === 0) personFaces.ignoredMode = false;
-  // Keep learning in the background: the person's confirmed faces may now
+  // Keep learning in the background (Picasa): the person's confirmed faces may now
   // match faces that were not suggested before.
   if (opening) void learnInBackground(id);
 }
@@ -266,7 +272,7 @@ function applyLocally(personId: number, confirm: boolean, fileIds: number[]) {
   announce(personId);
 }
 
-// Learning runs shortly after the last tick (suggestions keep coming as you confirm),
+// Learning runs shortly after the last tick (Picasa keeps suggesting as you confirm),
 // so a burst of ticks costs one re-match per person, not one per tick.
 const learnTimers = new Map<number, ReturnType<typeof setTimeout>>();
 function scheduleLearning(personId: number) {
@@ -321,7 +327,7 @@ export async function resolveSuggestions(confirm: boolean, fileIds: number[] | n
   return true;
 }
 
-// Right-click "Not this person" on confirmed photos: the face leaves the person
+// Right-click "Not this person" on confirmed photos (Picasa): the face leaves the person
 // and is never suggested for them again; the tile stays in place, dimmed, with Undo.
 export function isConfirmedFor(fileId: number, forPerson?: number | null): boolean {
   return stateOf(resolvePerson(forPerson)).confirmedFaces.has(fileId);
@@ -462,14 +468,21 @@ export async function restoreGlobalIgnore(fileIds: number[]) {
 }
 
 // Position the photo inside the clipped tile; this works across WebView versions.
-// People faces are framed as portrait tiles (width:height 5:6), hair to neck.
+// Picasa frames people faces as portrait tiles (width:height 5:6), hair to neck.
 export const FACE_TILE_ASPECT = 5 / 6;
 
+// The shape to cut from the unrotated photo so that, turned by the user's rotation,
+// it fills a tile of the given aspect.
+export function faceSourceAspect(aspect: number, rotation = 0) {
+  return rotation % 180 === 90 ? 1 / aspect : aspect;
+}
+
 export function faceCropStyle(
-  fileId: number, width?: number, height?: number, aspect = FACE_TILE_ASPECT, personId?: number | null,
+  fileId: number, width?: number, height?: number, tileAspect = FACE_TILE_ASPECT, personId?: number | null, rotation = 0,
 ) {
   const b = stateOf(resolvePerson(personId)).boxes.get(fileId);
   if (!b || !width || !height) return undefined;
+  const aspect = faceSourceAspect(tileAspect, rotation);
   let h = Math.max(b.height * 1.1, b.width * 1.1 / aspect);
   let w = h * aspect;
   const fit = Math.min(1, width / w, height / h);
@@ -479,6 +492,27 @@ export function faceCropStyle(
   const cy = b.y + b.height * 0.5;
   const left = Math.min(Math.max(cx - w / 2, 0), width - w);
   const top = Math.min(Math.max(cy - h / 2, 0), height - h);
+  if (rotation % 360) {
+    // Lay the crop out in a box of the unrotated shape centred on the tile, then turn
+    // the picture about the tile's centre (percentages are of the tile's own size).
+    const k = rotation % 180 === 90 ? 1 / tileAspect : 1;
+    const widthPct = width / w * 100 * k;
+    const heightPct = height / h * 100 / k;
+    const leftPct = -left / w * 100 * k + (1 - k) * 50;
+    const topPct = -top / h * 100 / k + (1 - 1 / k) * 50;
+    return {
+      position: 'absolute' as const,
+      width: `${widthPct.toFixed(3)}%`,
+      height: `${heightPct.toFixed(3)}%`,
+      left: `${leftPct.toFixed(3)}%`,
+      top: `${topPct.toFixed(3)}%`,
+      maxWidth: 'none',
+      maxHeight: 'none',
+      objectFit: 'fill' as const,
+      transformOrigin: `${((50 - leftPct) / widthPct * 100).toFixed(3)}% ${((50 - topPct) / heightPct * 100).toFixed(3)}%`,
+      transform: `rotate(${rotation}deg)`,
+    };
+  }
   return {
     position: 'absolute' as const,
     width: `${(width / w * 100).toFixed(3)}%`,

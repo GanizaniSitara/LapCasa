@@ -3,34 +3,79 @@
     <!-- Title Bar -->
     <TitleBar :titlebar="$t('sidebar.settings')" :resizable="false" viewName="Settings" class="shrink-0 z-50" />
 
+    <!-- JetBrains/PyCharm-style Full-Text Settings Search Header -->
+    <div class="px-3.5 py-2 border-b border-base-content/10 bg-base-200/60 flex items-center justify-between gap-3 shrink-0 z-10 ">
+      <div class="relative flex-1 max-w-sm">
+        <input
+          ref="searchInputRef"
+          type="text"
+          aria-label="Search settings"
+          v-model="searchQuery"
+          placeholder="Search settings (Ctrl+F)..."
+          class="input input-sm input-bordered w-full pl-8 pr-7 bg-base-100/90 text-xs rounded-sm focus:outline-primary border-base-content/20 "
+          @keydown.esc="searchQuery = ''"
+        />
+        <svg class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/40 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <button v-if="searchQuery" @click="searchQuery = ''" class="btn btn-ghost btn-xs btn-circle absolute right-1.5 top-1/2 -translate-y-1/2 text-base-content/50 hover:text-base-content" title="Clear search">✕</button>
+      </div>
+      <div v-if="searchQuery" class="text-xs text-base-content/60 font-medium shrink-0 flex items-center gap-1.5">
+        <span class="badge badge-sm badge-ghost text-xs font-semibold">{{ totalMatches }} {{ totalMatches === 1 ? 'match' : 'matches' }}</span>
+      </div>
+    </div>
+
     <div class="flex flex-1 overflow-hidden relative">
-      <!-- Sidebar -->
-      <div class="w-40 m-1 p-2 bg-base-200/30 flex flex-col rounded-box overflow-y-auto shrink-0 select-none">
+      <!-- Modernized Sidebar with Match Badges -->
+      <div class="w-48 m-1.5 p-1.5 bg-base-200/40 border border-base-content/5 rounded-sm flex flex-col gap-1 overflow-y-auto shrink-0 select-none">
         <div
           v-for="(tab, index) in settingsTabs"
           :key="index"
           :class="[
-            'px-2 py-1.5 text-xs rounded-box cursor-pointer transition-all duration-200 font-medium flex items-center',
-            config.settings.tabIndex === index 
-              ? 'bg-base-100 text-primary' 
-              : 'hover:text-base-content hover:bg-base-100/30'
+            'px-2.5 py-1.5 text-xs rounded-sm cursor-pointer transition-all duration-150 font-medium flex items-center justify-between',
+            config.settings.tabIndex === index
+              ? 'bg-primary text-primary-content '
+              : 'hover:text-base-content hover:bg-base-100/60 text-base-content/70',
+            searchQuery && tabMatchCounts[index] === 0 ? 'opacity-35' : ''
           ]"
-          @click="config.settings.tabIndex = index"
+          @click="selectSettingsCategory(index)"
         >
-          {{ $t(tab) }}
+          <span class="truncate">{{ $t(tab) }}</span>
+          <span v-if="searchQuery && tabMatchCounts[index] > 0"
+            :class="config.settings.tabIndex === index ? 'bg-primary-content/20 text-primary-content' : 'bg-primary/10 text-primary'"
+            class="badge badge-xs px-1.5 py-0.5 rounded-full font-bold ml-1.5 shrink-0">
+            {{ tabMatchCounts[index] }}
+          </span>
         </div>
       </div>
 
       <!-- Main Content -->
-      <div class="p-2 mr-1 mb-2 flex-1 overflow-y-auto scrollbar-hide bg-base-300 cursor-default select-none">
-          
+      <div ref="settingsContentRef" class="p-2.5 mr-1 mb-2 flex-1 overflow-y-auto scrollbar-hide bg-base-300 cursor-default select-none">
+        <!-- JetBrains-style Zero-Matches Empty State -->
+        <div v-if="searchQuery && totalMatches === 0" class="flex flex-col items-center justify-center py-20 text-center">
+          <div class="w-12 h-12 rounded-full bg-base-200/80 flex items-center justify-center text-base-content/40 mb-3 ">
+            <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+          </div>
+          <div class="text-sm font-semibold text-base-content/80">No settings found</div>
+          <div class="text-xs text-base-content/50 mt-1 max-w-xs">No settings match "{{ searchQuery }}". Try a different search term.</div>
+          <button @click="searchQuery = ''" class="btn btn-sm btn-ghost mt-4 text-primary font-medium">Clear search</button>
+        </div>
+
         <!-- General Tab -->
-        <div v-if="config.settings.tabIndex === 0" class="flex flex-col space-y-2">
-          
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 0" :data-settings-tab="0" class="flex flex-col space-y-2">
+
+          <div data-settings-section="gen-gpu">
+            <GpuAcceleration v-if="config.settings.tabIndex === 0" />
+            <div v-else><h2 class="font-bold">{{ $t('settings.search_preview.gpu_title') }}</h2><p>{{ $t('settings.search_preview.gpu_description') }}</p><button class="btn btn-sm" @click="selectSettingsCategory(0)">{{ $t('settings.search_preview.open_gpu') }}</button></div>
+          </div>
           <!-- languange -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.general.section_language') }}</span>
+          <div data-settings-section="gen-lang" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.general.section_language') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -44,9 +89,9 @@
           </div>
 
           <!-- appearance -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.general.section_appearance') }}</span>
+          <div data-settings-section="gen-app" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.general.section_appearance') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -75,9 +120,9 @@
           </div>
 
           <!-- display -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.general.section_interface') }}</span>
+          <div data-settings-section="gen-disp" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.general.section_interface') }}</span>
             </div>
             <div class="flex items-center justify-between p-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -105,12 +150,12 @@
         </div>
 
         <!-- Grid Tab -->
-        <div v-else-if="config.settings.tabIndex === 2" class="flex flex-col space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 2" :data-settings-tab="2" class="flex flex-col space-y-2">
 
           <!-- grid view -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.grid.section_grid') }}</span>
+          <div data-settings-section="grid-view" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.grid.section_grid') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -169,9 +214,9 @@
           </div>
 
           <!-- filmstrip -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.grid.filmstrip_view.title') }}</span>
+          <div data-settings-section="grid-filmstrip" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.grid.filmstrip_view.title') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -184,9 +229,9 @@
           </div>
 
           <!-- map -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.grid.section_map') }}</span>
+          <div data-settings-section="grid-map" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.grid.section_map') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -201,12 +246,12 @@
         </div>
 
         <!-- Viewer Tab -->
-        <div v-else-if="config.settings.tabIndex === 3" class="flex flex-col space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 3" :data-settings-tab="3" class="flex flex-col space-y-2">
 
           <!-- navigation -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.image_view.section_navigation') }}</span>
+          <div data-settings-section="view-nav" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.image_view.section_navigation') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -237,9 +282,9 @@
           </div>
 
           <!-- view -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.image_view.section_view') }}</span>
+          <div data-settings-section="view-disp" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.image_view.section_view') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -260,12 +305,20 @@
                   <option v-for="(option, index) in slideShowTransitionOptions" :key="index" :value="option.value">{{ option.label }}</option>
               </select>
             </div>
+            <!-- LAP-049: Picasa's Pan and Zoom (Ken Burns) slideshow -->
+            <div class="flex items-center justify-between px-1 h-8 rounded-box hover:bg-base-100/10 transition-colors duration-200">
+              <div class="flex flex-col gap-0.5 text-sm leading-5">
+                <div>Pan and zoom (Ken Burns)</div>
+                <div class="text-xs text-base-content/30">Each slide zooms slowly towards the faces in it</div>
+              </div>
+              <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="config.settings.slideShowPanZoom" aria-label="Pan and zoom (Ken Burns)" />
+            </div>
           </div>
 
           <!-- video -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.image_view.section_video') }}</span>
+          <div data-settings-section="view-video" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.image_view.section_video') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 h-8 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -284,12 +337,12 @@
         </div>
 
         <!-- Search Tab -->
-        <div v-else-if="config.settings.tabIndex === 4" class="flex flex-col overflow-hidden space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 4" :data-settings-tab="4" class="flex flex-col overflow-hidden space-y-2">
 
           <!-- image search -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.image_search.search_image') }}</span>
+          <div data-settings-section="search-ai" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.image_search.search_image') }}</span>
             </div>
             <div class="flex items-start justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
@@ -301,7 +354,6 @@
               <select
                 class="select select-bordered select-sm min-w-36 shrink-0"
                 :value="config.settings.imageSearch.model"
-                :disabled="isDownloadingMultilingualModel"
                 @change="onImageSearchModelChange"
               >
                 <option
@@ -312,27 +364,6 @@
                   {{ option.label }}
                 </option>
               </select>
-            </div>
-            <div v-if="isDownloadingMultilingualModel" class="px-1 pt-1 space-y-1">
-              <div class="flex items-center justify-between text-xs text-base-content/30">
-                <span>{{ $t('settings.image_search.downloading_multilingual_model') }}</span>
-                <span>{{ multilingualModelDownloadSizeText }}</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <progress
-                  class="progress progress-primary h-1.5 flex-1"
-                  :value="multilingualModelDownloadProgress"
-                  max="100"
-                ></progress>
-                <button
-                  class="btn btn-ghost btn-xs h-6 min-h-0 w-6 p-0 text-base-content/30 hover:text-base-content"
-                  :title="$t('msgbox.cancel')"
-                  :aria-label="$t('msgbox.cancel')"
-                  @click="cancelMultilingualModelDownload"
-                >
-                  <IconClose class="w-3.5 h-3.5" />
-                </button>
-              </div>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -346,9 +377,9 @@
           </div>
 
           <!-- similar photos -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.similar_photos.title') }}</span>
+          <div data-settings-section="search-similar" v-if="PHOTO_DISCOVERY_ENABLED" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.similar_photos.title') }}</span>
             </div>
             <div class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
@@ -362,9 +393,9 @@
           </div>
 
           <!-- face recognition -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.face_recognition.title') }}</span>
+          <div data-settings-section="search-faces" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.face_recognition.title') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -412,15 +443,32 @@
               </div>
             </div>
           </div>
+          <div class="rounded-box p-2 space-y-3 bg-base-300/30 border border-base-content/5 ">
+            <div class="font-semibold text-sm">Experimental AI Detection (GPU-Only)</div>
+            <span class="badge badge-warning badge-outline text-[10px]">BETA / EXPERIMENTAL — GPU ONLY</span>
+            <p class="text-xs text-base-content/50">Disabled by default. Requires an NVIDIA CUDA GPU (never runs on CPU). Runs at idle background priority with automatic UI-activity yielding so it will not slow down LapCasa or other running apps.</p>
+            <label v-for="feature in experimentalAiFeatures" :key="feature.key" class="flex items-center justify-between gap-4 text-sm">
+              <span>{{ feature.label }}<span v-if="feature.pending" class="block text-xs text-base-content/45">{{ aiProgress?.[feature.pending] ?? '—' }} remaining</span></span>
+              <input type="checkbox" class="toggle toggle-primary toggle-sm shrink-0" :checked="experimentalAi[feature.key]" :disabled="aiConfigSaving || !aiConfigLoaded" @change="saveExperimentalAi(feature.key, ($event.target as HTMLInputElement).checked)" />
+            </label>
+            <p class="text-xs text-base-content/50" role="status">{{ aiProgress?.gpu_status || 'GPU status will be checked when detection starts.' }}</p>
+            <p v-if="!aiProgress?.enabled" class="text-xs text-base-content/50">Enable “Process library in background” in General to run opted-in detection.</p>
+            <p class="text-xs text-base-content/45">Descriptions combine existing detections on demand; no separate photo scan is needed.</p>
+            <label class="flex items-center justify-between gap-4 text-sm">
+              <span>Show recognised objects, scenes and text</span>
+              <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="config.infoPanel.showAiTags" @change="emit('ai-info-visibility-changed', config.infoPanel.showAiTags)" />
+            </label>
+          </div>
+          <ModelDownloads />
         </div>
 
         <!-- Browse Tab -->
-        <div v-else-if="config.settings.tabIndex === 1" class="flex flex-col space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 1" :data-settings-tab="1" class="flex flex-col space-y-2">
 
           <!-- album -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.browse.section_album') }}</span>
+          <div data-settings-section="browse-album" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.browse.section_album') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -432,9 +480,9 @@
           </div>
 
           <!-- file display -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.browse.section_file_display') }}</span>
+          <div data-settings-section="browse-file" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.browse.section_file_display') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -447,9 +495,9 @@
           </div>
 
           <!-- sorting -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.browse.section_sorting') }}</span>
+          <div data-settings-section="browse-sort" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.browse.section_sorting') }}</span>
             </div>
             <div class="flex items-center justify-between px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -483,12 +531,12 @@
         </div>
 
         <!-- Advanced Tab -->
-        <div v-else-if="config.settings.tabIndex === 5" class="flex flex-col space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 5" :data-settings-tab="5" class="flex flex-col space-y-2">
 
           <!-- thumbnail cache -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.advanced.section_thumbnail_cache') }}</span>
+          <div data-settings-section="adv-cache" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.advanced.section_thumbnail_cache') }}</span>
             </div>
             <div class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
@@ -511,18 +559,25 @@
           </div>
 
           <!-- map -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.advanced.section_map') }}</span>
+          <div data-settings-section="adv-map" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.advanced.section_map') }}</span>
             </div>
             <div class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
                 <div>{{ $t('settings.advanced.map_provider') }}</div>
-                <div class="text-xs text-base-content/30">{{ $t('settings.advanced.map_provider_hint') }}</div>
+                <div class="text-xs text-base-content/30">{{ config.settings.mapProvider === 'offline' ? 'Maps stay on this device. The included overview has no street detail.' : 'This provider receives your IP address and the geographic area you view.' }}</div>
               </div>
               <select class="select select-bordered select-sm min-w-40 shrink-0" v-model="config.settings.mapProvider">
                 <option v-for="option in mapProviderOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
+            </div>
+            <div v-if="config.settings.mapProvider === 'offline'" class="flex items-center justify-between gap-4 px-1">
+              <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
+                <div>Local map file</div>
+                <div class="text-xs text-base-content/30 truncate" :title="config.settings.localMapPath">{{ config.settings.localMapPath ? config.settings.localMapPath.split(/[\\/]/).pop() : 'Included world overview; optional raster MBTiles for detail' }}</div>
+              </div>
+              <button class="btn btn-sm btn-ghost shrink-0" type="button" @click="chooseLocalMap">Choose…</button>
             </div>
             <div v-if="config.settings.mapProvider === 'tianditu'" class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="min-w-0 flex flex-col gap-0.5 text-sm leading-5">
@@ -555,9 +610,9 @@
           </div>
 
           <!-- folder manager -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">Folder Management</span>
+          <div data-settings-section="adv-folders" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">Folder Management</span>
             </div>
             <div class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -575,9 +630,9 @@
           </div>
 
           <!-- data -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.database.section_storage') }}</span>
+          <div data-settings-section="adv-storage" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.database.section_storage') }}</span>
             </div>
 
             <div class="flex items-center justify-between gap-4 px-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
@@ -634,9 +689,9 @@
           </div>
 
           <!-- diagnostics -->
-          <div class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm">
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ $t('settings.advanced.section_diagnostics') }}</span>
+          <div data-settings-section="adv-diag" class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15">
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ $t('settings.advanced.section_diagnostics') }}</span>
             </div>
             <div class="flex items-center justify-between p-1 rounded-box hover:bg-base-100/10 transition-colors duration-200">
               <div class="flex flex-col gap-0.5 text-sm leading-5">
@@ -648,14 +703,15 @@
         </div>
 
         <!-- Shortcuts Tab -->
-        <div v-else-if="config.settings.tabIndex === 6" class="flex flex-col space-y-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 6" :data-settings-tab="6" data-settings-section="shortcuts" class="flex flex-col space-y-2">
           <div
             v-for="section in shortcutSections"
             :key="section.key"
-            class="rounded-box p-2 space-y-2 bg-base-300/30 border border-base-content/5 shadow-sm"
+            :data-settings-section="`shortcuts-${section.key}`"
+            class="rounded-sm p-3 space-y-2.5 bg-base-200/50 border border-base-content/15"
           >
-            <div class="flex items-center gap-2 text-base-content/30">
-              <span class="font-bold uppercase text-[10px] tracking-widest">{{ section.title }}</span>
+            <div class="flex items-center gap-2 text-primary/80">
+              <span class="font-bold uppercase text-[10.5px] tracking-wider">{{ section.title }}</span>
             </div>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-1">
               <div
@@ -668,7 +724,7 @@
                   <span
                     v-for="(key, keyIndex) in item.keys"
                     :key="`${item.actionId}-${keyIndex}-${key}`"
-                    class="min-w-7 h-7 px-2 inline-flex items-center justify-center rounded-box border border-base-content/10 bg-base-100/40 text-xs font-semibold text-base-content/30 shadow-sm"
+                    class="min-w-7 h-7 px-2 inline-flex items-center justify-center rounded-box border border-base-content/10 bg-base-100/40 text-xs font-semibold text-base-content/30 "
                   >
                     {{ key }}
                   </span>
@@ -678,15 +734,19 @@
           </div>
         </div>
         <!-- About Tab -->
-        <div v-else-if="config.settings.tabIndex === 7" class="py-2">
-            <SettingsAbout />
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 7" :data-settings-tab="7" data-settings-section="about" class="py-2">
+            <SettingsAbout v-if="config.settings.tabIndex === 7" />
+            <div v-else><h2 class="font-bold">{{ $t('settings.search_preview.about_title') }}</h2><p>{{ $t('settings.search_preview.about_description') }}</p><button class="btn btn-sm" @click="selectSettingsCategory(7)">{{ $t('settings.search_preview.open_about') }}</button></div>
         </div>
-        <div v-else-if="config.settings.tabIndex === 8" data-libraries-settings class="space-y-3 p-2">
+        <div v-if="!!searchQuery.trim() || config.settings.tabIndex === 8" :data-settings-tab="8" data-settings-section="libraries" data-libraries-settings class="space-y-3 p-2">
           <p>A library is a separate photo index containing folders, faces and edits; use one unless you want independent collections.</p>
           <p>Current library: <strong>{{ currentLibraryName }}</strong></p>
           <button type="button" class="btn btn-sm" @click="showManageLibraries = true">Manage Libraries</button>
         </div>
 
+        <Teleport v-for="(match, index) in searchMatches" :key="index" :to="match.row">
+          <div data-search-breadcrumb class="settings-search-breadcrumb">{{ match.breadcrumb }}</div>
+        </Teleport>
       </div>
     </div>
 
@@ -734,11 +794,13 @@
 
 <script setup lang="ts">
 
-import { ref, watch, computed, onMounted, onUnmounted } from 'vue';
+import { ref, shallowRef, watch, computed, onMounted, onUnmounted, onUpdated, nextTick } from 'vue';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { settingsWindowGeometry } from '@/common/settingsWindow';
+import { PHOTO_DISCOVERY_ENABLED } from '@/common/discoveryFeatures';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { ask, open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
 import { config, libConfig } from '@/common/config';
@@ -746,23 +808,23 @@ import { normalizeThumbnailSize } from '@/common/thumbnailProfiles';
 import { THUMBNAIL_BADGE, MAP_MARKER_SIZES } from '@/common/constants';
 import {
   getAppConfig,
+  getAiProgress,
+  setExperimentalAiConfig,
   getDbStorageDir,
   changeDbStorageDir,
   resetDbStorageDir,
   isFaceIndexing,
   isUsingCustomDbStorage,
-  getImageSearchModelStatus,
   setImageSearchModel,
-  downloadMultilingualImageSearchModel,
-  cancelMultilingualImageSearchModelDownload,
-  listenImageSearchModelDownloadProgress,
 } from '@/common/api';
-import { formatFileSize, isLinux, isMac, setTheme, SCALE_VALUES, isEditableTarget } from '@/common/utils';
+import { isLinux, isMac, setTheme, SCALE_VALUES, isEditableTarget } from '@/common/utils';
 import { getShortcutLabels, ShortcutActionId, ShortcutPlatform } from '@/common/shortcuts';
 import { useToast } from '@/common/toast';
 import { IconClose, IconRestore } from '@/common/icons';
 
 import TitleBar from '@/components/TitleBar.vue';
+import GpuAcceleration from '@/components/GpuAcceleration.vue';
+import ModelDownloads from '@/components/ModelDownloads.vue';
 import SettingsAbout from '@/components/SettingsAbout.vue';
 import MessageBox from '@/components/MessageBox.vue';
 import BackupDialog from '@/components/BackupDialog.vue';
@@ -775,6 +837,38 @@ import TButton from '@/components/TButton.vue';
 const { locale, messages, t } = useI18n();
 const localeMsg = computed(() => messages.value[config.settings.language] as any);
 const toast = useToast();
+type ExperimentalAiKey = 'scene' | 'objects' | 'ocr' | 'description';
+const experimentalAi = ref<Record<ExperimentalAiKey, boolean>>({ scene: false, objects: false, ocr: false, description: false });
+const aiConfigSaving = ref(false);
+const aiConfigLoaded = ref(false);
+const aiProgress = ref<any>(null);
+const experimentalAiFeatures: { key: ExperimentalAiKey; label: string; pending?: string }[] = [
+  { key: 'scene', label: 'Scene & Place Detection (Zero-Shot CLIP)', pending: 'scenes_pending' },
+  { key: 'objects', label: 'Object Detection (YOLOv10n)', pending: 'objects_pending' },
+  { key: 'ocr', label: 'Text Recognition (PaddleOCR)', pending: 'ocr_pending' },
+  { key: 'description', label: 'Auto-Summary Description in Info Pane' },
+];
+let aiProgressTimer: ReturnType<typeof setInterval> | undefined;
+let aiSettingsDisposed = false;
+function applyExperimentalAi(app: any) {
+  experimentalAi.value = { scene: !!app.ai_scene_detection_enabled, objects: !!app.ai_object_detection_enabled, ocr: !!app.ai_ocr_enabled, description: !!app.ai_description_enabled };
+  aiConfigLoaded.value = true;
+}
+async function refreshAiProgress() {
+  const result = await getAiProgress();
+  if (!aiSettingsDisposed) aiProgress.value = result;
+}
+async function saveExperimentalAi(key: ExperimentalAiKey, value: boolean) {
+  const previous = experimentalAi.value[key];
+  experimentalAi.value[key] = value;
+  aiConfigSaving.value = true;
+  try {
+    const saved = await setExperimentalAiConfig({ ...experimentalAi.value, [key]: value });
+    applyExperimentalAi(saved);
+    await refreshAiProgress();
+  } catch (error) { experimentalAi.value[key] = previous; toast.error(String(error)); }
+  finally { aiConfigSaving.value = false; }
+}
 const shortcutPlatform: ShortcutPlatform = isMac ? 'mac' : (isLinux ? 'linux' : 'windows');
 const settingsTabs = [
   'settings.general.title',
@@ -787,6 +881,152 @@ const settingsTabs = [
   'settings.about.title',
   'msgbox.manage_libraries.libraries',
 ];
+// --- JetBrains / PyCharm Style Settings Full-Text Search ---
+const searchQuery = ref('');
+const searchInputRef = ref<HTMLInputElement | null>(null);
+
+const settingSectionsCatalog = [
+  // Tab 0: General
+  { id: 'gen-gpu', tab: 0, title: 'AI acceleration', keywords: ['gpu', 'graphics', 'cuda', 'nvidia', 'engines', 'hardware', 'acceleration', 'download / repair gpu add-on', 'ai engines', 'cudnn', 'terms', 'driver', 'vram', 'some ai tools are not accelerated', 'checking graphics hardware'], labels: ['settings.search_preview.gpu_title', 'settings.search_preview.gpu_description', 'settings.search_preview.open_gpu'] },
+  { id: 'gen-lang', tab: 0, title: 'Language', keywords: ['language', 'select language', 'english', 'czech', 'german', 'locale'] },
+  { id: 'gen-app', tab: 0, title: 'Appearance & Theme', keywords: ['appearance', 'theme', 'dark', 'light', 'font size', 'scale', 'ui', 'zoom'] },
+  { id: 'gen-disp', tab: 0, title: 'Interface & Background', keywords: ['interface', 'tooltip', 'status bar', 'process library in background', 'ai jobs', 'sync', 'embedding'] },
+
+  // Tab 1: Browse
+  { id: 'browse-album', tab: 1, title: 'Album Display', keywords: ['album', 'subfolder', 'show subfolder files', 'cover', 'aspect ratio', 'photo count'] },
+  { id: 'browse-file', tab: 1, title: 'File Display', keywords: ['file', 'hidden files', 'raw photos', 'raw jpeg pairs', 'extensions'] },
+  { id: 'browse-sort', tab: 1, title: 'Sorting', keywords: ['sort', 'folder sort', 'calendar sort', 'category sort', 'order', 'date', 'name', 'ascending', 'descending'] },
+
+  // Tab 2: Grid
+  { id: 'grid-view', tab: 2, title: 'Grid View & Cards', keywords: ['grid', 'style', 'scaling', 'thumbnail corners', 'labels', 'badges', 'primary label', 'secondary label', 'photo cards'] },
+  { id: 'grid-filmstrip', tab: 2, title: 'Filmstrip View', keywords: ['filmstrip', 'preview position', 'bottom', 'right'] },
+  { id: 'grid-map', tab: 2, title: 'Map View', keywords: ['map', 'marker size', 'gps', 'location'] },
+
+  // Tab 3: Image View
+  { id: 'view-nav', tab: 3, title: 'Navigation & Mouse', keywords: ['navigation', 'wheel', 'zoom', 'click', 'double click', 'fullscreen'] },
+  { id: 'view-disp', tab: 3, title: 'Viewer Display', keywords: ['viewer', 'background', 'color', 'checkerboard', 'high quality', 'slideshow', 'pan and zoom', 'ken burns', 'delay', 'transition'] },
+  { id: 'view-video', tab: 3, title: 'Video Playback', keywords: ['video', 'autoplay', 'loop', 'volume', 'mute'] },
+
+  // Tab 4: Image Search & AI
+  { id: 'search-ai', tab: 4, title: 'Visual & Text Search', keywords: ['search', 'clip', 'embedding', 'semantic search', 'ai model', 'index'] },
+  { id: 'search-models', tab: 4, title: 'Model downloads', keywords: ['models', 'download', 'licence', 'license', 'terms', 'people', 'ocr', 'selection'] },
+  { id: 'search-similar', tab: 4, title: 'Similar Photos', keywords: ['similar photos', 'similarity', 'threshold', 'visual similarity'] },
+  { id: 'search-faces', tab: 4, title: 'Face Recognition', keywords: ['faces', 'people', 'recognition', 'clustering', 'cutoff', 'detection'] },
+
+  // Tab 5: Advanced
+  { id: 'adv-cache', tab: 5, title: 'Thumbnail Cache', keywords: ['thumbnail cache', 'cache size', 'clear cache', 'regenerate', 'redb', 'slab', 'quality'] },
+  { id: 'adv-map', tab: 5, title: 'Map & Geo Services', keywords: ['map provider', 'tiles', 'mapbox', 'osm', 'open street map'] },
+  { id: 'adv-folders', tab: 5, title: 'Folder Watcher', keywords: ['watch', 'folder manager', 'scan frequency', 'auto scan'] },
+  { id: 'adv-storage', tab: 5, title: 'Database & Storage Location', keywords: ['database', 'storage', 'directory', 'move', 'migrate', 'sqlite', 'library.db', 'backup', 'restore'] },
+  { id: 'adv-diag', tab: 5, title: 'Diagnostics & Logs', keywords: ['logs', 'diagnostics', 'open logs', 'debug', 'telemetry'] },
+
+  // Tab 6: Shortcuts
+  { id: 'shortcuts', tab: 6, title: 'Keyboard Shortcuts', keywords: ['shortcuts', 'hotkeys', 'keybindings', 'keyboard'] },
+
+  // Tab 7: About
+  { id: 'about', tab: 7, title: 'About LapCasa', keywords: ['about', 'version', 'build', 'github', 'license', 'credits', 'feedback', 'privacy'], labels: ['settings.search_preview.about_title', 'settings.search_preview.about_description', 'settings.search_preview.open_about', 'settings.about.package.app_description', 'settings.about.package.version', 'settings.about.package.build_time', 'settings.about.package.license', 'settings.about.package.link', 'settings.about.package.github', 'settings.about.package.feedback', 'settings.about.package.privacy'] },
+
+  // Tab 8: Libraries
+  { id: 'libraries', tab: 8, title: 'Manage Libraries', keywords: ['library', 'libraries', 'create library', 'switch library', 'current library', 'manage'] }
+];
+
+const settingsContentRef = ref<HTMLElement | null>(null);
+const tabMatchCounts = ref<number[]>(Array(settingsTabs.length).fill(0));
+const searchMatches = shallowRef<{row: HTMLElement; breadcrumb: string}[]>([]);
+const totalMatches = computed(() => tabMatchCounts.value.reduce((a,b) => a+b, 0));
+
+function selectSettingsCategory(index: number) {
+  searchQuery.value = '';
+  config.settings.tabIndex = index;
+}
+
+// Ranges highlight Vue's existing text without replacing the nodes it owns.
+function filterSettings() {
+  const root = settingsContentRef.value;
+  if (!root) return;
+  const registry = (globalThis.CSS as any)?.highlights;
+  registry?.delete('settings-match');
+  const ranges: Range[] = [];
+  const matches: {row: HTMLElement; breadcrumb: string}[] = [];
+  const q = searchQuery.value.trim().toLocaleLowerCase();
+  const terms = q.split(/\s+/).filter(Boolean);
+  const counts = Array(settingsTabs.length).fill(0);
+  if (!q) {
+    for (const row of root.querySelectorAll('.settings-search-hidden,.settings-search-row')) {
+      row.classList.remove('settings-search-hidden','settings-search-row');
+    }
+    if (tabMatchCounts.value.some(n => n !== 0)) tabMatchCounts.value=counts;
+    if (searchMatches.value.length) searchMatches.value=[];
+    return;
+  }
+  for (const panel of root.querySelectorAll<HTMLElement>('[data-settings-tab]')) {
+    const tab = Number(panel.dataset.settingsTab);
+    const panelInfo = settingSectionsCatalog.find(s => s.id === panel.dataset.settingsSection);
+    // Direct sections include newly added settings without requiring catalog maintenance.
+    const sections = tab === 7 || tab === 8 ? [panel] : [...panel.children] as HTMLElement[];
+    for (const section of sections) {
+      const info = settingSectionsCatalog.find(s => s.id === section.dataset.settingsSection);
+      const heading = section.querySelector<HTMLElement>('span.font-bold, h2, h3');
+      const title = heading?.textContent?.trim() || info?.title || '';
+      const children = [...section.children] as HTMLElement[];
+      const rows = section===panel || section.dataset.settingsSection==='gen-gpu'
+          ? [section] : children.filter(e => !e.matches('[data-search-breadcrumb]') && !e.contains(heading) && e!==heading)
+          .flatMap(e => e.classList.contains('grid') ? [...e.children] as HTMLElement[] : [e]);
+      let visible = false;
+      const sectionMatch = !!q && terms.every(term =>
+        [t(settingsTabs[tab]),title,info?.keywords.join(' '),info?.labels?.map(key => t(key)).join(' '),panelInfo?.keywords.join(' ')].join(' ').toLocaleLowerCase().includes(term));
+      let rowMatches = 0;
+      for (const row of rows) {
+        const walker=document.createTreeWalker(row,NodeFilter.SHOW_TEXT);
+        const nodes:Text[]=[];
+        while (walker.nextNode()) {
+          const node=walker.currentNode as Text;
+          if (!node.parentElement?.closest('[data-search-breadcrumb],script,style')) nodes.push(node);
+        }
+        const haystack = nodes.map(node => node.data).join(' ').toLocaleLowerCase();
+        const match = !q || terms.every(term => haystack.includes(term));
+        row.classList.toggle('settings-search-hidden', !match);
+        row.classList.toggle('settings-search-row', !!q && match);
+        if (sectionMatch) visible = true;
+        if (!match) continue;
+        visible = true;
+        if (!q) continue;
+        counts[tab]++;
+        rowMatches++;
+        const label = row===section ? title : row.querySelector(':scope > div > div')?.textContent?.trim() || title;
+        matches.push({row,breadcrumb:[t(settingsTabs[tab]),title,label].filter((v,i,a)=>v && a.indexOf(v)===i).join(' > ')});
+        for (const node of nodes) {
+          const value=node.data, lower=value.toLocaleLowerCase();
+          let pos=0;
+          while (pos<value.length) {
+            const hits=terms.map(term=>({index:lower.indexOf(term,pos),term})).filter(h=>h.index>=0).sort((a,b)=>a.index-b.index);
+            if (!hits.length) break;
+            const hit=hits[0];
+            const range=document.createRange();
+            range.setStart(node,hit.index);range.setEnd(node,hit.index+hit.term.length);
+            ranges.push(range);pos=hit.index+hit.term.length;
+          }
+        }
+      }
+      if (sectionMatch && !rowMatches) {
+        for (const row of rows) row.classList.remove('settings-search-hidden');
+        counts[tab]++;
+        matches.push({row:section,breadcrumb:[t(settingsTabs[tab]),title].filter(Boolean).join(' > ')});
+      }
+      if (!rows.includes(section)) section.classList.toggle('settings-search-row', sectionMatch && !rowMatches);
+      else if (sectionMatch && !rowMatches) section.classList.add('settings-search-row');
+      section.classList.toggle('settings-search-hidden', !visible);
+    }
+  }
+  if (counts.some((n,i)=>n!==tabMatchCounts.value[i])) tabMatchCounts.value=counts;
+  if (matches.length !== searchMatches.value.length || matches.some((m,i)=>m.row!==searchMatches.value[i].row || m.breadcrumb!==searchMatches.value[i].breadcrumb)) searchMatches.value=matches;
+  const Highlight = (globalThis as any).Highlight;
+  if (ranges.length && registry && Highlight) registry.set('settings-match',new Highlight(...ranges));
+}
+onUpdated(filterSettings);
+onUnmounted(() => { (globalThis.CSS as any)?.highlights?.delete('settings-match'); });
+onMounted(async () => { await nextTick(); filterSettings(); searchInputRef.value?.focus(); });
+
 const showManageLibraries = ref(false);
 const currentLibraryName = ref('');
 async function refreshLibraryName() {
@@ -814,15 +1054,8 @@ const showResetDbStorageDialog = ref(false);
 const showBackupDialog = ref(false);
 const showRestoreDialog = ref(false);
 const showFolderManager = ref(false);
-const isDownloadingMultilingualModel = ref(false);
-const isCancelingMultilingualModelDownload = ref(false);
-const multilingualModelDownloadProgress = ref(0);
-const multilingualModelDownloadedBytes = ref(0);
-const multilingualModelTotalBytes = ref(0);
-const isMultilingualModelAvailable = ref(false);
 const tiandituTokenInput = ref(String(config.settings.tiandituToken || ''));
 const tiandituTokenStatus = ref<'idle' | 'saved' | 'empty'>('idle');
-let unlistenImageSearchModelDownloadProgress: (() => void) | null = null;
 
 const onRestoreDone = () => {
   showRestoreDialog.value = false;
@@ -853,8 +1086,8 @@ const appearanceOptions = computed(() => {
 
 // Define the theme options
 const themeOptions = computed(() => {
-  const options = config.settings.appearance === 0 
-    ? localeMsg.value.settings.general.theme_options_light 
+  const options = config.settings.appearance === 0
+    ? localeMsg.value.settings.general.theme_options_light
     : localeMsg.value.settings.general.theme_options_dark;
 
   const result = [];
@@ -949,15 +1182,22 @@ const rawThumbnailSourceOptions = computed(() => {
 });
 
 const mapProviderOptions = computed(() => {
-  const labels = localeMsg.value.settings.advanced.map_provider_options || [
-    'Global (default)',
-    'China (Tianditu)',
-  ];
   return [
-    { value: 'global', label: labels[0] },
-    { value: 'tianditu', label: labels[1] },
+    { value: 'offline', label: 'Offline/local (default)' },
+    { value: 'osm', label: 'OpenStreetMap' },
+    { value: 'esri', label: 'Esri satellite' },
+    { value: 'tianditu', label: 'Tianditu' },
   ];
 });
+
+async function chooseLocalMap() {
+  const path = await openDialog({ multiple: false, filters: [{ name: 'Raster map', extensions: ['mbtiles'] }] });
+  if (typeof path !== 'string') return;
+  try {
+    await invoke('local_map_info', { path });
+    config.setLocalMapPath(path);
+  } catch (error) { toast.error(String(error)); }
+}
 
 const tiandituTokenStatusLabel = computed(() => {
   const labels: Record<string, string> = {
@@ -1137,36 +1377,18 @@ const similarPhotoGroupingOptions = computed(() => {
 });
 
 const imageSearchModelOptions = computed(() => {
-  const options = localeMsg.value.settings.image_search.search_model_options || ['Default', 'Multilingual model'];
-  return options.map((label: string, i: number) => ({ label, value: i }));
+  const options = localeMsg.value.settings.image_search.search_model_options || ['Default (English)'];
+  return options.slice(0, 1).map((label: string, i: number) => ({ label, value: i }));
 });
 
 const imageSearchModelHint = computed(() => {
-  return Number(config.settings.imageSearch.model || 0) === 1
-    ? localeMsg.value.settings.image_search.multilingual_model_hint
-    : localeMsg.value.settings.image_search.default_model_hint;
-});
-
-const multilingualModelDownloadSizeText = computed(() => {
-  const downloaded = multilingualModelDownloadedBytes.value;
-  const total = multilingualModelTotalBytes.value;
-  if (total > 0) {
-    return `${formatFileSize(downloaded)} / ${formatFileSize(total)}`;
-  }
-  return formatFileSize(downloaded);
+  return localeMsg.value.settings.image_search.default_model_hint;
 });
 
 const syncImageSearchModelStatus = async () => {
-  const status = await getImageSearchModelStatus();
-  if (!status) return;
-
-  isMultilingualModelAvailable.value = Boolean(status.multilingualAvailable);
-  if (Number(config.settings.imageSearch.model || 0) === 1 && !isMultilingualModelAvailable.value) {
-    return;
-  }
-
+  config.settings.imageSearch.model = 0;
   try {
-    await setImageSearchModel(config.settings.imageSearch.model || 0);
+    await setImageSearchModel(0);
   } catch (error) {
     console.error('Failed to activate image search model:', error);
   }
@@ -1174,7 +1396,7 @@ const syncImageSearchModelStatus = async () => {
 
 // Define the face cluster threshold options
 const faceClusterOptions = computed(() => {
-  const options = localeMsg.value.settings.face_recognition?.cluster_threshold_options || 
+  const options = localeMsg.value.settings.face_recognition?.cluster_threshold_options ||
     ['Very High', 'High', 'Medium', 'Low'];
   // Map index as value since v-model is clusterThresholdIndex
   return options.map((label: string, i: number) => ({ label, value: i }));
@@ -1185,6 +1407,7 @@ type ShortcutDisplayItem = {
   labelKey: string;
   keys?: string[];
   backgroundValue?: number;
+  allBindings?: boolean;
 };
 
 const shortcutDisplaySections: Array<{ key: string; items: ShortcutDisplayItem[] }> = [
@@ -1204,6 +1427,9 @@ const shortcutDisplaySections: Array<{ key: string; items: ShortcutDisplayItem[]
     items: [
       { actionId: 'view.zoomIn', labelKey: 'thumbnail_increase' },
       { actionId: 'view.zoomOut', labelKey: 'thumbnail_decrease' },
+      { actionId: 'view.thumbnailsSmall', labelKey: 'thumbnails_small' },
+      { actionId: 'view.thumbnailsNormal', labelKey: 'thumbnails_normal' },
+      { actionId: 'view.timeline', labelKey: 'toggle_timeline' },
       { actionId: 'view.previous', labelKey: 'previous_image' },
       { actionId: 'view.next', labelKey: 'next_image' },
       { actionId: 'view.first', labelKey: 'first_image' },
@@ -1214,7 +1440,7 @@ const shortcutDisplaySections: Array<{ key: string; items: ShortcutDisplayItem[]
       { actionId: 'view.close', labelKey: 'close_viewer' },
       { actionId: 'file.openNewWindow', labelKey: 'open_new_window' },
       { actionId: 'file.openExternalApp', labelKey: 'open_external_app' },
-      { actionId: 'file.editImage', labelKey: 'edit_image' },
+      { actionId: 'file.editImage', labelKey: 'edit_image', allBindings: true },
       { actionId: 'file.searchSimilar', labelKey: 'search_similar' },
     ],
   },
@@ -1231,7 +1457,30 @@ const shortcutDisplaySections: Array<{ key: string; items: ShortcutDisplayItem[]
       { actionId: 'view.backgroundMediumGray', labelKey: 'cycle_background', backgroundValue: 3 },
       { actionId: 'view.backgroundLightGray', labelKey: 'cycle_background', backgroundValue: 4 },
       { actionId: 'view.backgroundWhite', labelKey: 'cycle_background', backgroundValue: 5 },
-      { actionId: 'slideshow.toggle', labelKey: 'toggle_slideshow' },
+      { actionId: 'slideshow.toggle', labelKey: 'toggle_slideshow', allBindings: true },
+    ],
+  },
+  {
+    key: 'editor',
+    items: [
+      { actionId: 'editor.tabBasic', labelKey: 'editor_tab_basic' },
+      { actionId: 'editor.tabTuning', labelKey: 'editor_tab_tuning' },
+      { actionId: 'editor.tabEffects', labelKey: 'editor_tab_effects' },
+      { actionId: 'editor.automask', labelKey: 'editor_automask' },
+      { actionId: 'editor.automaskWhole', labelKey: 'editor_automask_whole' },
+      { actionId: 'editor.automaskSubject', labelKey: 'editor_automask_subject' },
+      { actionId: 'editor.automaskSky', labelKey: 'editor_automask_sky' },
+      { actionId: 'editor.automaskPeople', labelKey: 'editor_automask_people' },
+      { actionId: 'editor.automaskBackground', labelKey: 'editor_automask_background' },
+      { actionId: 'editor.automaskSelect', labelKey: 'editor_automask_select' },
+      { actionId: 'editor.automaskShowMask', labelKey: 'editor_automask_show_mask' },
+      { actionId: 'editor.automaskRemove', labelKey: 'editor_automask_remove' },
+      { actionId: 'meta.rotate', labelKey: 'editor_rotate' },
+      { actionId: 'meta.rotateCounterclockwise', labelKey: 'editor_rotate_counterclockwise' },
+      { actionId: 'edit.undo', labelKey: 'undo' },
+      { actionId: 'edit.redo', labelKey: 'redo', allBindings: true },
+      { actionId: 'editor.apply', labelKey: 'editor_apply' },
+      { actionId: 'view.close', labelKey: 'editor_close' },
     ],
   },
   {
@@ -1275,16 +1524,18 @@ const shortcutDisplaySections: Array<{ key: string; items: ShortcutDisplayItem[]
 
 const shortcutSections = computed(() => {
   const shortcutMessages = localeMsg.value.settings.shortcuts;
+  // Rows added after a translation was made show in English.
+  const englishMessages = (messages.value.en as any).settings.shortcuts;
   return shortcutDisplaySections.map((section) => ({
     key: section.key,
-    title: shortcutMessages.sections[section.key],
+    title: shortcutMessages.sections[section.key] ?? englishMessages.sections[section.key],
     items: section.items
       .map((item) => ({
         actionId: item.actionId,
         label: item.backgroundValue === undefined
-          ? shortcutMessages.actions[getShortcutActionLabelKey(item)]
+          ? shortcutMessages.actions[getShortcutActionLabelKey(item)] ?? englishMessages.actions[getShortcutActionLabelKey(item)]
           : `${localeMsg.value.settings.image_view.view_background}: ${localeMsg.value.settings.image_view.view_background_options[item.backgroundValue]}`,
-        keys: item.keys ?? getDisplayShortcutKeys(item.actionId),
+        keys: item.keys ?? (item.allBindings ? getAllShortcutKeys(item.actionId) : getDisplayShortcutKeys(item.actionId)),
       }))
       .filter((item) => item.keys.length > 0),
   }));
@@ -1301,6 +1552,12 @@ function getDisplayShortcutKeys(actionId: ShortcutActionId): string[] {
   const labels = getShortcutLabels(actionId, shortcutPlatform);
   const label = getPreferredShortcutLabel(actionId, labels);
   return splitShortcutLabel(label);
+}
+
+// Every binding of the action, separated by "/".
+function getAllShortcutKeys(actionId: ShortcutActionId): string[] {
+  return getShortcutLabels(actionId, shortcutPlatform)
+    .flatMap((label, index) => (index ? ['/', ...splitShortcutLabel(label)] : splitShortcutLabel(label)));
 }
 
 function getPreferredShortcutLabel(actionId: ShortcutActionId, labels: string[]): string {
@@ -1364,123 +1621,31 @@ function splitMacShortcutLabel(label: string): string[] {
   return keys;
 }
 
-const onImageSearchModelChange = async (event: Event) => {
-  const select = event.target as HTMLSelectElement;
-  const nextModel = Number(select.value || 0);
-  const previousModel = Number(config.settings.imageSearch.model || 0);
-
-  if (nextModel !== 1) {
-    try {
-      await setImageSearchModel(nextModel);
-      config.settings.imageSearch.model = nextModel;
-    } catch (error) {
-      select.value = String(previousModel);
-      toast.error(error?.message || String(error));
-    }
-    return;
-  }
-
-  if (isMultilingualModelAvailable.value) {
-    try {
-      await setImageSearchModel(nextModel);
-      config.settings.imageSearch.model = nextModel;
-    } catch (error) {
-      select.value = String(previousModel);
-      toast.error(error?.message || String(error));
-    }
-    return;
-  }
-
-  select.value = String(previousModel);
-  const shouldDownload = await ask(
-    localeMsg.value.settings.image_search.multilingual_model_download_message,
-    {
-      title: localeMsg.value.settings.image_search.multilingual_model_download_title,
-      kind: 'info',
-      okLabel: localeMsg.value.settings.image_search.download,
-      cancelLabel: localeMsg.value.msgbox?.cancel || 'Cancel',
-    },
-  );
-
-  if (!shouldDownload) {
-    return;
-  }
-
-  await startMultilingualModelDownload(previousModel);
-};
-
-const startMultilingualModelDownload = async (previousModel: number) => {
-  if (isDownloadingMultilingualModel.value) return;
-
-  isDownloadingMultilingualModel.value = true;
-  isCancelingMultilingualModelDownload.value = false;
-  multilingualModelDownloadProgress.value = 0;
-  multilingualModelDownloadedBytes.value = 0;
-  multilingualModelTotalBytes.value = 0;
-
-  try {
-    await downloadMultilingualImageSearchModel();
-    isDownloadingMultilingualModel.value = false;
-    isMultilingualModelAvailable.value = true;
-    await setImageSearchModel(1);
-    config.settings.imageSearch.model = 1;
-    multilingualModelDownloadProgress.value = 100;
-    if (multilingualModelTotalBytes.value > 0) {
-      multilingualModelDownloadedBytes.value = multilingualModelTotalBytes.value;
-    }
-  } catch (error) {
-    if (isCancelingMultilingualModelDownload.value || String(error).includes('Download canceled')) {
-      isCancelingMultilingualModelDownload.value = false;
-      isDownloadingMultilingualModel.value = false;
-      config.settings.imageSearch.model = previousModel;
-      multilingualModelDownloadProgress.value = 0;
-      multilingualModelDownloadedBytes.value = 0;
-      multilingualModelTotalBytes.value = 0;
-      return;
-    }
-    isDownloadingMultilingualModel.value = false;
-    config.settings.imageSearch.model = previousModel;
-    const errorMessage = typeof error === 'string' ? error : error?.message;
-    toast.error(errorMessage || localeMsg.value.settings.image_search.multilingual_model_download_failed);
-  }
-};
-
-const cancelMultilingualModelDownload = async () => {
-  if (!isDownloadingMultilingualModel.value) return;
-
-  isCancelingMultilingualModelDownload.value = true;
-  isDownloadingMultilingualModel.value = false;
-  multilingualModelDownloadProgress.value = 0;
-  multilingualModelDownloadedBytes.value = 0;
-  multilingualModelTotalBytes.value = 0;
-  await cancelMultilingualImageSearchModelDownload();
+const onImageSearchModelChange = async () => {
+  await syncImageSearchModelStatus();
 };
 
 onMounted(async () => {
   window.addEventListener('keydown', handleKeyDown);
+  const appConfig = await getAppConfig();
+  if (appConfig) applyExperimentalAi(appConfig);
+  await refreshAiProgress();
+  if (!aiSettingsDisposed) aiProgressTimer = setInterval(() => { if (config.settings.tabIndex === 4) void refreshAiProgress(); }, 5000);
   if (typeof config.settings.tabIndex !== 'number' || config.settings.tabIndex < 0 || config.settings.tabIndex >= settingsTabs.length) {
     config.settings.tabIndex = 0;
   }
-  if (typeof config.settings.imageSearch.model !== 'number') {
-    config.settings.imageSearch.model = 0;
-  }
+  config.settings.imageSearch.model = 0;
   applyWindowScale(Number(config.settings.scale || 1));
   void refreshLibraryName();
   unlistenLibrarySwitched = await listen('library-switched', refreshLibraryName);
   // Window-state restoration can replace the creation size with an older,
   // taller Options window. Resize before loading optional model metadata.
   await updateSettingsWindowSize(Number(config.settings.scale || 1));
-  unlistenImageSearchModelDownloadProgress = await listenImageSearchModelDownloadProgress((event: any) => {
-    const progress = Number(event?.payload?.progress ?? 0);
-    multilingualModelDownloadProgress.value = Math.max(0, Math.min(100, progress));
-    multilingualModelDownloadedBytes.value = Math.max(0, Number(event?.payload?.downloadedBytes ?? 0));
-    multilingualModelTotalBytes.value = Math.max(0, Number(event?.payload?.totalBytes ?? 0));
-  });
   await syncImageSearchModelStatus();
   dbStorageDir.value = (await getDbStorageDir()) || '';
   hasCustomDbStorage.value = await isUsingCustomDbStorage();
 
-  
+
   // Show window after mount
   await appWindow.show();
 
@@ -1494,17 +1659,12 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  aiSettingsDisposed = true;
+  clearInterval(aiProgressTimer);
   unlistenLibrarySwitched?.();
   if (unlistenCloseRequested) {
     unlistenCloseRequested();
     unlistenCloseRequested = null;
-  }
-  if (isDownloadingMultilingualModel.value) {
-    void cancelMultilingualImageSearchModelDownload();
-  }
-  if (unlistenImageSearchModelDownloadProgress) {
-    unlistenImageSearchModelDownloadProgress();
-    unlistenImageSearchModelDownloadProgress = null;
   }
   document.documentElement.style.fontSize = '';
   window.removeEventListener('keydown', handleKeyDown);
@@ -1574,6 +1734,9 @@ watch(() => config.settings.rawThumbnailSource, (newValue) => {
 watch(() => config.settings.mapProvider, (newValue) => {
   emit('settings-mapProvider-changed', newValue);
 });
+watch(() => config.settings.localMapPath, (newValue) => {
+  emit('settings-localMapPath-changed', newValue);
+});
 watch(() => config.settings.tiandituToken, (newValue) => {
   emit('settings-tiandituToken-changed', newValue);
 });
@@ -1617,6 +1780,9 @@ watch(() => config.settings.viewBackground, (newValue) => {
 watch(() => config.settings.slideShowTransition, (newValue) => {
   emit('settings-slideShowTransition-changed', newValue);
 });
+watch(() => config.settings.slideShowPanZoom, (newValue) => {
+  emit('settings-slideShowPanZoom-changed', newValue);
+});
 watch(() => config.settings.autoPlayVideo, (newValue) => {
   emit('settings-autoPlayVideo-changed', newValue);
 });
@@ -1648,9 +1814,16 @@ watch(() => config.settings.face.clusterThresholdIndex, (newValue) => {
 
 // Handle keyboard shortcuts
 function handleKeyDown(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    searchInputRef.value?.focus();
+    searchInputRef.value?.select();
+    return;
+  }
+
   if (isEditableTarget(event.target)) return;
   const navigationKeys = ['Tab', 'Escape'];
-  
+
   // Disable default behavior for certain keys
   if (navigationKeys.includes(event.key)) {
     event.preventDefault();
@@ -1662,6 +1835,10 @@ function handleKeyDown(event: KeyboardEvent) {
       config.settings.tabIndex = config.settings.tabIndex % settingsTabs.length;
       break;
     case 'Escape':
+      if (searchQuery.value) {
+        searchQuery.value = '';
+        return;
+      }
       // Close the topmost dialog first
       if (showFolderManager.value) { showFolderManager.value = false; return; }
       if (showBackupDialog.value) { showBackupDialog.value = false; return; }
@@ -1774,4 +1951,17 @@ async function updateSettingsWindowSize(scale: number) {
 .options-window .select-sm,
 .options-window .input-sm,
 .options-window .btn-sm { min-height: 1.5rem; height: 1.5rem; font-size: 0.75rem; }
+</style>
+
+<style scoped>
+.options-window { font-family: Arial, sans-serif; }
+.options-window :deep(*), .options-window :deep(*::before), .options-window :deep(*::after) {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+.options-window :deep(.settings-search-hidden) { display: none !important; }
+.options-window :deep(.settings-search-breadcrumb) {
+  position: absolute; top: 0; left: 0; font-size: 11px; line-height: 18px; color: var(--fallback-bc, currentColor); opacity: .75;
+}
+.options-window :deep(.settings-search-row) { position: relative; height: auto; min-height: 2rem; padding-top: 18px; }
+:global(::highlight(settings-match)) { background: #e7c65b; color: #181818; }
 </style>

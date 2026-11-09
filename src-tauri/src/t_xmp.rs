@@ -343,6 +343,106 @@ fn extract_xmp_comment(content: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Captions embedded in JPEG files (LAP-047)
+// ---------------------------------------------------------------------------
+
+/// Text camera firmware writes into the description fields: not a caption.
+fn is_camera_boilerplate(text: &str) -> bool {
+    let t = text.split_whitespace().collect::<Vec<_>>().join(" ").to_uppercase();
+    const EXACT: &[&str] = &["OLYMPUS DIGITAL CAMERA", "SONY DSC", "DIGITAL CAMERA", "KONICA MINOLTA DIGITAL CAMERA",
+        "MINOLTA DIGITAL CAMERA", "KODAK DIGITAL STILL CAMERA", "DIGITAL STILL CAMERA", "SAMSUNG DIGITAL CAMERA",
+        "SAMSUNG CAMERA PICTURES", "EXIF_JPEG_PICTURE", "JPEG", "JPG", "IMAGE", "PICTURE", "PHOTO", "DEFAULT",
+        "UNTITLED", "NONE", "DCIM", "CAMERA", "LEICA", "SANYO DIGITAL CAMERA", "FUJIFILM DIGITAL CAMERA", "VIVITAR DIGITAL CAMERA"];
+    if EXACT.contains(&t.as_str()) { return true; }
+    // "<MAKER> DIGITAL CAMERA", "<MAKER> DSC" and the like: a few words ending in a camera word.
+    let words = t.split(' ').count();
+    words <= 4 && (t.ends_with(" DIGITAL CAMERA") || t.ends_with(" DSC") || t.ends_with(" STILL CAMERA"))
+        || t.chars().all(|c| c == '?' || !c.is_alphanumeric())
+}
+
+fn clean_caption(raw: &str) -> Option<String> {
+    let t = raw.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    (!t.is_empty() && !is_camera_boilerplate(t)).then(|| t.to_string())
+}
+
+/// IPTC-IIM Caption-Abstract (2:120) in a Photoshop APP13 block ("Photoshop 3.0" 8BIM resources;
+/// the IPTC record is resource 0x0404). UTF-8 when 1:90 says so or the bytes are valid UTF-8,
+/// else Latin-1.
+fn iptc_caption(app13: &[u8]) -> Option<String> {
+    let mut i = app13.strip_prefix(b"Photoshop 3.0\0".as_slice()).map(|_| 14)?;
+    while i + 12 <= app13.len() && &app13[i..i + 4] == b"8BIM" {
+        let id = u16::from_be_bytes([app13[i + 4], app13[i + 5]]);
+        let name_len = app13[i + 6] as usize;
+        let mut j = i + 7 + name_len;
+        if (name_len + 1) % 2 == 1 { j += 1; }               // the Pascal name is padded to even
+        if j + 4 > app13.len() { return None; }
+        let size = u32::from_be_bytes([app13[j], app13[j + 1], app13[j + 2], app13[j + 3]]) as usize;
+        let data = app13.get(j + 4..j + 4 + size)?;
+        if id == 0x0404 {
+            let (mut k, mut utf8, mut caption) = (0, false, None);
+            while k + 5 <= data.len() && data[k] == 0x1C {
+                let (rec, ds) = (data[k + 1], data[k + 2]);
+                let len = u16::from_be_bytes([data[k + 3], data[k + 4]]) as usize;
+                if len & 0x8000 != 0 { break; }               // extended lengths: never a caption
+                let value = data.get(k + 5..k + 5 + len)?;
+                if rec == 1 && ds == 90 && value.windows(3).any(|w| w == b"\x1b%G") { utf8 = true; }
+                if rec == 2 && ds == 120 { caption = Some(value.to_vec()); }
+                k += 5 + len;
+            }
+            return caption.map(|v| match std::str::from_utf8(&v) {
+                Ok(text) => text.to_string(),
+                Err(_) if utf8 => String::from_utf8_lossy(&v).into_owned(),
+                Err(_) => v.iter().map(|&b| b as char).collect(),
+            });
+        }
+        i = j + 4 + size + size % 2;
+    }
+    None
+}
+
+/// The APP13 (IPTC) block and the XMP packet of a JPEG, reading only its header segments.
+fn jpeg_metadata_segments(path: &Path) -> (Option<Vec<u8>>, Option<String>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let (mut app13, mut xmp) = (None, None);
+    let Ok(file) = fs::File::open(path) else { return (None, None) };
+    let mut f = std::io::BufReader::new(file);
+    let mut head = [0u8; 2];
+    if f.read_exact(&mut head).is_err() || head != [0xFF, 0xD8] { return (None, None); }
+    for _ in 0..64 {
+        let mut marker = [0u8; 2];
+        if f.read_exact(&mut marker).is_err() || marker[0] != 0xFF { break; }
+        let m = marker[1];
+        if m == 0xD8 || m == 0x01 || (0xD0..=0xD7).contains(&m) { continue; }
+        if m == 0xDA || m == 0xD9 { break; }                  // image data: no metadata after this
+        let mut len = [0u8; 2];
+        if f.read_exact(&mut len).is_err() { break; }
+        let body_len = (u16::from_be_bytes(len) as usize).saturating_sub(2);
+        const XMP_ID: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+        if m == 0xED || m == 0xE1 {
+            let mut body = vec![0u8; body_len];
+            if f.read_exact(&mut body).is_err() { break; }
+            if m == 0xED && body.starts_with(b"Photoshop 3.0\0") { app13 = Some(body); }
+            else if m == 0xE1 && body.starts_with(XMP_ID) { xmp = Some(String::from_utf8_lossy(&body[XMP_ID.len()..]).into_owned()); }
+        } else if f.seek(SeekFrom::Current(body_len as i64)).is_err() { break; }
+    }
+    (app13, xmp)
+}
+
+/// A caption written into a JPEG (by Picasa and most photo programs), for `afiles.comments`:
+/// IPTC Caption-Abstract, else XMP dc:description, else the EXIF ImageDescription the scan has
+/// already read. Camera boilerplate ("OLYMPUS DIGITAL CAMERA", "SONY DSC") is not a caption.
+/// Other files: None, without opening them.
+pub fn embedded_caption(path: &str, exif_description: Option<&str>) -> Option<String> {
+    let p = Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "jpe") { return None; }
+    let (app13, xmp) = jpeg_metadata_segments(p);
+    app13.as_deref().and_then(iptc_caption).and_then(|c| clean_caption(&c))
+        .or_else(|| xmp.as_deref().and_then(extract_xmp_comment).and_then(|c| clean_caption(&c)))
+        .or_else(|| exif_description.and_then(clean_caption))
+}
+
+// ---------------------------------------------------------------------------
 // Indexing synchronization
 // ---------------------------------------------------------------------------
 
@@ -413,6 +513,81 @@ pub fn check_and_sync_xmp_sidecar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // LAP-047: a minimal JPEG with the given header segments, then image data.
+    fn jpeg_with(segments: &[(u8, Vec<u8>)], image_data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xFF, 0xD8];
+        for (marker, body) in segments {
+            out.extend([0xFF, *marker]);
+            out.extend(((body.len() + 2) as u16).to_be_bytes());
+            out.extend(body);
+        }
+        out.extend([0xFF, 0xDA, 0x00, 0x02]);
+        out.extend(image_data);
+        out.extend([0xFF, 0xD9]);
+        out
+    }
+
+    fn app13_caption(text: &[u8]) -> Vec<u8> {
+        let mut iptc = vec![0x1C, 0x02, 0x00, 0x00, 0x02, 0x00, 0x04];       // 2:0 record version
+        iptc.extend([0x1C, 0x02, 120]);
+        iptc.extend((text.len() as u16).to_be_bytes());
+        iptc.extend(text);
+        let mut body = b"Photoshop 3.0\0".to_vec();
+        body.extend(b"8BIM"); body.extend(0x0404u16.to_be_bytes()); body.extend([0, 0]);   // empty, padded name
+        body.extend((iptc.len() as u32).to_be_bytes()); body.extend(&iptc);
+        if iptc.len() % 2 == 1 { body.push(0); }
+        body
+    }
+
+    fn write_temp(name: &str, bytes: &[u8]) -> String {
+        let dir = std::env::temp_dir().join(format!("lap047_caption_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn embedded_caption_reads_iptc_then_xmp_then_exif_and_skips_camera_text() {
+        let iptc = write_temp("iptc.jpg", &jpeg_with(&[(0xED, app13_caption(b"A picnic by the lake.\0"))], b"data"));
+        assert_eq!(embedded_caption(&iptc, Some("SONY DSC")).as_deref(), Some("A picnic by the lake."));
+        let mut xmp_body = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        xmp_body.extend(br#"<x:xmpmeta><rdf:RDF><rdf:Description><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Lunch &amp; a walk</rdf:li></rdf:Alt></dc:description></rdf:Description></rdf:RDF></x:xmpmeta>"#);
+        let xmp = write_temp("xmp.jpg", &jpeg_with(&[(0xE1, b"Exif\0\0II*\0".to_vec()), (0xE1, xmp_body)], b"data"));
+        assert_eq!(embedded_caption(&xmp, None).as_deref(), Some("Lunch & a walk"));
+        let plain = write_temp("plain.jpg", &jpeg_with(&[(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0".to_vec())], b"data"));
+        assert_eq!(embedded_caption(&plain, Some("Preparing the picnic")).as_deref(),
+            Some("Preparing the picnic"));
+        for junk in ["OLYMPUS DIGITAL CAMERA", "SONY DSC", "Jpeg", "  ", "KODAK DIGITAL STILL CAMERA", "NIKON DSC", "????"] {
+            assert_eq!(embedded_caption(&plain, Some(junk)), None, "{junk}");
+        }
+        let junk_iptc = write_temp("junk_iptc.jpg", &jpeg_with(&[(0xED, app13_caption(b"OLYMPUS DIGITAL CAMERA"))], b"data"));
+        assert_eq!(embedded_caption(&junk_iptc, Some("A real one")).as_deref(), Some("A real one"));
+    }
+
+    #[test]
+    fn embedded_caption_ignores_caption_like_bytes_in_image_data_and_non_jpegs() {
+        // 1C 02 78 inside the compressed data (seen in a real file) is not an IPTC caption.
+        let mut data = vec![0x11; 50];
+        data.extend([0x1C, 0x02, 0x78, 0x00, 0x05]);
+        data.extend(b"hello");
+        let path = write_temp("noise.jpg", &jpeg_with(&[], &data));
+        assert_eq!(embedded_caption(&path, None), None);
+        let png = write_temp("caption.png", &jpeg_with(&[(0xED, app13_caption(b"not read"))], b"data"));
+        assert_eq!(embedded_caption(&png, None), None);
+        assert_eq!(embedded_caption("C:/no/such/file.jpg", Some("SONY DSC")), None);
+    }
+
+    #[test]
+    #[ignore = "Requires explicitly selected disposable caption fixtures"]
+    fn embedded_caption_reads_explicit_fixtures() {
+        for index in [1, 2] {
+            let path=std::env::var(format!("LAP_XMP_FIXTURE_{index}")).expect("Select a disposable JPEG fixture");
+            let want=std::env::var(format!("LAP_XMP_EXPECTED_{index}")).expect("Set its expected caption");
+            assert_eq!(embedded_caption(&path, None).as_deref(), Some(want.as_str()));
+        }
+    }
 
     #[test]
     fn test_xml_escape_and_unescape() {

@@ -346,6 +346,27 @@ fn primary_image_orientation(exif: &exif::Exif) -> i32 {
         .unwrap_or(1) as i32
 }
 
+pub(crate) fn is_rim_camera(exif: &exif::Exif) -> bool {
+    let make = exif.get_field(Tag::Make, In::PRIMARY)
+        .map(|f| f.display_value().to_string()).unwrap_or_default();
+    make.contains("Research In Motion") || make.contains("BlackBerry")
+}
+
+// Only this firmware's already-landscape pixels carry the known bogus tag.
+pub(crate) fn has_rim_orientation_defect(exif: &exif::Exif, width: u32, height: u32) -> bool {
+    let text = |tag| exif.get_field(tag, In::PRIMARY)
+        .map(|f| f.display_value().to_string()).unwrap_or_default();
+    primary_image_orientation(exif) == 6 && width > height
+        && text(Tag::Software).contains("Rim Exif Version1.00a")
+        && is_rim_camera(exif)
+}
+
+pub(crate) fn normalized_image_orientation(exif: &exif::Exif, width: u32, height: u32) -> i32 {
+    if has_rim_orientation_defect(exif, width, height) { 1 } else { primary_image_orientation(exif) }
+}
+
+// The firmware repair invalidates its verified sources in migration 20. Keep
+// unaffected thumbnails compatible instead of decoding the entire library again.
 pub const ORIENTATION_ALGORITHM_VERSION: u32 = 2;
 pub const ORIENTATION_CACHE_PREFIX: &str = "o2-";
 
@@ -364,7 +385,9 @@ pub fn get_image_orientation(file_path: &str) -> i32 {
     if let Some(exif) = read_exif_from_bytes_permissive(&data) {
         // IFD1 describes the embedded thumbnail, not the main photo. Missing
         // main-image orientation means upright even when the thumbnail rotates.
-        return primary_image_orientation(&exif);
+        if primary_image_orientation(&exif) != 6 { return primary_image_orientation(&exif); }
+        let (width, height) = image::image_dimensions(file_path).unwrap_or((0, 0));
+        return normalized_image_orientation(&exif, width, height);
     }
 
     // 2. Industry Fallback: Binary Scan
@@ -399,6 +422,30 @@ mod orientation_tests {
         assert_eq!(primary_image_orientation(&exif), 1);
         assert_eq!(primary_image_orientation(&orientation_exif(Some(6), 8)), 6);
         assert_eq!(primary_image_orientation(&orientation_exif(Some(1), 8)), 1);
+    }
+
+    #[test]
+    fn lap106_rim_exception_requires_firmware_make_and_landscape_pixels() {
+        let make = exif::Field { tag: Tag::Make, ifd_num: In::PRIMARY,
+            value: exif::Value::Ascii(vec![b"Research In Motion".to_vec()]) };
+        let firmware = exif::Field { tag: Tag::Software, ifd_num: In::PRIMARY,
+            value: exif::Value::Ascii(vec![b"Rim Exif Version1.00a".to_vec()]) };
+        let orientation = exif::Field { tag: Tag::Orientation, ifd_num: In::PRIMARY,
+            value: exif::Value::Short(vec![6]) };
+        let parse = |fields: &[&exif::Field]| {
+            let mut writer = exif::experimental::Writer::new();
+            for f in fields { writer.push_field(f); }
+            let mut raw = Cursor::new(Vec::new());
+            writer.write(&mut raw, true).unwrap();
+            read_exif_raw_with_recovery(raw.into_inner()).unwrap()
+        };
+        let rim = parse(&[&make, &firmware, &orientation]);
+        assert_eq!(normalized_image_orientation(&rim, 960, 720), 1);
+        assert_eq!(normalized_image_orientation(&rim, 720, 960), 6);
+        assert_eq!(normalized_image_orientation(&rim, 960, 960), 6);
+        assert_eq!(normalized_image_orientation(&parse(&[&make, &orientation]), 960, 720), 6);
+        assert_eq!(normalized_image_orientation(&parse(&[&firmware, &orientation]), 960, 720), 6);
+        assert_eq!(normalized_image_orientation(&orientation_exif(Some(6), 1), 960, 720), 6);
     }
 
     #[test]
@@ -678,6 +725,7 @@ pub fn generate_directory_thumbnails(
     let results: Vec<bool> = files
         .iter()
         .map(|path| {
+            crate::scheduler::cooperative_yield_blocking();
             let path_str = path.to_string_lossy().to_string();
             let Some(file_type) = t_utils::get_file_type(&path_str) else {
                 return false;
@@ -972,12 +1020,41 @@ pub struct EditParams {
     saturation: Option<f32>, // multiplier, 1.0 is normal
     #[serde(rename = "autoEnhance", default)]
     pub(crate) auto_enhance: Option<bool>,
+    #[serde(rename = "autoEnhancePreset", default)]
+    pub(crate) auto_enhance_preset: Option<u8>,
     #[serde(rename = "redEye", default)]
     red_eye: bool,
     #[serde(rename = "sourceFileId", default)]
     pub(crate) source_file_id: Option<i64>,
-    #[serde(default)]
-    tools: Option<serde_json::Value>,
+    #[serde(default, alias = "tools")]
+    picasa: Option<serde_json::Value>,
+}
+
+impl EditParams {
+    pub(crate) fn scaled_to_preview(&self, raw_w: u32, raw_h: u32, preview_w: u32, preview_h: u32) -> Self {
+        let mut scaled = self.clone();
+        if raw_w > 0 && raw_h > 0 && preview_w > 0 && preview_h > 0 {
+            let (oriented_raw_w, oriented_raw_h) = if (5..=8).contains(&self.orientation) {
+                (raw_h as f64, raw_w as f64)
+            } else {
+                (raw_w as f64, raw_h as f64)
+            };
+            if (preview_w as f64 - oriented_raw_w).abs() > 1.0 || (preview_h as f64 - oriented_raw_h).abs() > 1.0 {
+                let sx = preview_w as f64 / oriented_raw_w;
+                let sy = preview_h as f64 / oriented_raw_h;
+
+                if scaled.crop.width > 0 && scaled.crop.height > 0 {
+                    scaled.crop.x = ((scaled.crop.x as f64) * sx).round() as u32;
+                    scaled.crop.y = ((scaled.crop.y as f64) * sy).round() as u32;
+                    scaled.crop.width = (((scaled.crop.width as f64) * sx).round() as u32)
+                        .min(preview_w.saturating_sub(scaled.crop.x));
+                    scaled.crop.height = (((scaled.crop.height as f64) * sy).round() as u32)
+                        .min(preview_h.saturating_sub(scaled.crop.y));
+                }
+            }
+        }
+        scaled
+    }
 }
 
 pub fn export_requires_confirmation(params: &EditParams) -> bool {
@@ -989,6 +1066,10 @@ pub fn export_requires_confirmation(params: &EditParams) -> bool {
 pub async fn edit_image(params: EditParams) -> bool {
     if let Ok(img) = get_edited_image(&params).await {
         let path = Path::new(&params.dest_file_path);
+        if path == Path::new(&params.source_file_path)
+            && ensure_picasaoriginals_backup(path).is_err() {
+            return false;
+        }
         let format = match params.output_format.as_str() {
             "png" => image::ImageFormat::Png,
             "webp" => image::ImageFormat::WebP,
@@ -1537,11 +1618,16 @@ pub(crate) async fn get_edited_image(params: &EditParams) -> Result<DynamicImage
 pub(crate) fn apply_edit_params(mut img: DynamicImage, params: &EditParams) -> Result<DynamicImage, String> {
     // Correct the oriented source before crop/resize, using face coordinates
     // in that same space. Display, face crops and export share this pipeline.
-    if params.auto_enhance.unwrap_or(false) {crate::t_enhance::apply_auto_enhance(&mut img);}
-    if params.red_eye || params.auto_enhance.unwrap_or(false) {
+    if params.auto_enhance.unwrap_or(false) {
+        crate::t_enhance::apply_auto_enhance_preset(&mut img, params.auto_enhance_preset.unwrap_or(1));
+    }
+    // Red-eye only for the Redeye tool: iAuto 2019 (I'm Feeling Lucky's default) has no red-eye
+    // step (that is its "+ RE" variant), and running it on every enhanced photo turned reddish
+    // skin around the eyes green (LAP-043).
+    if params.red_eye {
         if let Some(file_id)=params.source_file_id {crate::t_enhance::correct_red_eye_for_file(&mut img,file_id)?;}
     }
-    if let Some(tools)=&params.tools {img=crate::t_edit_tools::apply(img,tools)?;}
+    if let Some(tools)=&params.picasa {img=crate::t_edit_tools::apply_for(img,tools,Some(Path::new(&params.source_file_path)))?;}
     // 1. Flip
     if params.flip_horizontal {
         img = img.fliph();
@@ -1926,4 +2012,274 @@ pub async fn get_file_image_bytes_cached(
     }
 
     Ok(image_data)
+}
+
+pub const PREVIEW_MAX_DIMENSION: u32 = 2048;
+
+type PreviewBaseKey = (String, u64, u128, u32);
+static PREVIEW_BASE_CACHE: Lazy<Mutex<VecDeque<(PreviewBaseKey, DynamicImage)>>> =
+    Lazy::new(|| Mutex::new(VecDeque::new()));
+
+/// Returns an independent, oriented screen-fit base before any edits.
+fn load_screen_fit_base(file_path: &str, max_edge: u32) -> Result<DynamicImage, String> {
+    if max_edge == 0 { return Err("Preview edge must be positive".into()); }
+    let path = fs::canonicalize(file_path).map_err(|e| e.to_string())?;
+    let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+    let modified = metadata.modified().map_err(|e| e.to_string())?
+        .duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
+    let key = (path.to_string_lossy().into_owned(), metadata.len(), modified, max_edge);
+    // Serialize misses too, avoiding duplicate simultaneous decodes.
+    let mut cache = PREVIEW_BASE_CACHE.lock().map_err(|e| e.to_string())?;
+    if let Some(index) = cache.iter().position(|(cached, _)| cached == &key) {
+        let entry = cache.remove(index).unwrap();
+        let img = entry.1.clone();
+        cache.push_back(entry);
+        return Ok(img);
+    }
+    let orientation = get_image_orientation(file_path);
+    let img = if is_jpeg_path(file_path) {
+        match decode_scaled_jpeg_image(file_path, orientation, max_edge)? {
+            Some(img) => img,
+            None => image::open(path).map_err(|e| e.to_string())?,
+        }
+    } else {
+        image::open(path).map_err(|e| e.to_string())?
+    };
+    let mut img = apply_orientation(img, orientation);
+    if img.width().max(img.height()) > max_edge {
+        img = img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3);
+    }
+    cache.push_back((key, img.clone()));
+    while cache.len() > 4 { cache.pop_front(); }
+    Ok(img)
+}
+
+fn picasaoriginals_path(photo_path: &Path) -> Result<PathBuf, String> {
+    let filename = photo_path.file_name().ok_or("Photo path has no filename")?;
+    Ok(photo_path.parent().unwrap_or_else(|| Path::new("."))
+        .join(".picasaoriginals").join(filename))
+}
+
+static PICASAORIGINALS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Preserve the first original, including on volumes without hard-link support.
+pub fn ensure_picasaoriginals_backup(photo_path: &Path) -> Result<PathBuf, String> {
+    let _guard = PICASAORIGINALS_LOCK.lock().map_err(|e| e.to_string())?;
+    let backup = picasaoriginals_path(photo_path)?;
+    if backup.try_exists().map_err(|e| e.to_string())? { return Ok(backup); }
+    let folder = backup.parent().unwrap();
+    fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    let mut source = File::open(photo_path).map_err(|e| e.to_string())?;
+    let mut destination = match fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(backup),
+        Err(e) => return Err(e.to_string()),
+    };
+    let result = (|| {
+        std::io::copy(&mut source, &mut destination).map_err(|e| e.to_string())?;
+        destination.sync_all().map_err(|e| e.to_string())
+    })();
+    drop(destination);
+    if result.is_err() { let _ = fs::remove_file(&backup); }
+    result?;
+    Ok(backup)
+}
+
+/// Whether `.picasaoriginals/<filename>` next to the photo holds its original (LAP-RE-03).
+pub fn has_picasaoriginals_backup(photo_path: &Path) -> Result<bool, String> {
+    picasaoriginals_path(photo_path)?.try_exists().map_err(|e| e.to_string())
+}
+
+pub fn restore_from_picasaoriginals(photo_path: &Path) -> Result<bool, String> {
+    let _guard = PICASAORIGINALS_LOCK.lock().map_err(|e| e.to_string())?;
+    let backup = picasaoriginals_path(photo_path)?;
+    if !backup.try_exists().map_err(|e| e.to_string())? { return Ok(false); }
+    fs::copy(backup, photo_path).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Generate an intermediate screen-fit preview buffer (~2048px maximum dimension)
+/// suitable for locked 120 FPS slider updates, browser canvas display, and fast thumbnailing.
+pub fn generate_screen_fit_preview(
+    file_path: &str,
+    orientation: i32,
+) -> Result<Option<Vec<u8>>, String> {
+    let file_type = t_utils::get_file_type(file_path).unwrap_or(0);
+
+    if file_type == 3 {
+        if let Ok(Some(data)) = get_raw_preview_image(file_path, true) {
+            if let Ok(img) = image::load_from_memory(&data) {
+                if img.width() <= PREVIEW_MAX_DIMENSION && img.height() <= PREVIEW_MAX_DIMENSION {
+                    return Ok(Some(data));
+                }
+                return resize_dynamic_image_to_jpeg(img, orientation, PREVIEW_MAX_DIMENSION).map(Some);
+            }
+            return Ok(Some(data));
+        }
+    }
+
+    if is_heic_path(file_path) {
+        if let Ok(Some(data)) = crate::t_heif::get_heif_preview(file_path, orientation, PREVIEW_MAX_DIMENSION) {
+            return Ok(Some(data));
+        }
+    }
+
+    if t_jxl::is_jxl_path(file_path) {
+        if let Ok(Some(data)) = t_jxl::get_jxl_preview_image(file_path, PREVIEW_MAX_DIMENSION) {
+            return Ok(Some(data));
+        }
+    }
+
+    if is_ffmpeg_backed_image_path(file_path) {
+        if let Ok(Some(data)) = crate::t_video::get_video_thumbnail_sync(file_path, PREVIEW_MAX_DIMENSION, None, None) {
+            return Ok(Some(data));
+        }
+    }
+
+    if crate::t_libraw::is_tiff_path(file_path) {
+        if let Ok(Some(data)) = crate::t_libraw::get_raw_thumbnail(file_path, PREVIEW_MAX_DIMENSION, false) {
+            return Ok(Some(data));
+        }
+    }
+
+    // The in-memory decoded tier complements the persistent encoded preview tier.
+    if is_jpeg_path(file_path) {
+        let img = load_screen_fit_base(file_path, PREVIEW_MAX_DIMENSION)?;
+        return crate::t_jpeg::encode_rgb8(&img.to_rgb8(), 88).map(Some);
+    }
+
+    // General fallback for all other formats
+    let img_reader = ImageReader::open(file_path)
+        .map_err(|e| format!("Failed to open image for preview: {}", e))?;
+    let img = img_reader
+        .decode()
+        .map_err(|e| format!("Failed to decode image for preview: {}", e))?;
+
+    resize_dynamic_image_to_jpeg(img, orientation, PREVIEW_MAX_DIMENSION).map(Some)
+}
+
+/// Retrieve or compute a screen-fit preview buffer from the cache.
+pub async fn get_or_create_preview_image(
+    file_id: i64,
+    file_path: &str,
+    orientation: i32,
+) -> Result<Vec<u8>, String> {
+    // JPEG drafts use the metadata-validated decoded tier, including after a
+    // source is replaced; the persistent tier remains available to other formats.
+    if file_id > 0 && !is_jpeg_path(file_path) {
+        if let Some(cached) = crate::t_thumb_cache::get_preview(file_id) {
+            return Ok(cached);
+        }
+    }
+
+    let path_owned = file_path.to_string();
+    let preview_bytes = tauri::async_runtime::spawn_blocking(move || {
+        generate_screen_fit_preview(&path_owned, orientation)
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    .ok_or_else(|| format!("Failed to generate preview for {}", file_path))?;
+
+    if file_id > 0 {
+        let _ = crate::t_thumb_cache::put_preview(file_id, &preview_bytes);
+    }
+    Ok(preview_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn save_in_place_preserves_the_first_original() {
+        let root = std::env::temp_dir().join(format!("lap089-save-{}",Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("photo.png");
+        RgbImage::from_pixel(8,8,image::Rgb([40,80,120])).save(&path).unwrap();
+        let pristine = fs::read(&path).unwrap();
+        let params: EditParams = serde_json::from_value(serde_json::json!({
+            "sourceFilePath":path.to_str().unwrap(),"destFilePath":path.to_str().unwrap(),"outputFormat":"png",
+            "orientation":1,"flipHorizontal":false,"flipVertical":false,"rotate":0,
+            "crop":{"x":0,"y":0,"width":0,"height":0},"resize":{"width":null,"height":null},"brightness":20
+        })).unwrap();
+        assert!(edit_image(params.clone()).await);
+        assert_ne!(fs::read(&path).unwrap(),pristine);
+        assert!(edit_image(params).await);
+        assert_eq!(fs::read(root.join(".picasaoriginals/photo.png")).unwrap(),pristine);
+        assert!(restore_from_picasaoriginals(&path).unwrap());
+        assert_eq!(fs::read(&path).unwrap(),pristine);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn preview_cache_hit_and_identical_pixels() {
+        let root = std::env::temp_dir().join(format!("lap089-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let photo = root.join("photo.jpg");
+        RgbImage::from_fn(80,60,|x,y| image::Rgb([x as u8,y as u8,90])).save(&photo).unwrap();
+        let field = exif::Field { tag: Tag::Orientation, ifd_num: In::PRIMARY,
+            value: exif::Value::Short(vec![6]) };
+        let mut writer = exif::experimental::Writer::new();
+        writer.push_field(&field);
+        let mut tiff = Cursor::new(Vec::new());
+        writer.write(&mut tiff,true).unwrap();
+        write_jpeg_exif_block(&photo,&tiff.into_inner()).unwrap();
+        let path = photo.to_str().unwrap();
+        let first = load_screen_fit_base(path,40).unwrap();
+        assert_eq!(first.dimensions(),(30,40));
+        let canonical = fs::canonicalize(&photo).unwrap().to_string_lossy().into_owned();
+        {
+            let mut cache = PREVIEW_BASE_CACHE.lock().unwrap();
+            cache.iter_mut().find(|(key,_)| key.0 == canonical).unwrap().1 =
+                DynamicImage::ImageRgb8(RgbImage::from_pixel(40,30,image::Rgb([7,8,9])));
+        }
+        assert_eq!(load_screen_fit_base(path,40).unwrap().to_rgb8().get_pixel(0,0).0,[7,8,9]);
+        {
+            let mut cache = PREVIEW_BASE_CACHE.lock().unwrap();
+            cache.iter_mut().find(|(key,_)| key.0 == canonical).unwrap().1 = first.clone();
+        }
+        assert_eq!(first.to_rgba8(),load_screen_fit_base(path,40).unwrap().to_rgba8());
+        assert_eq!(generate_screen_fit_preview(path,1).unwrap(),generate_screen_fit_preview(path,1).unwrap());
+        // Exercise the same preview loader called by render_edit_draft, then
+        // apply edits twice: neither call may mutate the cached base.
+        let params: EditParams = serde_json::from_value(serde_json::json!({
+            "sourceFilePath": path, "destFilePath": "", "outputFormat": "jpeg",
+            "orientation": 1, "flipHorizontal": false, "flipVertical": false,
+            "rotate": 90, "crop": {"x":0,"y":0,"width":0,"height":0},
+            "resize": {"width":null,"height":null}, "filter":"sepia"
+        })).unwrap();
+        let a = get_or_create_preview_image(0,path,1).await.unwrap();
+        let b = get_or_create_preview_image(0,path,1).await.unwrap();
+        assert_eq!(apply_edit_params(image::load_from_memory(&a).unwrap(),&params).unwrap().to_rgba8(),
+            apply_edit_params(image::load_from_memory(&b).unwrap(),&params).unwrap().to_rgba8());
+        assert_eq!(first.to_rgba8(),load_screen_fit_base(path,40).unwrap().to_rgba8());
+        // Refresh one entry, then insert beyond capacity and check true LRU eviction.
+        for edge in [20,21] { load_screen_fit_base(path,edge).unwrap(); }
+        load_screen_fit_base(path,40).unwrap();
+        load_screen_fit_base(path,22).unwrap();
+        load_screen_fit_base(path,23).unwrap();
+        {
+            let cache = PREVIEW_BASE_CACHE.lock().unwrap();
+            assert_eq!(cache.len(),4);
+            assert!(cache.iter().any(|(key,_)| key.0 == canonical && key.3 == 40));
+            assert!(!cache.iter().any(|(key,_)| key.0 == canonical && key.3 == 20));
+        }
+        // A changed file length must invalidate the base even without a timestamp tick.
+        RgbImage::from_pixel(11,9,image::Rgb([200,10,20])).save(&photo).unwrap();
+        assert_eq!(load_screen_fit_base(path,40).unwrap().dimensions(),(11,9));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn picasaoriginals_preserves_and_restores_pristine_bytes() {
+        let root = std::env::temp_dir().join(format!("lap089-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let photo = root.join("photo.jpg");
+        fs::write(&photo,b"original").unwrap();
+        assert!(!restore_from_picasaoriginals(&photo).unwrap());
+        let backup = ensure_picasaoriginals_backup(&photo).unwrap();
+        fs::write(&photo,b"edited").unwrap();
+        assert_eq!(ensure_picasaoriginals_backup(&photo).unwrap(),backup);
+        assert_eq!(fs::read(backup).unwrap(),b"original");
+        assert!(restore_from_picasaoriginals(&photo).unwrap());
+        assert_eq!(fs::read(photo).unwrap(),b"original");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

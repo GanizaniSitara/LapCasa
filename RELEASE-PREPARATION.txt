@@ -1,0 +1,14 @@
+UNPUBLISHED PREPARATION - NOT A CLEARED PUBLIC RELEASE
+
+Remaining checks:
+- Previous-public recipe/settings compatibility, including tools and scalingFitDefault.
+- Crop-icon origin/permission or approved replacement; existing icon is unchanged.
+- Complete corresponding source/build materials for the actual FFmpeg sidecars.
+- Seven declared-permissive dependencies need standalone attribution follow-up.
+- Final unique version, exact production build and normal regression/release review.
+- Fresh standard-user/prerequisites, copied-library upgrade/recovery and CPU/GPU tests.
+
+No installer, model weights, accounts, photos, library databases, caches, private
+history, verification screenshots, private relay or workstation build config is included.
+The two runtime portability changes remove workstation-specific CLI database and
+Python interpreter fallbacks. They require validation before distribution.

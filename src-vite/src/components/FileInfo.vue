@@ -21,108 +21,6 @@
     <!-- Info Content -->
     <div v-if="fileInfo" class="mb-2 px-2 flex-1 overflow-y-auto overflow-x-hidden flex flex-col">
 
-      <!-- Preview Section -->
-      <div class="group/thumbnail border-t border-base-content/5 px-1 py-3 space-y-3">
-        <div
-          class="flex items-center gap-1 cursor-pointer text-base-content/70 hover:text-base-content transition-all duration-200 ease-in-out"
-          @click.stop="togglePreview"
-        >
-          <IconRight
-            class="w-3 h-3 transition-transform duration-200"
-            :class="{ 'rotate-90': showPreviewPanel }"
-            @click.stop="togglePreview"
-          />
-          <span class="py-1 font-bold mr-auto uppercase text-xs tracking-wide text-base-content/30">{{ $t('file_info.preview') }}</span>
-          <div v-if="showPreviewPanel" role="tablist" class="tabs tabs-xs shrink-0">
-            <button
-              role="tab"
-              :class="['tab', !isHistogramPreview ? 'tab-active text-primary' : '']"
-              @click.stop="setPreviewMode('thumbnail')"
-            >{{ $t('file_info.thumbnail') }}</button>
-            <button
-              v-if="canShowHistogram"
-              role="tab"
-              :class="['tab', isHistogramPreview ? 'tab-active text-primary' : '']"
-              @click.stop="setPreviewMode('histogram')"
-            >{{ $t('file_info.histogram') }}</button>
-          </div>
-          <!-- <span
-            v-if="showPreviewPanel && previewTagLabel"
-            class="badge badge-xs flex items-center gap-0.5 bg-base-100/30 text-base-content/70"
-          >
-            <IconLivePhoto v-if="isLivePhoto && !isHistogramPreview" class="h-3 w-3 shrink-0" />
-            {{ previewTagLabel }}
-          </span> -->
-        </div>
-
-        <Transition
-          @before-enter="onBeforeEnter"
-          @enter="onEnter"
-          @after-enter="onAfterEnter"
-          @leave="onLeave"
-        >
-          <div v-if="showPreviewPanel" class="overflow-hidden">
-            <div
-              v-if="!isHistogramPreview"
-              class="relative w-full overflow-hidden rounded-box border border-base-content/5 shadow-sm transition-[padding-top] duration-200 ease-out"
-              :style="{ paddingTop: `${75 * previewScale}%` }"
-              @pointerenter="playVideoPreviewOnHover"
-              @pointerleave="stopPreviewVideo"
-            >
-              <div
-                class="absolute top-2 left-2 flex bg-base-100/30 hover:bg-base-100/70 rounded-box z-20 cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thumbnail:opacity-100 group-hover/thumbnail:pointer-events-auto"
-              >
-                <TButton
-                  :icon="IconZoomOut"
-                  :tooltip="$t('map.zoom_out')"
-                  :disabled="previewScale <= previewScaleOptions[previewScaleOptions.length - 1]"
-                  @click.stop="decreasePreviewScale"
-                />
-                <TButton
-                  :icon="IconZoomIn"
-                  :tooltip="$t('map.zoom_in')"
-                  :disabled="previewScale >= previewScaleOptions[0]"
-                  @click.stop="increasePreviewScale"
-                />
-              </div>
-              <div class="absolute inset-0 cursor-pointer" @click.stop="$emit('openViewer')">
-                <img
-                  v-if="fileInfo?.thumbnail"
-                  :src="fileInfo.thumbnail"
-                  class="h-full w-full object-contain"
-                  :style="previewImageStyle"
-                />
-                <video
-                  v-if="showVideoPreview"
-                  ref="previewVideoRef"
-                  class="pointer-events-none absolute inset-0 h-full w-full object-contain"
-                  :class="isVideoPreviewReady ? 'opacity-100' : 'opacity-0'"
-                  :style="previewImageStyle"
-                  :poster="fileInfo?.thumbnail"
-                  muted
-                  autoplay
-                  loop
-                  playsinline
-                  preload="metadata"
-                  @canplay="isVideoPreviewReady = true"
-                  @playing="isVideoPreviewReady = true"
-                  @error="stopPreviewVideo"
-                ></video> 
-                <div v-if="!fileInfo?.thumbnail && !showVideoPreview" class="flex h-full w-full items-center justify-center bg-base-content/5">
-                  <component
-                    :is="fileInfo?.file_type === 2 ? IconVideo : IconPhoto"
-                    class="w-10 h-10 text-base-content/30"
-                  />
-                </div>
-              </div>
-            </div>
-            <div v-else class="rounded-box border border-base-content/5 bg-base-300/30 p-3 shadow-sm">
-              <ImageHistogram :source="fileInfo?.thumbnail || ''" />
-            </div>
-          </div>
-        </Transition>
-      </div>
-
       <!-- File Info Section -->
       <div class="group/general border-t border-base-content/5 px-1 py-3 space-y-3">
 
@@ -414,6 +312,34 @@
         </Transition>
       </div>
 
+      <!-- Experimental details stay hidden until explicitly enabled in Settings. -->
+      <details v-if="config.infoPanel.showAiTags && hasAiInfo" class="border-t border-base-content/5 px-1 py-4 space-y-3">
+        <summary class="cursor-pointer font-bold uppercase text-xs tracking-wide text-base-content/50">AI Detection</summary>
+        <div class="pl-4 space-y-3 text-xs">
+          <div v-if="sceneChips.length" class="space-y-1">
+            <div class="text-base-content/45">Scene / Place</div>
+            <div class="flex flex-wrap gap-1">
+              <button v-for="chip in sceneChips" :key="`${chip.type}:${chip.value}`" class="badge badge-outline cursor-pointer" @click="searchAi(chip.value, chip.type)">{{ chip.value }}</button>
+            </div>
+          </div>
+          <div v-if="objectChips.length" class="space-y-1">
+            <div class="text-base-content/45">Objects</div>
+            <div class="flex flex-wrap gap-1">
+              <button v-for="chip in objectChips" :key="chip" class="badge badge-outline cursor-pointer" @click="searchAi(chip, 'object')">{{ chip }}</button>
+            </div>
+          </div>
+          <div v-if="aiInfo?.ocr_text?.trim()" class="space-y-1">
+            <div class="text-base-content/45">Detected Text (OCR)</div>
+            <button class="text-left select-text whitespace-pre-wrap break-words hover:text-primary" :title="aiInfo.ocr_text" @click="searchAi(aiInfo.ocr_text.trim().slice(0, 160), 'text')">{{ aiInfo.ocr_text.trim().slice(0, 240) }}</button>
+            <button class="btn btn-ghost btn-xs" @click="copyAiText">Copy text</button>
+          </div>
+          <div v-if="aiInfo?.description" class="space-y-1">
+            <div class="text-base-content/45">Summary / Description</div>
+            <p class="select-text break-words">{{ aiInfo.description }}</p>
+          </div>
+        </div>
+      </details>
+
       <!-- Map View -->
       <div v-if="fileInfo?.gps_latitude && fileInfo?.gps_longitude" 
         class="border-t border-base-content/5 px-1 py-4 space-y-3 flex flex-col transition-[flex-grow]" 
@@ -464,6 +390,8 @@ import { listen } from '@tauri-apps/api/event';
 import { useI18n } from 'vue-i18n';
 import { useToast } from '@/common/toast';
 import { useUIStore } from '@/stores/uiStore';
+import { SIDEBAR } from '@/common/constants';
+import { getFileAiInfo } from '@/common/api';
 import { config, libConfig } from '@/common/config';
 import { isWebViewVideoPlaybackDisabled, getGStreamerAvailability } from '@/common/video';
 import { getTagsForFile, renameFile, saveImageRecipe, getAlbum, getFileCollections, getFileInfo, getMotionPhotoVideoPath, revealPath, getFacesForFile, getPersonThumbnail } from '@/common/api';
@@ -552,6 +480,45 @@ onMounted(async () => { const stop = await listen('tags-changed', refreshTags); 
 onBeforeUnmount(() => { tagsDisposed = true; tagsRequest++; stopTags?.(); });
 
 const toast = useToast();
+const aiInfo = ref<{ ai_tags?: string; ai_objects?: string; ocr_text?: string; description?: string } | null>(null);
+let aiInfoRequest = 0;
+let aiInfoDisposed = false;
+let stopAiConfig: (() => void) | undefined;
+const sceneChips = computed(() => [...new Set((aiInfo.value?.ai_tags || '').split(',').map(value => value.trim()).filter(Boolean))].flatMap(tag => {
+  const match = /^(scene|place):\s*(.+)$/i.exec(tag);
+  return match ? [{ type: match[1].toLowerCase(), value: match[2].trim() }] : [{ type: 'scene', value: tag }];
+}));
+const objectChips = computed(() => [...new Set((aiInfo.value?.ai_objects || '').split(',').map(value => value.trim()).filter(Boolean))]);
+const hasAiInfo = computed(() => sceneChips.value.length > 0 || objectChips.value.length > 0 || !!aiInfo.value?.ocr_text?.trim());
+async function refreshAiInfo() {
+  const request = ++aiInfoRequest;
+  const id = props.fileInfo?.id;
+  const library = libConfig._libraryId;
+  aiInfo.value = null;
+  if (!id) return;
+  try {
+    const result = await getFileAiInfo(id);
+    if (!aiInfoDisposed && request === aiInfoRequest && props.fileInfo?.id === id && libConfig._libraryId === library) aiInfo.value = result;
+  } catch (error) { console.error('Failed to load AI details:', error); }
+}
+watch(() => [props.fileInfo?.id, libConfig._libraryId], refreshAiInfo, { immediate: true });
+onMounted(async () => {
+  const stop = await listen('experimental-ai-config-changed', refreshAiInfo);
+  if (aiInfoDisposed) stop(); else stopAiConfig = stop;
+});
+onBeforeUnmount(() => { aiInfoDisposed = true; aiInfoRequest++; stopAiConfig?.(); });
+function searchAi(value: string, type: string) {
+  const text = type === 'scene' ? `scene: ${value}` : value;
+  libConfig.search.searchTokens = [{ type, value }];
+  libConfig.search.searchText = text;
+  libConfig.search.searchHistoryIndex = -1;
+  config.main.sidebarIndex = SIDEBAR.SEARCH;
+  uiStore.requestCountUpdate({ source: 'search', text });
+}
+async function copyAiText() {
+  try { await navigator.clipboard.writeText(aiInfo.value?.ocr_text || ''); }
+  catch (error) { toast.error(String(error)); }
+}
 const showPreviewPanel = computed(() => config.infoPanel.showPreview);
 const previewScaleOptions = [1, 0.75, 0.5, 0.25];
 const previewScale = computed({

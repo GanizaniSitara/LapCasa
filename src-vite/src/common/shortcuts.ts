@@ -6,6 +6,7 @@ export type ShortcutContext =
   | 'media-viewer'
   | 'image-viewer'
   | 'settings'
+  | 'image-editor'
   | 'album-list'
   | 'album-folder'
   | 'tag-dialog'
@@ -29,9 +30,25 @@ export type ShortcutActionId =
   | 'file.rename'
   | 'file.moveTo'
   | 'file.moveToFolder'
+  | 'file.exportToFolder'
   | 'file.trash'
   | 'file.reveal'
   | 'file.searchSimilar'
+  | 'edit.undo'
+  | 'edit.redo'
+  | 'editor.apply'
+  | 'editor.tabBasic'
+  | 'editor.tabTuning'
+  | 'editor.tabEffects'
+  | 'editor.automask'
+  | 'editor.automaskWhole'
+  | 'editor.automaskSubject'
+  | 'editor.automaskSky'
+  | 'editor.automaskPeople'
+  | 'editor.automaskBackground'
+  | 'editor.automaskSelect'
+  | 'editor.automaskShowMask'
+  | 'editor.automaskRemove'
   | 'meta.favorite'
   | 'meta.rating.clear'
   | 'meta.rating.one'
@@ -69,6 +86,9 @@ export type ShortcutActionId =
   | 'view.backgroundLightGray'
   | 'view.backgroundWhite'
   | 'view.togglePane'
+  | 'view.thumbnailsSmall'
+  | 'view.thumbnailsNormal'
+  | 'view.timeline'
   | 'slideshow.toggle';
 
 export type ShortcutModifier = 'ctrl' | 'meta' | 'alt' | 'shift' | 'cmdOrCtrl';
@@ -180,10 +200,13 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     ],
   },
   {
+    // Enter, E and Ctrl+3 open the editor, as double-click does (LAP-101). Space stays the quick preview.
     id: 'file.editImage',
     contexts: ['content'],
     defaultBindings: [
+      { key: 'Enter', platforms: ['windows', 'linux'], label: { windows: 'Enter', linux: 'Enter' } },
       { code: 'KeyE', allowShift: true, label: 'E' },
+      { code: 'Digit3', modifiers: ['cmdOrCtrl'], label: { mac: '⌘3', windows: 'Ctrl+3', linux: 'Ctrl+3' } },
     ],
   },
   {
@@ -215,10 +238,11 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     ],
   },
   {
+    // Ctrl+I is Info (LAP-101).
     id: 'file.invertSelection',
     contexts: ['content'],
     defaultBindings: [
-      { code: 'KeyI', modifiers: ['cmdOrCtrl'], label: { mac: '⌘I', windows: 'Ctrl+I', linux: 'Ctrl+I' } },
+      { code: 'KeyI', modifiers: ['cmdOrCtrl', 'shift'], label: { mac: '⇧⌘I', windows: 'Ctrl+Shift+I', linux: 'Ctrl+Shift+I' } },
     ],
   },
   {
@@ -238,6 +262,12 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     id: 'file.moveToFolder',
     contexts: ['content'],
     defaultBindings: [{ code: 'KeyM', modifiers: ['cmdOrCtrl', 'shift'], label: { mac: '⇧⌘M', windows: 'Ctrl+Shift+M', linux: 'Ctrl+Shift+M' } }],
+  },
+  {
+    // Picasa's File > Export Picture to Folder (LAP-049)
+    id: 'file.exportToFolder',
+    contexts: ['content'],
+    defaultBindings: [{ code: 'KeyS', modifiers: ['cmdOrCtrl', 'shift'], label: { mac: '⇧⌘S', windows: 'Ctrl+Shift+S', linux: 'Ctrl+Shift+S' } }],
   },
   {
     id: 'file.trash',
@@ -327,12 +357,12 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   },
   {
     id: 'meta.rotate',
-    contexts: ['content', 'media-viewer', 'image-viewer'],
+    contexts: ['content', 'media-viewer', 'image-viewer', 'image-editor'],
     defaultBindings: [{ code: 'KeyR', label: 'R' }],
   },
   {
     id: 'meta.rotateCounterclockwise',
-    contexts: ['content', 'media-viewer', 'image-viewer'],
+    contexts: ['content', 'media-viewer', 'image-viewer', 'image-editor'],
     defaultBindings: [{ code: 'KeyR', modifiers: ['shift'], label: { mac: '⇧R', windows: 'Shift+R', linux: 'Shift+R' } }],
   },
   {
@@ -340,31 +370,30 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     contexts: ['content', 'media-viewer'],
     defaultBindings: [
       { code: 'KeyI', allowShift: true, label: 'I' },
-      { code: 'KeyI', modifiers: ['cmdOrCtrl'], allowShift: true, label: { mac: '⌘I', windows: 'Ctrl+I', linux: 'Ctrl+I' } },
+      { code: 'KeyI', modifiers: ['cmdOrCtrl'], label: { mac: '⌘I', windows: 'Ctrl+I', linux: 'Ctrl+I' } },
     ],
   },
   {
     id: 'view.quickPreview',
     contexts: ['content'],
     defaultBindings: [
-      { key: 'Enter', platforms: ['windows', 'linux'], label: { windows: 'Enter', linux: 'Enter' } },
       { key: ' ', label: 'Space' },
       { key: 'Space', label: 'Space' },
     ],
   },
   {
     id: 'view.close',
-    contexts: ['content', 'image-viewer', 'settings'],
+    contexts: ['content', 'image-viewer', 'settings', 'image-editor'],
     defaultBindings: [{ key: 'Escape', label: 'Esc' }],
   },
   {
     id: 'view.next',
-    contexts: ['content', 'image-viewer', 'album-list', 'album-folder'],
+    contexts: ['content', 'image-viewer', 'album-list', 'album-folder', 'image-editor'],
     defaultBindings: [{ key: 'ArrowRight', label: '→' }],
   },
   {
     id: 'view.previous',
-    contexts: ['content', 'image-viewer', 'album-list', 'album-folder'],
+    contexts: ['content', 'image-viewer', 'album-list', 'album-folder', 'image-editor'],
     defaultBindings: [{ key: 'ArrowLeft', label: '←' }],
   },
   {
@@ -417,8 +446,9 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     defaultBindings: [{ key: 'ArrowDown', label: '↓' }],
   },
   {
+    // In the Library, Space is the quick preview (which toggles fit once it is open).
     id: 'view.zoomFit',
-    contexts: ['content', 'media-viewer', 'image-viewer'],
+    contexts: ['media-viewer', 'image-viewer'],
     defaultBindings: [
       { key: ' ', label: 'Space' },
       { key: 'Space', label: 'Space' },
@@ -456,7 +486,104 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
         modifiers: ['shift'],
         label: { mac: '⇧P', windows: 'Shift+P', linux: 'Shift+P' },
       },
+      { code: 'Digit4', modifiers: ['cmdOrCtrl'], label: { mac: '⌘4', windows: 'Ctrl+4', linux: 'Ctrl+4' } },
     ],
+  },
+  {
+    id: 'view.thumbnailsSmall',
+    contexts: ['content'],
+    defaultBindings: [{ code: 'Digit1', modifiers: ['cmdOrCtrl'], label: { mac: '⌘1', windows: 'Ctrl+1', linux: 'Ctrl+1' } }],
+  },
+  {
+    id: 'view.thumbnailsNormal',
+    contexts: ['content'],
+    defaultBindings: [{ code: 'Digit2', modifiers: ['cmdOrCtrl'], label: { mac: '⌘2', windows: 'Ctrl+2', linux: 'Ctrl+2' } }],
+  },
+  {
+    id: 'view.timeline',
+    contexts: ['content'],
+    defaultBindings: [{ code: 'Digit5', modifiers: ['cmdOrCtrl'], label: { mac: '⌘5', windows: 'Ctrl+5', linux: 'Ctrl+5' } }],
+  },
+  // Editor. Undo/redo (utils.editHistoryAction), Enter and Esc are handled in ImageEditor.vue;
+  // they are listed here so every chord stays unique within its context.
+  {
+    id: 'edit.undo',
+    contexts: ['content', 'image-editor'],
+    defaultBindings: [{ code: 'KeyZ', modifiers: ['cmdOrCtrl'], label: { mac: '⌘Z', windows: 'Ctrl+Z', linux: 'Ctrl+Z' } }],
+  },
+  {
+    id: 'edit.redo',
+    contexts: ['content', 'image-editor'],
+    defaultBindings: [
+      { code: 'KeyY', modifiers: ['cmdOrCtrl'], label: { mac: '⌘Y', windows: 'Ctrl+Y', linux: 'Ctrl+Y' } },
+      { code: 'KeyZ', modifiers: ['cmdOrCtrl', 'shift'], label: { mac: '⇧⌘Z', windows: 'Ctrl+Shift+Z', linux: 'Ctrl+Shift+Z' } },
+    ],
+  },
+  {
+    id: 'editor.apply',
+    contexts: ['image-editor'],
+    defaultBindings: [{ key: 'Enter', label: { mac: '⏎', windows: 'Enter', linux: 'Enter' } }],
+  },
+  {
+    id: 'editor.tabBasic',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit1', modifiers: ['cmdOrCtrl'], label: { mac: '⌘1', windows: 'Ctrl+1', linux: 'Ctrl+1' } }],
+  },
+  {
+    id: 'editor.tabTuning',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit2', modifiers: ['cmdOrCtrl'], label: { mac: '⌘2', windows: 'Ctrl+2', linux: 'Ctrl+2' } }],
+  },
+  {
+    id: 'editor.tabEffects',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit3', modifiers: ['cmdOrCtrl'], label: { mac: '⌘3', windows: 'Ctrl+3', linux: 'Ctrl+3' } }],
+  },
+  // Automask (LAP-107): M opens it; inside it the number keys pick where it applies.
+  {
+    id: 'editor.automask',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'KeyM', label: 'M' }],
+  },
+  {
+    id: 'editor.automaskWhole',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit1', label: '1' }],
+  },
+  {
+    id: 'editor.automaskSubject',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit2', label: '2' }],
+  },
+  {
+    id: 'editor.automaskSky',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit3', label: '3' }],
+  },
+  {
+    id: 'editor.automaskPeople',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit4', label: '4' }],
+  },
+  {
+    id: 'editor.automaskBackground',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'Digit5', label: '5' }],
+  },
+  {
+    id: 'editor.automaskSelect',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'KeyS', label: 'S' }],
+  },
+  {
+    id: 'editor.automaskShowMask',
+    contexts: ['image-editor'],
+    defaultBindings: [{ code: 'KeyX', label: 'X' }],
+  },
+  {
+    id: 'editor.automaskRemove',
+    contexts: ['image-editor'],
+    defaultBindings: [{ key: 'Delete', label: { mac: '⌦', windows: 'Delete', linux: 'Delete' } }],
   },
 ] as const;
 
@@ -515,13 +642,15 @@ export function getShortcutConflicts(
   platform: ShortcutPlatform = DEFAULT_PLATFORM,
 ): Array<{ signature: string; actions: ShortcutActionId[] }> {
   const actionsBySignature = new Map<string, ShortcutActionId[]>();
+  const shortcuts = SHORTCUTS.filter((shortcut) =>
+    shortcut.contexts.includes(context) || shortcut.contexts.includes('global'));
 
-  for (const shortcut of getShortcutsByContext(context)) {
+  for (const shortcut of shortcuts) {
     for (const binding of shortcut.defaultBindings) {
       if (!isBindingAvailableOnPlatform(binding, platform)) continue;
       for (const signature of getBindingSignatures(binding, platform)) {
         const actions = actionsBySignature.get(signature) ?? [];
-        actions.push(shortcut.id);
+        if (!actions.includes(shortcut.id)) actions.push(shortcut.id);
         actionsBySignature.set(signature, actions);
       }
     }
@@ -555,7 +684,8 @@ function getBindingSignatures(
     modifier === 'cmdOrCtrl' ? (platform === 'mac' ? 'meta' : 'ctrl') : modifier,
   );
   modifiers.sort();
-  const baseSignature = [...modifiers, binding.code ?? '', binding.key ?? ''].join('+');
+  const physicalKey = getPhysicalKey(binding);
+  const baseSignature = [...modifiers, physicalKey].join('+');
 
   if (!binding.allowShift || modifiers.includes('shift')) {
     return [baseSignature];
@@ -563,7 +693,16 @@ function getBindingSignatures(
 
   const shiftedModifiers = [...modifiers, 'shift'];
   shiftedModifiers.sort();
-  return [baseSignature, [...shiftedModifiers, binding.code ?? '', binding.key ?? ''].join('+')];
+  return [baseSignature, [...shiftedModifiers, physicalKey].join('+')];
+}
+
+function getPhysicalKey(binding: ShortcutBinding): string {
+  if (binding.code) return binding.code;
+  const key = binding.key ?? '';
+  if (key === ' ' || key === 'Space') return 'Space';
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  return key;
 }
 
 function matchesBinding(

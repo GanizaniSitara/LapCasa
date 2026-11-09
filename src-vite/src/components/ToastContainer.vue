@@ -47,7 +47,7 @@ const bottomRightItems = computed(() =>
 
 const bottomRightContainerClass = computed(() => [
   'pointer-events-none fixed right-2 z-950 flex max-w-sm flex-col items-end gap-2',
-  config.settings.showStatusBar ? 'bottom-10' : 'bottom-2',
+  config.settings.showStatusBar ? 'bottom-[60px]' : 'bottom-10',
 ]);
 
 function toastClass(type: ToastType) {

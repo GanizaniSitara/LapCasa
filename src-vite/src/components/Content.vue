@@ -5,6 +5,7 @@
     tabindex="-1"
     class="relative flex-1 flex flex-col select-none outline-none"
     :class="{ 'opacity-50 pointer-events-none': uiStore.isInputActive('ManageLibraries') }"
+    :style="{ '--lap-bottom-chrome': bottomChrome + 'px' }"
     @focus="activateContentPane"
     @mousedown.capture="activateContentPane"
     @mouseenter="isContentHovered = true"
@@ -102,9 +103,9 @@
         <div class="flex flex-row items-center">
           <IconSeparator class="t-icon-size text-base-content/15" />
 
-          <!-- person view: show faces or whole pictures (toggle) -->
+          <!-- person view: show faces or whole pictures (Picasa toggle) -->
           <template v-if="isPersonView">
-            <!-- Suggestions: the button opens the review (tick / x per face).
+            <!-- Picasa suggestions: the button opens the review (tick / x per face).
                  In the People view each person's header carries these, so not here. -->
             <template v-if="personSuggestionCount > 0 && !isPeopleAllView">
               <button
@@ -122,6 +123,15 @@
               <button class="btn btn-xs h-7 ml-1 btn-ghost" title="Ignore every suggested face for this person" @click="promptIgnoreAll()">Ignore all</button>
               <IconSeparator class="t-icon-size text-base-content/15" />
             </template>
+            <!-- LAP-006: shown once a date order is chosen (People header menu); a click cycles it -->
+            <button
+              v-if="Number(config.settings.personFaceSort || 0) > 0"
+              type="button"
+              class="btn btn-xs h-7 mr-1 border border-base-content/15 btn-ghost text-base-content/80"
+              data-person-face-sort
+              title="Order of this person's photos - click for the next order"
+              @click="cyclePersonFaceSort"
+            >{{ personFaceSortLabel }}</button>
             <!-- Undo an accidental "x" -->
             <button
               v-if="personFaces.lastIgnored && (isPeopleAllView || personFaces.lastIgnored.personId === libConfig.person.id)"
@@ -185,10 +195,10 @@
           <!-- toggle filmstrip -->
           <TButton
             :icon="IconFilmstrip"
-            :iconStyle="{ 
-              transform: `rotate(${config.settings.grid.previewPosition === 0 ? 180 : (config.settings.grid.previewPosition === 2 ? 90 : (config.settings.grid.previewPosition === 3 ? 270 : 0))}deg)`, 
-              transition: 'transform 0.3s ease-in-out' 
-            }" 
+            :iconStyle="{
+              transform: `rotate(${config.settings.grid.previewPosition === 0 ? 180 : (config.settings.grid.previewPosition === 2 ? 90 : (config.settings.grid.previewPosition === 3 ? 270 : 0))}deg)`,
+              transition: 'transform 0.3s ease-in-out'
+            }"
             :tooltip="localeMsg.settings.grid.filmstrip_view.title"
             :selected="isFilmstripView"
             :disabled="tempViewMode === 'map'"
@@ -214,6 +224,7 @@
 
           <!-- toggle dedup panel -->
           <TButton
+            v-if="PHOTO_DISCOVERY_ENABLED"
             :icon="IconSimilar"
             :tooltip="$t('toolbar.tooltip.open_dedup')"
             :selected="isDedupPanelOpen"
@@ -221,13 +232,34 @@
             @click="toggleDedupPanel"
           />
 
+          <!-- LAP-091: the Timeline ribbon (photos per month) under the toolbar -->
+          <button
+            v-if="!isPersonView"
+            type="button"
+            data-testid="toggle-date-histogram"
+            :class="[
+              'btn btn-ghost btn-xs h-7 px-2 mr-1 flex items-center gap-1 text-xs font-medium rounded-box transition-colors cursor-pointer select-none border',
+              showDateHistogram
+                ? 'bg-amber-400/20 text-amber-600 border-amber-400/40 hover:bg-amber-400/30'
+                : 'text-base-content/70 border-base-content/10 hover:text-base-content hover:bg-base-100/40'
+            ]"
+            :title="showDateHistogram ? 'Hide the timeline' : 'Show the timeline: photos per month'"
+            @click="showDateHistogram = !showDateHistogram"
+          >
+            <svg viewBox="0 0 16 16" class="w-4 h-4 shrink-0" fill="currentColor" aria-hidden="true">
+              <rect x="1.5" y="9" width="2.2" height="5" rx="0.5" /><rect x="5" y="5" width="2.2" height="9" rx="0.5" />
+              <rect x="8.5" y="7" width="2.2" height="7" rx="0.5" /><rect x="12" y="2.5" width="2.2" height="11.5" rx="0.5" />
+            </svg>
+            <span class="text-xs font-semibold">Timeline</span>
+          </button>
+
           <!-- toggle info panel -->
           <button
             type="button"
             :class="[
               'btn btn-ghost btn-xs h-7 px-2 flex items-center gap-1 text-xs font-medium rounded-box transition-colors cursor-pointer select-none border',
-              isInfoPanelOpen 
-                ? 'bg-primary/20 text-primary border-primary/30 hover:bg-primary/30' 
+              isInfoPanelOpen
+                ? 'bg-primary/20 text-primary border-primary/30 hover:bg-primary/30'
                 : 'text-base-content/70 border-base-content/10 hover:text-base-content hover:bg-base-100/40'
             ]"
             :title="`${isInfoPanelOpen ? $t('toolbar.tooltip.hide_info') : $t('toolbar.tooltip.show_info')} (${shortcut('meta.info')})`"
@@ -240,16 +272,74 @@
       </div>
     </div>
 
-    <!-- Person actions stay separate from the general toolbar and remain visible while scrolling. -->
+    <!-- Person actions stay separate from the general toolbar and remain visible while scrolling.
+         They end where the right panel (and its splitter) begins, so the panel never covers them.
+         Over the native grid the bar is as tall as its section header (80), not the page's (84),
+         so it never hides the top of the first row of faces. -->
     <div
       v-if="isPersonView && (!isFoldersAllQuery() || Number(pinnedPersonSection?.groupId) > 0) && !showFilmstripLayout && !isMapContentVisible && !showWelcomeContent"
-      class="absolute top-12 left-0 right-0 h-[84px] z-20 shadow-sm"
+      class="absolute top-12 left-0 z-20 shadow-sm"
+      :class="nativeGridOn ? 'h-[80px]' : 'h-[84px]'"
+      :style="{ right: rightPanelLayoutVisible ? `${activeRightPanelWidth + 4}px` : '0px' }"
     >
       <PersonSectionHeader
         :person-id="Number(pinnedPersonSection?.groupId ?? libConfig.person.id)"
         :label="String(pinnedPersonSection?.label ?? libConfig.person.name ?? '')"
         :count="Number(pinnedPersonSection?.count ?? totalFileCount)"
       />
+    </div>
+
+    <!-- LAP-091 Option A: the Timeline ribbon - one bar per month (height = log of its photos),
+         the amber lens on the month in view; a click or drag jumps the grid there -->
+    <div
+      v-if="dateHistogramVisible"
+      data-testid="date-histogram-ribbon"
+      class="absolute top-12 left-0 z-20 h-[62px] bg-base-300 border-b border-base-content/10 px-3 pt-1.5 pb-1 flex flex-col justify-between select-none"
+      :style="{ right: rightPanelLayoutVisible ? `${activeRightPanelWidth + 4}px` : '0px' }"
+    >
+      <!-- the bars never grow wider than ~12 px: a year of weeks or a month of days keeps the
+           look of the whole library's months (Build 43); bars and axis share one strip -->
+      <div class="flex-1 flex flex-col justify-between mx-auto w-full" :style="{ maxWidth: `${Math.max(1, histogramBuckets.length) * 14}px` }">
+        <div
+          ref="histogramBarsRef"
+          class="flex-1 flex items-end gap-[2px] h-[38px] relative cursor-pointer"
+          @pointerdown="onHistogramPointer"
+          @pointermove="onHistogramPointer"
+        >
+          <div
+            v-for="b in histogramBuckets"
+            :key="b.ym"
+            :data-histogram-ym="b.ym"
+            :data-histogram-unit="b.unit"
+            :data-histogram-placeholder="b.count === 0 ? 'true' : undefined"
+            :data-histogram-in-range="b.inRange ? 'true' : 'false'"
+            class="flex-1 min-w-0"
+            :class="b.count === 0 ? 'bg-neutral-400 rounded-t-[1px]' : ['rounded-t-[2px]', b.ym === activeHistogramYm || (b.inRange && b.count >= histogramMaxCount * 0.65)
+              ? 'bg-amber-400' : (b.inRange ? 'bg-sky-500 hover:bg-amber-400' : 'bg-sky-300 hover:bg-amber-400')]"
+            :style="{ height: b.count === 0 ? '4px' : Math.max(10, Math.round((Math.log1p(b.count) / histogramMaxLog) * 100)) + '%' }"
+            :title="b.count ? `${histogramBucketName(b)}: ${b.count.toLocaleString()} photos` : `${histogramBucketName(b)}: 0 photos`"
+          ></div>
+          <span
+            v-if="activeHistogramBucket"
+            data-testid="date-histogram-lens"
+            class="absolute -top-0.5 -translate-x-1/2 pointer-events-none bg-amber-400 text-black text-[10px] font-bold leading-4 px-1.5 rounded-[3px] whitespace-nowrap shadow"
+            :style="{ left: histogramLensLeft }"
+          >{{ histogramLensLabel }}</span>
+          <span v-if="!histogramBuckets.length" class="m-auto text-[11px] text-base-content/50">{{ dateHistogramLoading ? 'Loading the timeline...' : 'No dated photos in this view' }}</span>
+        </div>
+        <div class="h-[15px] relative text-[10px] font-semibold text-base-content/60 border-t border-base-content/10">
+          <button
+            v-for="a in histogramAxis"
+            :key="a.index"
+            type="button"
+            class="absolute top-0 -translate-x-1/2 hover:text-amber-500 cursor-pointer whitespace-nowrap"
+            :style="{ left: `${(a.index + 0.5) / Math.max(1, histogramBuckets.length) * 100}%` }"
+            data-histogram-axis
+            :data-histogram-year="histogramUnit === 'month' ? a.label : undefined"
+            @click="jumpToHistogramSlot(a.index)"
+          >{{ a.label }}</button>
+        </div>
+      </div>
     </div>
 
     <!-- progress bar -->
@@ -263,8 +353,7 @@
         <PhotoMapView
           v-if="mapViewMounted"
           v-show="isMapContentVisible"
-          class="mt-12 flex-1 min-w-0"
-          :class="config.settings.showStatusBar ? 'mb-[18px]' : 'mb-1'"
+          class="mt-12 flex-1 min-w-0 mb-[var(--lap-bottom-chrome)]"
           :active="isMapContentVisible"
           :query-params="mapQueryParams"
           :query-source="currentQuerySource"
@@ -277,10 +366,12 @@
           @restored="mapTempViewState = null"
         />
         <div v-if="!isMapContentVisible" ref="gridViewDiv"
+          :data-filmstrip-file-id="showFilmstripLayout ? fileList[selectedItemIndex]?.id : undefined"
+          @wheel.capture="handleFilmstripWheel"
           :class="[
             'flex-1 flex',
             gridViewLayoutClass,
-            showFilmstripLayout ? (config.settings.showStatusBar ? 'mt-12 mb-[18px]' : 'mt-12 mb-1') : ''
+            showFilmstripLayout ? 'mt-12 mb-[var(--lap-bottom-chrome)]' : ''
           ]"
         >
           <div class="relative" 
@@ -294,7 +385,7 @@
             <div
               ref="gridScrollContainerRef"
               class="absolute w-full h-full"
-              :style="isPersonView && !isPeopleAllView && !showFilmstripLayout ? { top: '84px', height: 'calc(100% - 84px)' } : undefined"
+              :style="isPersonView && !isPeopleAllView && !showFilmstripLayout ? { top: '84px', height: 'calc(100% - 84px)' } : (dateHistogramVisible ? { top: '62px', height: 'calc(100% - 62px)' } : undefined)"
             >
               <Welcome v-if="showWelcomeContent" />
               <GridView v-else ref="gridViewRef"
@@ -304,6 +395,7 @@
                 :sort-type="currentQueryParams.sortType"
                 :selectMode="selectMode"
                 :content-ready="contentReady"
+                :initial-paint="searchFirstPaint"
                 :empty-message="emptyFilesMessage"
                 :empty-hint="emptyFilesHint"
                 :layout-version="layoutVersion"
@@ -315,6 +407,7 @@
                 :query-source="currentQuerySource"
                 :people-view="isPersonView || isPeopleAllQuery()"
                 :album-view="isAlbumThumbnailView"
+                :native-grid="nativeGridOn"
                 :dedup-statuses="dedupStatuses"
                 :dragged-file-ids="draggedFileIds"
                 :grid-size="gridSize"
@@ -332,6 +425,7 @@
                 @item-drag-start="markContentInternalDrag"
                 @item-drag="updateContentDragPosition"
                 @item-drag-end="clearContentInternalDrag"
+                @native-context="handleNativeGridContext"
               />
               <!-- Navigation buttons -->
               <div v-if="showFilmstripLayout"
@@ -403,9 +497,11 @@
         </div> <!-- grid view -->
 
         <!-- custom scrollbar -->
+        <!-- below the Timeline ribbon (48 + 62 px) or a person's header (48 + 84 px), as the grid is -->
         <div v-if="!isMapVisible && !showWelcomeContent && !showFilmstripLayout && fileList.length > 0"
-          class="mt-12 shrink-0" 
-          :class="[ config.settings.showStatusBar ? 'mb-[18px]' : 'mb-1' ]"
+          class="shrink-0 mb-[var(--lap-bottom-chrome)]"
+          :class="isPersonView && !isPeopleAllView ? 'mt-[132px]' : (dateHistogramVisible ? 'mt-[110px]' : 'mt-12')"
+          data-testid="content-scrollbar"
         >
           <ScrollBar
             :total="scrollbarTotal"
@@ -420,7 +516,7 @@
         <!-- Quick View Overlay -->
         <div v-if="showQuickView && fileList[selectedItemIndex]"
           class="absolute inset-0 z-60 flex items-center justify-center bg-base-200/95 backdrop-blur-lg overflow-hidden"
-          :class="[ config.settings.showStatusBar ? 'mt-12 mb-[18px]': 'mt-12' ]"
+          :class="'mt-12 mb-[var(--lap-bottom-chrome)]'"
         >
           <div
             class="relative w-full h-full flex items-center justify-center"
@@ -495,8 +591,7 @@
       <div v-if="rightPanelLayoutVisible"
         class="w-1 shrink-0 mt-12 cursor-col-resize splitter-indicator splitter-vertical"
         :class="{
-          'mb-[18px]': config.settings.showStatusBar,
-          'mb-1': !config.settings.showStatusBar,
+          'mb-[var(--lap-bottom-chrome)]': true,
           'splitter-dragging': isDraggingInfoPanel,
         }" 
         @mousedown="startDraggingInfoPanelSplitter"
@@ -513,10 +608,10 @@
             'absolute inset-y-0 right-0 z-20 flex flex-col transition-transform duration-200 ease-in-out bg-base-200 border-l border-base-content/5',
             rightPanelVisualVisible ? 'translate-x-0' : 'translate-x-full pointer-events-none',
           ]"
-          :style="{ width: activeRightPanelWidth + 'px', top: '3rem', bottom: config.settings.showStatusBar ? '18px' : '0.25rem' }"
+          :style="{ width: activeRightPanelWidth + 'px', top: '3rem', bottom: bottomChrome + 'px' }"
         >
           <DedupPane
-            v-if="rightPanelContent === 'dedup'"
+            v-if="PHOTO_DISCOVERY_ENABLED && rightPanelContent === 'dedup'"
             ref="dedupPaneRef"
             :selected-file-id="fileList[selectedItemIndex]?.id"
             :dedup-scan-key="dedupScanKey"
@@ -606,11 +701,61 @@
       :update-icon="statusBarUpdateIcon"
       :empty-message="statusBarEmptyMessage"
       :is-info-open="isInfoPanelOpen"
+      :show-info-button="false"
+      show-email-button
       @toggle-info="toggleInfoPanel"
       @toggle-scan="handleToggleScan"
+      @send-email="sendSelectedByEmail"
     />
+
+
   </div>
 
+  <!-- Picasa's Adjust Date and Time (LAP-049) -->
+  <AdjustDateDialog
+    v-if="adjustDate"
+    :anchor-name="adjustDate.anchorName"
+    :anchor-date="adjustDate.anchorDate"
+    :count="adjustDate.ids.length"
+    @cancel="adjustDate = null"
+    @apply="applyAdjustDate"
+  />
+
+  <!-- Picasa's Create Picture Collage (LAP-049) -->
+  <PictureCollageModal
+    v-if="collage"
+    :count="collage.ids.length"
+    @cancel="collage = null"
+    @create="applyCollage"
+  />
+
+  <!-- Picasa's Export Picture to Folder (LAP-049) -->
+  <ExportFolderModal
+    v-if="exportJob"
+    :count="exportJob.ids.length"
+    :default-folder="exportJob.defaultFolder"
+    @cancel="exportJob = null"
+    @export="applyExportToFolder"
+  />
+
+  <!-- Picasa's Make a Poster (LAP-049) -->
+  <PosterModal
+    v-if="poster"
+    :name="poster.name"
+    @cancel="poster = null"
+    @create="applyPoster"
+  />
+
+  <!-- Picasa's Geotag (LAP-049) -->
+  <GeotagDialog
+    v-if="geotag"
+    :count="geotag.ids.length"
+    :latitude="geotag.latitude"
+    :longitude="geotag.longitude"
+    :place-name="geotag.placeName"
+    @cancel="geotag = null"
+    @apply="applyGeotag"
+  />
 
   <!-- rename -->
   <MessageBox
@@ -797,6 +942,16 @@
        rendering and the same multi-select menu actions. The trigger is empty;
        it's opened at button coordinates by handleMoreActionMenu, and its popup
        teleports to <body>. -->
+  <!-- The native grid's right-click menu: the same items as a page tile's menu. -->
+  <div class="hidden">
+    <ContextMenu
+      ref="nativeTileMenuRef"
+      :iconMenu="null"
+      :menuItems="() => nativeTileMenuItems"
+    >
+      <template #trigger><span></span></template>
+    </ContextMenu>
+  </div>
   <div class="hidden">
     <ContextMenu
       ref="moreActionMenuRef"
@@ -806,13 +961,33 @@
       <template #trigger><span></span></template>
     </ContextMenu>
   </div>
+  <!-- LAP-064: Picasa's pull-out, bottom right, with each photo as the scan reaches it. A page
+       element over the native grid, so GridView leaves a hole for it (nativeGridHoles finds it with
+       elementFromPoint: it must keep pointer events, or it is missed and drawn over). -->
+  <Transition enter-from-class="translate-y-4 opacity-0" leave-to-class="translate-y-4 opacity-0"
+    enter-active-class="transition duration-200" leave-active-class="transition duration-300">
+    <div v-if="scanPreviewShown" data-scan-preview
+      class="fixed right-3 z-50 w-72 flex items-center gap-2 p-2 rounded-box bg-base-200/95 border border-base-content/10 shadow-lg"
+      :style="{ bottom: `${bottomChrome + 8}px` }">
+      <img :key="scanPreview.fileId" :src="scanPreview.src" class="w-14 h-14 object-cover rounded shrink-0 bg-base-300" alt="" />
+      <div class="min-w-0 text-xs leading-tight">
+        <div class="font-medium truncate" :title="scanPreview.name">{{ scanPreview.name }}</div>
+        <div class="text-base-content/60 truncate" :title="scanPreview.folderPath">{{ scanPreview.folder }}</div>
+        <div class="text-base-content/50 mt-0.5">Scanning: {{ scanPreview.processed.toLocaleString() }}<template v-if="scanPreview.total > 0"> of {{ scanPreview.total.toLocaleString() }}</template></div>
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
+import { cancelPlainSearch, plainSearchRevision, plainSearchSubmission, waitForPlainSearchCancellation } from '@/common/plainSearch';
+import { searchTimeline } from '@/common/searchTimeline';
+import { prepareSearchThumbnails, cancelSearchThumbnailPreparation } from '@/common/searchThumbnails';
 const emit = defineEmits(['edit-requested']);
 
 import { ref, watch, computed, createVNode, onMounted, onBeforeUnmount, nextTick, render, markRaw } from 'vue';
 import { emit as tauriEmit, listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { ask, open as openDialog } from '@tauri-apps/plugin-dialog';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PREVIEW_WINDOW_FOCUS_RESTORED } from '@/common/previewWindow';
@@ -822,12 +997,12 @@ import { useUIStore } from '@/stores/uiStore';
 import { getAlbum, getAllAlbums, recountAlbum, getQueryCountAndSum, getQueryTimeLine, getQueryFiles, getFilesByIds, getSelectionSummary, getGroupedQueryRows, getGroupedFilePosition, getGroupFileIds, getQueryFileIds, syncAlbumFolderMtimes,
          getSmartQueryCountAndSum, getSmartQueryTimeLine, getSmartQueryFiles, getSmartGroupedQueryRows, getSmartGroupFileIds, getSmartQueryFileIds, getSmartQueryFilePosition,
          copyImages, renameFile, moveFile, moveFileOutsideLibrary, copyFile, deleteFile, deleteFilePermanently, batchDeleteFiles, editFileComment, getFileThumb, getFileThumbs, getFileInfo,
-         setFileRotate, setFileFavorite, setFileRating, setFileCullingFlag, batchUpdateFileMetadata, getTagsForFile, getTagGroupName, searchSimilarImages, generateEmbedding,
+         setFileRotate, setFileFavorite, setFileRating, setFileCullingFlag, setFileHidden, setShowHiddenPictures, batchUpdateFileMetadata, getTagsForFile, getTagGroupName, searchSimilarImages, generateEmbedding,
          revealPath, getTagName, indexAlbum, listenIndexProgress, listenIndexFinished, setAlbumCover, setDesktopWallpaper,
          updateFileInfo, importFile, importUrl, importFileBytes, getDragPayload, importClipboard, addFileToDb, checkFileExists, cancelIndexing as cancelIndexingApi, selectFolder, getFacesForFile, listenFaceIndexProgress,
          openFilesWithApp, getAppConfig, getIndexRecoveryInfo, clearIndexRecoveryInfo, setLastSelectedItemIndex,
          dedupDelete, getQueryFilePosition, getFolderSearchExcluded,
-         listCollections, createCollection, addFilesToCollection, removeFilesFromCollection, getFileCollections, getCollectionCountAndSum, getCollectionFiles, getCollectionGroupedQueryRows, getCollectionGroupFileIds, getCollectionQueryFileIds, fetchFolder, isDirectoryAccessible, isDirectoryEmpty, checkAlbumAccessibility, addTagToFile, restoreImageRecipe } from '@/common/api';
+         listCollections, createCollection, addFilesToCollection, removeFilesFromCollection, getFileCollections, getCollectionCountAndSum, getCollectionFiles, getCollectionGroupedQueryRows, getCollectionGroupFileIds, getCollectionQueryFileIds, fetchFolder, isDirectoryAccessible, isDirectoryEmpty, checkAlbumAccessibility, addTagToFile, restoreImageRecipe, nativeGridShow, nativeGridScrollTo, nativeGridScrollRatio, nativeGridRefresh, nativeGridMarks, emailFilesDraft, adjustFilesTakenDate, setFilesLocation, createPictureCollage, exportPicturesToFolder, createPosterTiles, getDateHistogram } from '@/common/api';
 import { config, libConfig } from '@/common/config';
 import {
   gridSizeFromPosition,
@@ -846,7 +1021,7 @@ import { isWin, isMac, isLinux, setTheme, separator,
          getCachedThumbnailDataUrl, getLapUrl, imageEditState,
          clearCachedThumbnailDataUrl,
          extractFileName, combineFileName, getFolderPath, getFolderName, getSelectOptions, 
-         shortenFilename, getSlideShowInterval, getFullPath, normalizePathForCompare, isWithinRootPath, shouldUseBackendPreview, isEditableTarget, editHistoryAction } from '@/common/utils';
+         shortenFilename, getSlideShowInterval, getFullPath, normalizePathForCompare, isWithinRootPath, shouldUseBackendPreview, isEditableTarget, editHistoryAction, getThumbLibraryId, getThumbUrl } from '@/common/utils';
 
 import DropDownSelect from '@/components/DropDownSelect.vue';
 import ProgressBar from '@/components/ProgressBar.vue';
@@ -854,7 +1029,7 @@ import GridView  from '@/components/GridView.vue';
 import PersonSectionHeader from '@/components/PersonSectionHeader.vue';
 import PhotoMapView from '@/components/PhotoMapView.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
-import { useFileMenuItems } from '@/common/fileMenu';
+import { useFileMenuItems, copiedEffectsState } from '@/common/fileMenu';
 import Welcome from '@/components/Welcome.vue';
 import MediaViewer from '@/components/MediaViewer.vue';
 import MessageBox from '@/components/MessageBox.vue';
@@ -865,17 +1040,26 @@ import MoveTo from '@/components/MoveTo.vue';
 import TButton from '@/components/TButton.vue';
 import TaggingDialog from '@/components/TaggingDialog.vue';
 import AddToCollectionDialog from '@/components/AddToCollectionDialog.vue';
+import AdjustDateDialog from '@/components/AdjustDateDialog.vue';
+import GeotagDialog from '@/components/GeotagDialog.vue';
+import PictureCollageModal from '@/components/PictureCollageModal.vue';
+import ExportFolderModal from '@/components/ExportFolderModal.vue';
+import PosterModal from '@/components/PosterModal.vue';
+import { pictureDir, join as joinPath } from '@tauri-apps/api/path';
 import ExternalAppsDialog from '@/components/ExternalAppsDialog.vue';
 import FileInfo from '@/components/FileInfo.vue';
 import Breadcrumb from '@/components/Breadcrumb.vue';
 import DedupPane from '@/components/DedupPane.vue';
+import { PHOTO_DISCOVERY_ENABLED } from '@/common/discoveryFeatures';
 import SelectionPanel from '@/components/SelectionPanel.vue';
 import FileConflictDialog from '@/components/FileConflictDialog.vue';
 import ScrollBar from '@/components/ScrollBar.vue';
 import SliderInput from '@/components/SliderInput.vue';
 import StatusBar from '@/components/StatusBar.vue';
-import { loadPersonFaces, personFaces, resolveSuggestions, excludePersonFiles, undoLastIgnore, startPeopleSession, ensurePersonFaces, isNamedPersonName } from '@/common/personFaces';
+import { bottomChromePx } from '@/common/layout';
+import { loadPersonFaces, personFaces, resolveSuggestions, excludePersonFiles, undoLastIgnore, undoIgnore, startPeopleSession, ensurePersonFaces, whenPersonFacesLoaded, isNamedPersonName } from '@/common/personFaces';
 import { loadFolderSections, folderSectionOf, folderSections, FOLDER_VIEW_SORT } from '@/common/folderSections';
+import { hoveredFolder } from '@/common/thumbPrefetch';
 
 import {
   IconFolders,
@@ -939,6 +1123,8 @@ const props = defineProps({
 const { locale, messages, t } = useI18n();
 const localeMsg = computed(() => messages.value[locale.value] as any);
 const uiStore = useUIStore();
+// Status line plus photo tray height the grid and panels must clear.
+const bottomChrome = computed(() => bottomChromePx(config.settings.showStatusBar));
 
 const contentTitle = ref("");
 
@@ -1066,11 +1252,12 @@ const isContentHovered = ref(false);
 // file list
 const fileList = ref<any[]>([]);
 const contentReady = ref(false);  // true after current view's content has loaded (empty or not), reset on navigation
+const searchFirstPaint = ref(false);
 const groupedRows = ref<any[]>([]);
 const totalFileCount = ref(0);    // total files' count
 const totalRowCount = ref(0);     // total render rows' count (group headers + files)
 const totalFileSize = ref(0);     // total files' size
-// First / last picture date of the view (status bar). Tagged with the count it was
+// First / last picture date of the view (Picasa status bar). Tagged with the count it was
 // read for, so a later count from another path never shows a stale range.
 const totalDateRange = ref<{ count: number; min: number | null; max: number | null }>({ count: -1, min: null, max: null });
 const statusDateRange = computed(() =>
@@ -1263,6 +1450,11 @@ async function finishSelectedFileRefresh() {
   await updateContent(true, true);
 }
 
+const copiedEffects = ref<any | null>(null);
+watch(copiedEffects, (val) => {
+  copiedEffectsState.value = Boolean(val);
+});
+
 const selectionMenuItems = useFileMenuItems(
   ref<any>(null),
   localeMsg,
@@ -1274,6 +1466,7 @@ const selectionMenuItems = useFileMenuItems(
     selectMode: ref(true),
     selectionMediaKind,
     selectionCount: selectedCount,
+    hasCopiedEffects: computed(() => Boolean(copiedEffects.value)),
   },
 );
 
@@ -1299,6 +1492,7 @@ const gridRows = computed(() => groupedModeActive.value && !isFilmstripView.valu
 const gridSectionHeaders = computed(() => groupedModeActive.value && !isFilmstripView.value
   ? groupedTimelineGroups.value.map(group => ({
     index: Number(group.rowIndex || 0),
+    notice: Boolean(groupedRows.value[Number(group.rowIndex || 0)]?.notice),
     personHeader: sectionHeaderFields(String(group.groupId)).personHeader,
     folderHeader: sectionHeaderFields(String(group.groupId)).folderHeader,
   })) : []);
@@ -1616,8 +1810,39 @@ const isRandomSort = computed(() => {
   return Number(sortType) === RANDOM_SORT;
 });
 
+// LAP-006: a person's photos by date (opt-in). 0 keeps the usual order.
+const PERSON_FACE_SORT_LABELS = ['Usual order', 'Newest first', 'Oldest first'];
+const personFaceSortLabel = computed(() => PERSON_FACE_SORT_LABELS[Number(config.settings.personFaceSort || 0)] || PERSON_FACE_SORT_LABELS[0]);
+function cyclePersonFaceSort() {
+  config.settings.personFaceSort = (Number(config.settings.personFaceSort || 0) + 1) % 3;
+}
+// A new order only moves tiles within each person's section, so the rows and their heights stay:
+// re-read in place (as after a collage), keeping the scroll position and the People rows, instead
+// of the full reload that would land the stacked pane back on its Folders list.
+watch(() => config.settings.personFaceSort, () => {
+  if (!isPersonView.value && !isContinuousLibraryQuery()) return;
+  if (nativeGridOn.value) void nativeGridRefresh();
+  if (gridViewRef.value) pendingRestoreScrollTop.value = gridViewRef.value.getScrollTop();
+  if ((isPeopleAllView.value && isPeopleAllLoaded()) || (isFoldersAllView.value && isFoldersAllLoaded())) pendingKeepPeopleRows = true;
+  void updateContent(true);
+});
+
+// Browse by date (LAP-049): with no grouping chosen, the Calendar's photos come in date sections
+// one step finer than what is selected - All Dates by quarter, a year by month, a quarter by
+// month, a month by day; a single day is not split.
+const calendarAutoGroupBy = computed(() => {
+  const c = libConfig.calendar;
+  if (c.year === null || c.year === undefined) return GROUP.QUARTER;
+  if (c.month === -1) return GROUP.MONTH;
+  if (c.date === -1) return GROUP.DAY;
+  return GROUP.NONE;
+});
+
 const effectiveGroupBy = computed(() => {
   if (isRandomSort.value) return GROUP.NONE;
+  if (!isCollectionPane.value && config.main.sidebarIndex === SIDEBAR.CALENDAR && !Number(config.search.groupBy || 0)) {
+    return calendarAutoGroupBy.value;
+  }
   const smartAlbum = getActiveCustomSmartAlbum();
   return Number(
     !isCollectionPane.value && config.main.sidebarIndex === SIDEBAR.SMART_ALBUM && smartAlbum
@@ -1686,6 +1911,8 @@ function formatDateGroupLabel(groupBy: number, label: string) {
       return formatDate(year, month, date, localeMsg.value.format.date_long);
     case GROUP.MONTH:
       return formatDate(year, month, 1, localeMsg.value.format.month);
+    case GROUP.QUARTER:
+      return formatQuarterLabel(year, month);
     case GROUP.YEAR: {
       if (config.main.sidebarIndex === SIDEBAR.LIBRARY && libConfig.library.item === LIB_ITEM.TODAY) {
         const today = new Date();
@@ -1696,6 +1923,13 @@ function formatDateGroupLabel(groupBy: number, label: string) {
     default:
       return rawLabel;
   }
+}
+
+// "2025 Q3 (Jul-Sep)": the quarter holding `month` (1-12)
+function formatQuarterLabel(year: number, month: number) {
+  const q = Math.floor((month - 1) / 3) + 1;
+  const short = (m: number) => localeMsg.value.calendar?.months?.[m - 1] || String(m);
+  return `${year} Q${q} (${short(q * 3 - 2)}-${short(q * 3)})`;
 }
 
 function ratingLabelKey(rating: number) {
@@ -1732,13 +1966,14 @@ function formatGroupLabel(label: string) {
     'unknown-location': localeMsg.value.search?.unknown_location || 'Unknown location',
     'unknown-camera': localeMsg.value.search?.unknown_camera || 'Unknown camera',
     'unknown-lens': localeMsg.value.search?.unknown_lens || 'Unknown lens',
+    'unknown-quarter': 'No date',
   };
   if (unknownGroupLabels[label]) return unknownGroupLabels[label];
   // Folders view sections are labelled with the folder name already.
   if (isFoldersAllQuery()) return label || '';
 
   const groupBy = Number(effectiveGroupBy.value || 0);
-  if (groupBy === GROUP.DAY || groupBy === GROUP.MONTH || groupBy === GROUP.YEAR) return formatDateGroupLabel(groupBy, label);
+  if (groupBy === GROUP.DAY || groupBy === GROUP.MONTH || groupBy === GROUP.QUARTER || groupBy === GROUP.YEAR) return formatDateGroupLabel(groupBy, label);
   if (groupBy === GROUP.FOLDER) return formatFolderGroupLabel(label);
   if (groupBy === GROUP.RATING) return formatRatingGroupLabel(label);
   if (groupBy === GROUP.CULLING) return formatCullingGroupLabel(label);
@@ -1880,6 +2115,34 @@ function normalizeGroupedRowsResult(result: any) {
   };
 }
 
+// The native grid scrolls on its own, so it can show (and be clicked on) rows the page has
+// not loaded. Fetch just that file (no thumbnails: the native grid draws its own); by id
+// when the grid says which file and section it is (fast), else the grouped row.
+async function loadGroupedFileAtIndex(index: number, fileId = 0, personId = 0) {
+  if (ensureGroupedFileAtIndex(index)) return true;
+  if (fileId > 0) {
+    const requestId = currentContentRequestId;
+    const [file] = ((await getFilesByIds([fileId])) as any[] | null) || [];
+    if (requestId !== currentContentRequestId || !file) return false;
+    if (!isRealFileItem(fileList.value[index])) {
+      fileList.value[index] = { ...file, ...(isPeopleAllQuery() ? { face_person_id: personId } : {}),
+        isSelected: selectedFileIds.has(fileId), rotate: file.rotate || 0 };
+    }
+    return true;
+  }
+  // Each section is a header row followed by its items, so section k's first item
+  // (file index rowIndex - k) is row rowIndex + 1.
+  const groups = groupedTimelineGroups.value;
+  const k = groups.findIndex((g: any, i: number) => index >= g.rowIndex - i && index < g.rowIndex - i + g.count);
+  if (k < 0) return false;
+  const row = index + k + 1;
+  const requestId = currentContentRequestId;
+  const result = await getCurrentGroupedQueryRows(row, 1);
+  if (requestId !== currentContentRequestId || !result) return false;
+  if (groupedRows.value[row]?.isPlaceholder) applyGroupedRows(normalizeGroupedRowsResult(result).rows, row);
+  return ensureGroupedFileAtIndex(index);
+}
+
 function ensureGroupedFileAtIndex(index: number) {
   if (!groupedModeActive.value || isRealFileItem(fileList.value[index])) return true;
   const row = groupedRows.value.find((item: any) =>
@@ -1920,12 +2183,12 @@ function createGroupHeaderRow(group: any) {
   };
 }
 
-// Continuous People view: sections are named people, items are (person, file)
+// Continuous People view (Picasa): sections are named people, items are (person, file)
 // pairs. Each tile carries its section's person, for its face crop and tick / x.
 function isPeopleAllQuery() {
   return Boolean((currentQueryParams.value as any)?.peopleAll);
 }
-// Continuous Folders view: sections are folders that hold pictures.
+// Continuous Folders view (Picasa): sections are folders that hold pictures.
 function isFoldersAllQuery() {
   return Boolean((currentQueryParams.value as any)?.foldersAll);
 }
@@ -2190,17 +2453,21 @@ const errorMessage = ref('');
 const showUnsavedChangesMsgbox = ref(false);
 const pendingAction = ref<(() => void) | null>(null);
 const fileInfoRef = ref<any>(null);
-const isDedupPanelOpen = computed(() => config.rightPanel.show && config.rightPanel.mode === 'dedup');
+const isDedupPanelOpen = computed(() => PHOTO_DISCOVERY_ENABLED && config.rightPanel.show && config.rightPanel.mode === 'dedup');
 const isInfoPanelOpen = computed(() => config.rightPanel.show && config.rightPanel.mode === 'info');
 const rightPanelContent = computed<'selection' | 'dedup' | 'info' | null>(() => {
   if (selectMode.value) return 'selection';
   if (!config.rightPanel.show) return null;
+  if (!PHOTO_DISCOVERY_ENABLED && config.rightPanel.mode === 'dedup') return null;
   return config.rightPanel.mode === 'dedup' ? 'dedup' : 'info';
 });
 const RIGHT_PANEL_MIN_WIDTH = 160; // Keep aligned with left panel minimum width.
-const RIGHT_PANEL_ANIMATION_MS = 200;
+const RIGHT_PANEL_ANIMATION_MS = 0;
 const activeRightPanelWidth = computed(() => Number(config.rightPanel.width || 360));
-const shouldShowRightPanel = computed(() => config.rightPanel.show || (selectMode.value && !keyboardSelectionKeepsPanelClosed.value));
+const shouldShowRightPanel = computed(() =>
+  (config.rightPanel.show && (PHOTO_DISCOVERY_ENABLED || config.rightPanel.mode !== 'dedup')) ||
+  (selectMode.value && !keyboardSelectionKeepsPanelClosed.value)
+);
 const rightPanelMounted = ref(shouldShowRightPanel.value);
 const rightPanelVisualVisible = ref(shouldShowRightPanel.value);
 const rightPanelLayoutVisible = ref(shouldShowRightPanel.value);
@@ -2589,37 +2856,45 @@ function scheduleLayoutRefresh() {
 }
 const gap = 8;                    // Gap between items (must match GridView)
 const gridSizeProfile = computed(() => thumbnailProfile(config.settings.thumbnailSize));
-// The person face view keeps its own grid size, defaulting to ~145px face tiles.
-const DEFAULT_FACE_TILE_PX = 145;
+// Face grids default to the smallest column step; filmstrip keeps its existing size.
+const PICASA_FACE_TILE_PX = 145;
 const isPersonFaceView = computed(() =>
   (isPersonView.value || isContinuousLibraryQuery()) && config.settings.grid.personFaces !== false && config.settings.grid.style === 0
 );
+// One thumbnail size for every grid view (Build 37): People, Folders, Calendar, a folder, search...
+// share the same column count and size, so switching views never makes the tiles jump. Read the
+// People/Folders value first (the one the owner has been zooming), write both.
 const activeSizePosition = computed(() => {
-  if (!isPersonFaceView.value) return config.settings.grid.sizePosition;
-  const saved = config.settings.grid.personFaceSizePosition;
-  return saved ?? gridSizePositionFromGridSize(DEFAULT_FACE_TILE_PX, config.settings.thumbnailSize);
+  // The filmstrip shows whole photos in People too: use the albums' strip size.
+  if (isFilmstripView.value) return config.settings.grid.sizePosition;
+  return config.settings.grid.personFaceSizePosition ?? config.settings.grid.sizePosition
+    ?? gridSizePositionFromGridSize(PICASA_FACE_TILE_PX, config.settings.thumbnailSize);
 });
+const savedGridColumns = () => Number(config.settings.grid.personFaceColumns) || Number(config.settings.grid.columns) || 0;
+function setSavedSizePosition(position: number) {
+  config.settings.grid.personFaceSizePosition = position;
+  config.settings.grid.sizePosition = position;
+}
 const usesColumnGrid = computed(() => config.settings.grid.style === 0 && config.settings.grid.viewMode !== 'filmstrip');
 const gridColumnBounds = computed(() => {
   const width = containerWidth.value;
   const profile = gridSizeProfile.value;
   const min = Math.max(1, Math.ceil(width / (profile.maxGridSize + 20)));
-  // At 1184px client width: 62x74 faces, 74px whole-photo long edge.
+  // Picasa at 1184px client width: 62x74 faces, 74px whole-photo long edge.
   const minimumSize = 74;
   return { min, max: Math.max(min, Math.round(width / (minimumSize + 20))) };
 });
 const activeGridColumns = computed({
   get: () => {
-    const saved = isPersonFaceView.value ? config.settings.grid.personFaceColumns : config.settings.grid.columns;
-    if (containerWidth.value <= 0) return Number(saved) || 4;
-    const oldSize = gridSizeFromPosition(activeSizePosition.value, config.settings.thumbnailSize);
-    const columns = Number(saved) || Math.round(containerWidth.value / (oldSize + 20));
+    const saved = savedGridColumns();
+    if (containerWidth.value <= 0) return saved || 4;
+    const columns = saved || gridColumnBounds.value.max;
     return Math.min(gridColumnBounds.value.max, Math.max(gridColumnBounds.value.min, Math.round(columns)));
   },
   set: (value: number) => {
     const columns = Math.min(gridColumnBounds.value.max, Math.max(gridColumnBounds.value.min, Math.round(value)));
-    if (isPersonFaceView.value) config.settings.grid.personFaceColumns = columns;
-    else config.settings.grid.columns = columns;
+    config.settings.grid.personFaceColumns = columns;
+    config.settings.grid.columns = columns;
   },
 });
 const gridSize = computed(() => usesColumnGrid.value && containerWidth.value > 0
@@ -2639,8 +2914,7 @@ const gridSizePosition = computed({
       activeGridColumns.value = max - Math.round(position * (max - min));
       return;
     }
-    if (isPersonFaceView.value) config.settings.grid.personFaceSizePosition = position;
-    else config.settings.grid.sizePosition = position;
+    setSavedSizePosition(position);
   },
 });
 
@@ -2652,8 +2926,7 @@ function setGridSize(value: unknown) {
   const profile = gridSizeProfile.value;
   const size = Math.min(profile.maxGridSize, Math.max(profile.minGridSize, Number(value) || profile.minGridSize));
   const position = gridSizePositionFromGridSize(size, config.settings.thumbnailSize);
-  if (isPersonFaceView.value) config.settings.grid.personFaceSizePosition = position;
-  else config.settings.grid.sizePosition = position;
+  setSavedSizePosition(position);
 }
 
 const itemWidth = computed(() => {
@@ -2696,6 +2969,305 @@ const visibleItemCount = computed(() => {
 });
 
 const timelineData = ref<any[]>([]);  // timeline markers for scrollbar
+
+// LAP-091 Option A: the Timeline ribbon under the toolbar. Off by default (the layout only changes
+// when it is opened). Bars are the view's months, oldest first (get_date_histogram); a click or drag
+// on a bar, or a year, jumps there: in Folders to the folder of that month's earliest photo, in
+// flat views to the month's first photo (the scrollbar timeline's position, else counted).
+const showDateHistogram = ref(false);
+const dateHistogram = ref<any[]>([]);
+const dateHistogramLoading = ref(false);
+const activeHistogramYm = ref('');
+const histogramBarsRef = ref<HTMLElement | null>(null);
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+let histogramLensHeldUntil = 0;
+let histogramRequestId = 0;
+const dateHistogramVisible = computed(() => showDateHistogram.value && !isPersonView.value && !showFilmstripLayout.value
+  && !isMapContentVisible.value && !showWelcomeContent.value);
+const pad2 = (n: number) => String(n).padStart(2, '0');
+// The ribbon's unit (Build 43): months for a view over two years, weeks for over 62 days, else days.
+// Calendar's year, quarter or month: the bars cover the whole selected range, empty slots too.
+const histogramRange = computed(() => {
+  const q: any = currentQueryParams.value || {};
+  const s = Number(q.startDate || 0), e = Number(q.endDate || 0);
+  return s > 0 && e > s ? { start: new Date(s * 1000), end: new Date((e - 1) * 1000) } : null;
+});
+// Calendar's year, quarter, month or day (Build 45): the ribbon keeps the whole library's density,
+// HISTOGRAM_TARGET_BARS slots edge to edge, as a rolling window centred on the selection - weeks
+// around a year or quarter, days around a month or day - its right edge no later than the end of
+// the current year (weeks) or month (days) unless the selection itself runs on.
+const HISTOGRAM_TARGET_BARS = 220;
+const addHistogramSlots = (d: Date, unit: string, n: number) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate() + n * (unit === 'week' ? 7 : 1));
+const histogramSlotStart = (d: Date, unit: string) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate() - (unit === 'week' ? (d.getDay() + 6) % 7 : 0));
+const histogramWindow = computed(() => {
+  const r = histogramRange.value;
+  if (!r) return null;
+  const selStart = r.start, selEnd = new Date(r.end.getTime() + 1000);
+  const unit = (selEnd.getTime() - selStart.getTime()) / 86400000 > 62 ? 'week' : 'day';
+  const now = new Date();
+  const right = Math.max(selEnd.getTime(), (unit === 'week'
+    ? new Date(now.getFullYear() + 1, 0, 1) : new Date(now.getFullYear(), now.getMonth() + 1, 1)).getTime());
+  let first = addHistogramSlots(histogramSlotStart(new Date((selStart.getTime() + selEnd.getTime()) / 2), unit), unit, -HISTOGRAM_TARGET_BARS / 2);
+  if (addHistogramSlots(first, unit, HISTOGRAM_TARGET_BARS).getTime() > right) {
+    first = addHistogramSlots(histogramSlotStart(new Date(right - 1), unit), unit, 1 - HISTOGRAM_TARGET_BARS);
+  }
+  return { unit, first, end: addHistogramSlots(first, unit, HISTOGRAM_TARGET_BARS), selStart, selEnd };
+});
+// The bar unit: the rolling window's, else what the rows came in.
+const histogramUnit = computed(() => histogramWindow.value?.unit || String(dateHistogram.value[0]?.unit || 'month'));
+// A local date's slot key in that unit: 'YYYY-MM', or the week's Monday / the day as 'YYYY-MM-DD'.
+function histogramKeyOf(d: Date, unit = histogramUnit.value) {
+  if (unit === 'month') return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+  const day = unit === 'week' ? new Date(d.getFullYear(), d.getMonth(), d.getDate() - (d.getDay() + 6) % 7) : d;
+  return `${day.getFullYear()}-${pad2(day.getMonth() + 1)}-${pad2(day.getDate())}`;
+}
+// Every slot from the first bar to the last, empty ones too, so the axis runs evenly in time.
+const histogramBuckets = computed(() => {
+  const rows = dateHistogram.value as any[];
+  if (!rows.length) return [];
+  const unit = histogramUnit.value;
+  const start = (b: any) => new Date(Number(b.year), Number(b.month) - 1, b.unit === 'month' ? 1 : Number(b.day || 1));
+  const slotStart = (d: Date) => { const [y, m, dd] = histogramKeyOf(d, unit).split('-').map(Number); return new Date(y, m - 1, dd || 1); };
+  // Rows finer than the unit (a year with photos in only a few weeks comes back in days) add up
+  // into its slots; oldest first, so each slot keeps its earliest photo.
+  const byKey = new Map<string, any>();
+  for (const b of rows) {
+    const k = histogramKeyOf(start(b), unit);
+    const had = byKey.get(k);
+    if (had) had.count += Number(b.count || 0);
+    else byKey.set(k, { ...b, count: Number(b.count || 0) });
+  }
+  const win = histogramWindow.value;
+  const first = win ? new Date(win.first) : slotStart(start(rows[0]));
+  const last = win ? addHistogramSlots(win.end, unit, -1) : start(rows[rows.length - 1]);
+  const out: any[] = [];
+  for (const d = first; d <= last && out.length < 6000;
+    unit === 'month' ? d.setMonth(d.getMonth() + 1) : d.setDate(d.getDate() + (unit === 'week' ? 7 : 1))) {
+    const ym = histogramKeyOf(d, unit);
+    const b: any = byKey.get(ym);
+    // inside the selected Calendar period, or rolling context around it
+    const inRange = !win || (d < win.selEnd && addHistogramSlots(d, unit, 1) > win.selStart);
+    out.push({ year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), unit, ym, count: Number(b?.count || 0), inRange,
+      first_folder_path: b?.first_folder_path ?? null, first_file_id: b?.first_file_id ?? null });
+  }
+  return out;
+});
+const histogramMaxCount = computed(() => Math.max(1, ...histogramBuckets.value.map(b => b.count)));
+const histogramMaxLog = computed(() => Math.log1p(histogramMaxCount.value));
+const activeHistogramIndex = computed(() => histogramBuckets.value.findIndex(b => b.ym === activeHistogramYm.value));
+const activeHistogramBucket = computed(() => histogramBuckets.value[activeHistogramIndex.value] || null);
+// "Jul 2014", "Week of 7 Jul 2025", "7 Jul 2025"
+function histogramBucketName(b: any) {
+  if (b.unit === 'month') return `${MONTHS_SHORT[b.month - 1]} ${b.year}`;
+  return `${b.unit === 'week' ? 'Week of ' : ''}${b.day} ${MONTHS_SHORT[b.month - 1]} ${b.year}`;
+}
+const histogramLensLabel = computed(() => {
+  const b = activeHistogramBucket.value;
+  return b ? `${histogramBucketName(b)} (${b.count.toLocaleString()})` : '';
+});
+// the pill sits over its bar, kept clear of the ribbon's ends
+const histogramLensLeft = computed(() => {
+  const n = histogramBuckets.value.length;
+  const x = n ? (activeHistogramIndex.value + 0.5) / n * 100 : 50;
+  return `${Math.min(94, Math.max(6, x))}%`;
+});
+// Axis labels at their slots: years over months, months over weeks, days over days (about 14).
+// A week's month is its Thursday's (ISO): the week of Mon 30 Dec 2024 belongs to January.
+const weekMonth = (b: any) => new Date(b.year, b.month - 1, b.day + 3).getMonth() + 1;
+const weekYear = (b: any) => new Date(b.year, b.month - 1, b.day + 3).getFullYear();
+// The rolling window's axis: real boundaries only (never a label at slot 0 that only Monday-snapping
+// put in the month before). Weeks: quarters, the year on January ("Jan '24", "Apr", ...), Jan and Jul
+// only if that is too many. Days: month starts and the 15th ("1 Jan '26", "15 Jan", "1 Feb"), month
+// starts only if too many. The first label carries its year too.
+function rollingHistogramAxis(buckets: any[], unit: string) {
+  const yy = (y: number) => `'${String(y).slice(2)}`;
+  let marks: { index: number; label: string; month: number; minor: boolean }[] = [];
+  buckets.forEach((b, index) => {
+    const prev = buckets[index - 1];
+    if (!prev) return;
+    if (unit === 'week') {
+      const m = weekMonth(b);
+      if (weekMonth(prev) !== m && m % 3 === 1) marks.push({ index, month: m, minor: false, label: m === 1 ? `Jan ${yy(weekYear(b))}` : MONTHS_SHORT[m - 1] });
+    } else if (b.day === 1 || b.day === 15) {
+      marks.push({ index, month: b.month, minor: b.day === 15, label: `${b.day} ${MONTHS_SHORT[b.month - 1]}${b.day === 1 && b.month === 1 ? ` ${yy(b.year)}` : ''}` });
+    }
+  });
+  if (marks.length > 15) marks = unit === 'week' ? marks.filter(m => m.month === 1 || m.month === 7) : marks.filter(m => !m.minor);
+  if (marks.length > 15) marks = marks.filter(m => m.month === 1);
+  if (marks.length && !marks[0].label.includes("'")) {
+    const b = buckets[marks[0].index];
+    marks[0] = { ...marks[0], label: `${marks[0].label} ${yy(unit === 'week' ? weekYear(b) : b.year)}` };
+  }
+  return marks.map(({ index, label }) => ({ index, label }));
+}
+const histogramAxis = computed(() => {
+  const buckets = histogramBuckets.value;
+  const unit = histogramUnit.value;
+  if (histogramWindow.value) return rollingHistogramAxis(buckets, unit);
+  let marks: { index: number; label: string }[] = [];
+  buckets.forEach((b, index) => {
+    const prev = buckets[index - 1];
+    if (unit === 'month' && (!prev || prev.year !== b.year)) marks.push({ index, label: String(b.year) });
+    else if (unit === 'week' && (!prev || weekMonth(prev) !== weekMonth(b))) marks.push({ index, label: MONTHS_SHORT[weekMonth(b) - 1] });
+    else if (unit === 'day' && (!prev || prev.month !== b.month || [5, 10, 15, 20, 25].includes(b.day)))
+      marks.push({ index, label: b.day === 1 || !prev || prev.month !== b.month ? `${b.day} ${MONTHS_SHORT[b.month - 1]}` : String(b.day) });
+  });
+  const step = Math.max(1, Math.ceil(marks.length / 14));
+  if (step > 1) marks = marks.filter((_, i) => i % step === 0 || i === marks.length - 1);
+  return marks;
+});
+
+async function loadDateHistogram() {
+  if (!dateHistogramVisible.value) return;
+  const requestId = ++histogramRequestId;
+  if (currentQuerySource.value !== 'query' && currentQuerySource.value !== 'search') {
+    dateHistogram.value = [];
+    dateHistogramLoading.value = false;
+    return;
+  }
+  dateHistogramLoading.value = true;
+  try {
+    // Calendar: the whole rolling window around the selection, not only the selection
+    const win = histogramWindow.value;
+    let rows;
+    if (currentQuerySource.value === 'search') {
+      const timeline = searchTimeline(fileList.value);
+      rows = timeline.buckets;
+      timelineData.value = timeline.markers;
+    } else {
+      rows = await getDateHistogram({ ...currentQueryParams.value,
+        ...(win ? { startDate: Math.floor(win.first.getTime() / 1000), endDate: Math.floor(win.end.getTime() / 1000) } : {}) });
+    }
+    if (requestId !== histogramRequestId) return;
+    dateHistogram.value = rows || [];
+    if (!histogramBuckets.value.some(b => b.ym === activeHistogramYm.value && b.count > 0)) {
+      // the selected period's end the grid starts at (rolling window), else the latest bar
+      const shown = histogramBuckets.value.filter(b => b.count > 0 && b.inRange);
+      activeHistogramYm.value = (win && Number(currentQueryParams.value?.sortOrder ?? 0) !== 1 ? shown[0] : shown[shown.length - 1])?.ym || '';
+      syncHistogramLens(lastVisibleRange.start, true);
+    }
+  } finally {
+    if (requestId === histogramRequestId) dateHistogramLoading.value = false;
+  }
+}
+
+// The lens follows the first photo in view (page grid); a click holds it briefly.
+function syncHistogramLens(startIndex: number, force = false) {
+  if (!dateHistogramVisible.value || !histogramBuckets.value.length) return;
+  if (!force && performance.now() < histogramLensHeldUntil) return;
+  const rows = gridRows.value as any[];
+  for (let i = Math.max(0, startIndex); i < Math.min(rows.length, startIndex + 40); i++) {
+    const row = rows[i];
+    const item = currentQuerySource.value === 'search' ? (row?.file || row) : row;
+    const t = Number(item?.taken_date || item?.created_at || item?.modified_at || 0);
+    if (!item?.id || t <= 0) continue;
+    const ym = histogramKeyOf(new Date(t * 1000));
+    if (histogramBuckets.value.some(b => b.ym === ym)) activeHistogramYm.value = ym;
+    return;
+  }
+}
+
+// A bar of the rolling window outside the selected Calendar period: the Calendar rolls to its year
+// (quarter, month or day, as selected now), and the view and ribbon follow.
+function rollCalendarToHistogramBucket(bucket: any) {
+  const d = new Date(bucket.year, bucket.month - 1, bucket.day + (bucket.unit === 'week' ? 3 : 0));
+  const cal = libConfig.calendar as any;
+  if (cal.month === -1 && cal.quarter) Object.assign(cal, { year: d.getFullYear(), quarter: Math.floor(d.getMonth() / 3) + 1 });
+  else if (cal.month === -1) cal.year = d.getFullYear();
+  else if (cal.date === -1) Object.assign(cal, { year: d.getFullYear(), month: d.getMonth() + 1 });
+  else Object.assign(cal, { year: d.getFullYear(), month: d.getMonth() + 1, date: d.getDate() });
+}
+
+async function jumpToHistogramBucket(bucket: any) {
+  if (!bucket) return;
+  activeHistogramYm.value = bucket.ym;
+  histogramLensHeldUntil = performance.now() + 1500;
+  if (bucket.inRange === false && config.main.sidebarIndex === SIDEBAR.CALENDAR) {
+    rollCalendarToHistogramBucket(bucket);
+    return;
+  }
+  if (isFoldersAllView.value) {
+    if (bucket.first_folder_path) void scrollToFolderSection(bucket.first_folder_path);
+    return;
+  }
+  // flat and date-sectioned views: the bucket's first photo in the current order (the scrollbar
+  // timeline's positions by day, else counted from the bars)
+  let fileIndex = -1;
+  const from = new Date(bucket.year, bucket.month - 1, bucket.unit === 'month' ? 1 : bucket.day);
+  const to = bucket.unit === 'month' ? new Date(bucket.year, bucket.month, 1)
+    : new Date(bucket.year, bucket.month - 1, bucket.day + (bucket.unit === 'week' ? 7 : 1));
+  const marks = timelineData.value.filter((t: any) => {
+    const d = new Date(Number(t.year), Number(t.month) - 1, Number(t.date || 1));
+    return bucket.unit === 'month' ? Number(t.year) === bucket.year && Number(t.month) === bucket.month : d >= from && d < to;
+  });
+  if (marks.length) {
+    fileIndex = Math.min(...marks.map((t: any) => Number(t.position || 0)));
+  } else if (Number(currentQueryParams.value?.sortType ?? 0) <= 2) {
+    const i = histogramBuckets.value.findIndex(b => b.ym === bucket.ym);
+    const before = Number(currentQueryParams.value?.sortOrder ?? 0) === 1
+      ? histogramBuckets.value.slice(i + 1) : histogramBuckets.value.slice(0, i);
+    fileIndex = before.reduce((total, b) => total + b.count, 0);
+  }
+  if (fileIndex < 0) return;
+  // Straight to the row (Build 42): scrollToGroupedFile refreshed the whole grouped layout and
+  // fetched 1,000 rows around it first, about a second in Calendar > All Dates. The rows on
+  // screen load as they appear. In date sections a bucket that opens its section shows the
+  // section's header above it. scrollToRowIndex also moves a placed native grid (Calendar
+  // draws through it from Build 43), which paints the new place in one frame.
+  let rowIndex = fileIndex;
+  if (groupedModeActive.value) {
+    rowIndex = getGroupedRowIndexForFileIndex(fileIndex);
+    if (rowIndex > 0 && isGroupRow(groupedRows.value[rowIndex - 1])) rowIndex -= 1;
+  }
+  if (rowIndex < 0) return;
+  if (nativeGridOn.value) {
+    // The native grid first, on its own: the page grid under it re-renders a whole screen of
+    // tiles after a scroll (~150 ms), and the native jump must not wait behind that.
+    void nativeGridScrollTo(rowIndex);
+    setTimeout(() => gridViewRef.value?.scrollToRowIndex(rowIndex), 0);
+    return;
+  }
+  gridViewRef.value?.scrollToRowIndex(rowIndex);
+}
+
+// The lens on the bar of a time (Unix seconds), unless a click holds it.
+function setHistogramLensFromTime(seconds: number) {
+  if (!dateHistogramVisible.value || !(seconds > 0) || performance.now() < histogramLensHeldUntil) return;
+  const ym = histogramKeyOf(new Date(seconds * 1000));
+  if (histogramBuckets.value.some(b => b.ym === ym)) activeHistogramYm.value = ym;
+}
+
+// A slot (an axis label, or an empty bar under the pointer): its bar, or the nearest one with photos.
+function nearestHistogramBucket(index: number) {
+  const buckets = histogramBuckets.value;
+  for (let k = 0; k < buckets.length; k++) {
+    for (const i of [index + k, index - k]) if (buckets[i]?.count > 0) return buckets[i];
+  }
+  return undefined;
+}
+function jumpToHistogramSlot(index: number) {
+  void jumpToHistogramBucket(nearestHistogramBucket(index));
+}
+
+// click, or drag across the bars: each new bar under the pointer jumps once
+let histogramScrubYm = '';
+function onHistogramPointer(event: PointerEvent) {
+  if (event.type === 'pointermove' && !(event.buttons & 1)) return;
+  const box = histogramBarsRef.value?.getBoundingClientRect();
+  const n = histogramBuckets.value.length;
+  if (!box || !n || box.width <= 0) return;
+  if (event.type === 'pointerdown') {
+    histogramScrubYm = '';
+    try { (event.currentTarget as HTMLElement)?.setPointerCapture?.(event.pointerId); } catch { /* a pointer that cannot be captured still clicks */ }
+  }
+  const i = Math.min(n - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * n)));
+  const bucket = nearestHistogramBucket(i);
+  if (!bucket || bucket.ym === histogramScrubYm) return;
+  histogramScrubYm = bucket.ym;
+  void jumpToHistogramBucket(bucket);
+}
 const groupTimelineData = computed(() => {
   if (!groupedModeActive.value) return [];
   if (groupedTimelineGroups.value.length > 0) {
@@ -3333,17 +3905,32 @@ const currentQueryParams = ref({
   tagId: 0,
   tagGroupId: 0,
   personId: 0,
+  showHidden: false,
 });
 const currentQuerySource = ref<'query' | 'smart' | 'collection' | 'search'>('query');
+// LAP-091: the Timeline ribbon re-reads its months when the view's query changes (after both refs exist)
+watch([dateHistogramVisible, () => JSON.stringify(currentQueryParams.value), currentQuerySource], () => {
+  if (dateHistogramVisible.value) void loadDateHistogram();
+});
 const isMapView = computed(() => config.settings.grid.viewMode === 'map');
 const isGridLayoutView = computed(() => config.settings.grid.viewMode === 'grid');
 const isFilmstripView = computed(() => config.settings.grid.viewMode === 'filmstrip');
+
+function handleFilmstripWheel(event: WheelEvent) {
+  if (!showFilmstripLayout.value || event.ctrlKey || !event.deltaY) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  performNavigate(event.deltaY > 0 ? 'next' : 'prev');
+}
 const isMapVisible = computed(() => isMapView.value && !showQuickView.value && tempViewMode.value !== 'map');
 const mapViewMounted = ref(isMapView.value);
 const mapTempViewState = ref<{ lat: number; lon: number; zoom: number } | null>(null);
 const currentSmartQueryParams = ref<any | null>(null);
 const currentCollectionId = ref<number | null>(null);
 const currentSearchFileIds = ref<number[]>([]);
+watch(currentSearchFileIds, () => {
+  if (dateHistogramVisible.value && currentQuerySource.value === 'search') void loadDateHistogram();
+});
 const mapQueryParams = computed(() => (
   currentQuerySource.value === 'smart' && currentSmartQueryParams.value
     ? currentSmartQueryParams.value
@@ -3572,6 +4159,7 @@ function showEmptyContent(requestId: number) {
   if (requestId !== currentContentRequestId) return;
   clearSelectionForFileListUpdate();
   clearContentRows();
+  currentSearchFileIds.value = [];
   totalFileCount.value = 0;
   totalFileSize.value = 0;
   contentCountIsAuthoritative.value = true;
@@ -3610,7 +4198,7 @@ const isPersonView = computed(() =>
   (config.main.sidebarIndex === SIDEBAR.PERSON || tempViewMode.value === 'person')
   && !!libConfig.person.id
 );
-// People view: the sidebar's People shows every named person in one continuous
+// Picasa People view: the sidebar's People shows every named person in one continuous
 // list, a section each. Unnamed "Person N" groups, a person opened from a photo's info
 // pane, and the suggestions-only / ignored lists keep the single-person view.
 const isPeopleAllView = computed(() =>
@@ -3627,8 +4215,18 @@ const isPeopleAllLoaded = () => groupedModeActive.value && isPeopleAllQuery();
 const peopleSectionOf = (personId: number | null | undefined) =>
   groupedTimelineGroups.value.find((group: any) => Number(group.groupId) === Number(personId || 0));
 const pinnedPeopleScrollTop = ref(0);
+// The section at the top of the native grid, as it reports while scrolling (the page's own
+// grid sits hidden underneath and does not scroll then).
+const nativeTopSection = ref<any>(null);
 const pinnedPersonSection = computed(() => {
   if (!isPeopleAllView.value || !isPeopleAllLoaded()) return null;
+  // With the native grid on, the name bar (and its Confirm all) stays pinned for the person
+  // the native grid shows at its top; photos scroll past underneath it (LAP-064).
+  if (nativeGridOn.value) {
+    return nativeTopSection.value
+      ?? groupedTimelineGroups.value.find((g: any) => Number(g.groupId) === Number(libConfig.person.id))
+      ?? null;
+  }
   // Layout changes and scrolls both change the section under the pinned header.
   void layoutVersion.value;
   let section = groupedTimelineGroups.value[0];
@@ -3638,6 +4236,11 @@ const pinnedPersonSection = computed(() => {
     section = group;
   }
   return section;
+});
+// The pinned bar shows the person's pending suggestions and Confirm all once their faces are
+// loaded; with the native grid the page does not load rows as it scrolls, so load them here.
+watch(() => Number(pinnedPersonSection.value?.groupId || 0), (personId) => {
+  if (nativeGridOn.value && personId > 0) ensurePersonFaces(personId);
 });
 // A person change that only moves within the loaded People view (sidebar click or
 // scrolling): no reload.
@@ -3659,12 +4262,23 @@ const personSuggestionCount = computed(() =>
   isPersonView.value && personFaces.personId === libConfig.person.id ? personFaces.suggestions.size : 0
 );
 
+// Each jump to a person supersedes any earlier one still waiting for the layout; two in
+// flight used to set the selected person back and forth, each starting the other again
+// (LAP-064: People flickering between two people for seconds).
+let personScrollGeneration = 0;
 async function scrollToPersonSection(personId: number | null | undefined) {
   const section = peopleSectionOf(personId);
   if (!section) return false;
+  const generation = ++personScrollGeneration;
   peopleScrollSyncId = Number(personId);
   const requestId = currentContentRequestId;
+  // The jump reports the section it lands on at once; ignore reports until it has settled.
+  peopleSyncPausedUntil = performance.now() + 500;
+  // The native grid has its own layout: jump at once, without waiting for the page's.
+  // (A jump does not report its section; the pinned name bar follows it here.)
+  if (nativeGridOn.value) { nativeTopSection.value = section; void nativeGridScrollTo(Number(section.rowIndex || 0)); }
   await waitForGroupedGridLayout();
+  if (generation !== personScrollGeneration) return false;
   if (requestId !== currentContentRequestId || libConfig.person.id === -1) return false;
   gridViewRef.value?.scrollToRowIndex(Number(section.rowIndex || 0));
   // Near the end the section may not reach the top; keep the clicked person highlighted.
@@ -3695,7 +4309,11 @@ function syncPersonFromScroll(scrollTop: number) {
       hi = mid - 1;
     }
   }
-  const section = groups[Math.max(0, found)];
+  applyPersonSection(groups[Math.max(0, found)]);
+}
+
+// The person section now at the top of the grid becomes the sidebar's person.
+function applyPersonSection(section: any) {
   const personId = Number(section?.groupId || 0);
   if (!personId) return;
   if (isContinuousLibraryQuery() && config.main.sidebarIndex !== SIDEBAR.PERSON) {
@@ -3708,7 +4326,7 @@ function syncPersonFromScroll(scrollTop: number) {
   libConfig.person.name = String(section.label || '');
 }
 
-// ---- Folders view: one flat list of every folder with pictures, one section
+// ---- Picasa Folders view: one flat list of every folder with pictures, one section
 // each (the sidebar shows the same list). A sidebar click scrolls to the folder's
 // section and scrolling moves the sidebar highlight; neither reloads.
 const isFoldersAllView = computed(() =>
@@ -3760,6 +4378,10 @@ const isFolderViewMove = () =>
 
 function showFoldersAllView(target: string, requestId: number) {
   contentTitle.value = localeMsg.value.sidebar?.album || 'Folders';
+  // The list opens with the People sections: their session (Confirm all keeps tiles in place,
+  // x'd tiles stay dimmed with Undo) starts with it, not at the first reload after a tick.
+  if (!peopleAllSession) startPeopleSession();
+  peopleAllSession = true;
   const keepingPlace = pendingRestoreScrollTop.value !== null;
   // The sidebar follows the grid only once the list is in place.
   folderSyncPausedUntil = Number.POSITIVE_INFINITY;
@@ -3780,7 +4402,15 @@ function showFoldersAllView(target: string, requestId: number) {
 async function scrollToFolderSection(path: string) {
   const section = folderSectionIn(path);
   if (!section) return false;
-  await waitForGroupedGridLayout();
+  scheduleNeighbourPrefetch(path);
+  if (nativeGridOn.value) {
+    // The native grid reports its section only while wheel-scrolling: ignore reports until the
+    // jump has settled (the page grid underneath must still record where it landed).
+    folderSyncPausedUntil = performance.now() + 500;
+    nativeTopSection.value = section;
+    void nativeGridScrollTo(Number(section.rowIndex || 0));
+  }
+  await nextTick();
   gridViewRef.value?.scrollToRowIndex(Number(section.rowIndex || 0));
   // Near the end the section may not reach the top; keep the clicked folder highlighted.
   folderSyncPausedUntil = performance.now() + 500;
@@ -3806,8 +4436,14 @@ function syncFolderFromScroll(scrollTop: number) {
       hi = mid - 1;
     }
   }
-  const path = String(groups[Math.max(0, found)]?.groupId || '');
+  applyFolderSection(groups[Math.max(0, found)]);
+}
+
+// The folder section now at the top of the grid becomes the sidebar's folder.
+function applyFolderSection(group: any) {
+  const path = String(group?.groupId || '');
   if (Number(path) > 0) return;
+  scheduleNeighbourPrefetch(path);
   const album = libConfig.album;
   if (isContinuousLibraryQuery() && config.main.sidebarIndex !== SIDEBAR.ALBUM) {
     folderScrollSyncPath = path;
@@ -3957,7 +4593,113 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('lapcasa-face-suggestions-changed', handleFaceSuggestionsChanged);
   window.removeEventListener('lapcasa-person-review', handlePersonReview);
+  stopNativeGridSection?.();
+  stopNativeGridZoom?.();
+  stopNativeGridScroll?.();
+  stopNativeGridControl?.();
 });
+// The native grid reports the section at its top while scrolling; the sidebar follows it.
+let stopNativeGridSection: (() => void) | null = null;
+void listen<{ rowIndex: number }>('native-grid-section', ({ payload }) => {
+  if (!nativeGridOn.value) return;
+  const group = groupedTimelineGroups.value.find((g: any) => Number(g.rowIndex) === payload.rowIndex);
+  if (!group) return;
+  // A queued report from before a sidebar jump must not replace its pinned header.
+  if (isPeopleAllQuery() && performance.now() < peopleSyncPausedUntil) return;
+  nativeTopSection.value = group;
+  // Calendar's date sections (Build 43): the group id is the section's start time, not a person;
+  // the Timeline lens follows it.
+  if (isCalendarDateSections.value) {
+    setHistogramLensFromTime(Number(group.groupId || 0));
+    return;
+  }
+  // LAP-091: the Timeline lens follows the folder at the top (its first photo's month)
+  if (!(Number(group.groupId) > 0)) setHistogramLensFromTime(Number(folderSectionOf(String(group.groupId || ''))?.dateMin || 0));
+  // Only the People / Folders list's sections are people and folders: a late report from
+  // Calendar's date sections (numeric ids) once Folders is shown opened People (Build 44).
+  if (!isPeopleAllQuery() && !isFoldersAllQuery()) return;
+  if (Number(group.groupId) > 0) {
+    if (isPeopleAllQuery() && performance.now() >= peopleSyncPausedUntil) applyPersonSection(group);
+  } else if (performance.now() >= folderSyncPausedUntil) {
+    applyFolderSection(group);
+  }
+}).then((off) => { stopNativeGridSection = off; });
+// The native grid's place (Build 46): its wheel and jumps move the page's scrollbar thumb; the page
+// grid under it does not scroll with the wheel.
+let stopNativeGridScroll: (() => void) | null = null;
+void listen<{ ratio: number }>('native-grid-scroll', ({ payload }) => {
+  if (!nativeGridOn.value) return;
+  const maxIndex = Math.max(1, scrollbarTotal.value - scrollbarPageSize.value);
+  scrollPosition.value = Math.round(Math.min(1, Math.max(0, Number(payload.ratio) || 0)) * maxIndex);
+}).then((off) => { stopNativeGridScroll = off; });
+// Ctrl+wheel over the native grid (LAP-072): the page never sees that wheel, so the grid sends it.
+// The new tile size reaches the grid through the gridSize watcher, which keeps the pointer's row.
+let stopNativeGridZoom: (() => void) | null = null;
+void listen<{ zoomIn: boolean }>('native-grid-zoom', ({ payload }) => {
+  if (!nativeGridOn.value || getActivePreviewMode() !== 'none' || uiStore.mapActive) return;
+  stepGridZoom(payload.zoomIn);
+}).then((off) => { stopNativeGridZoom = off; });
+
+// Review controls drawn by the native grid (tick / x / Undo under a face, the orange
+// header's buttons) do exactly what the page's own controls do.
+let stopNativeGridControl: (() => void) | null = null;
+void listen<{ kind: string; personId: number; fileId?: number; name?: string; action: string }>('native-grid-control', async ({ payload }) => {
+  if (!nativeGridOn.value) return;
+  const personId = Number(payload.personId);
+  if (payload.kind === 'face') {
+    const fileId = Number(payload.fileId);
+    if (payload.action === 'undo') {
+      if (!personFaces.people.has(personId)) await whenPersonFacesLoaded(personId);
+      await undoIgnore([fileId], personId);
+    } else {
+      await handlePersonFaceAction(payload.action, fileId, personId);
+    }
+    return;
+  }
+  if (!personFaces.people.has(personId)) await whenPersonFacesLoaded(personId);
+  if (payload.action === 'confirm-all') {
+    await resolveSuggestions(true, null, personId);
+  } else if (payload.action === 'ignore-all') {
+    const n = personFaces.people.get(personId)?.suggestions.size ?? 0;
+    const ok = await ask(
+      `Ignore all ${n.toLocaleString()} suggested ${n === 1 ? 'face' : 'faces'} for ${payload.name}? You can restore them later from the person's Ignored list.`,
+      { title: 'Ignore all suggestions', kind: 'warning', okLabel: 'Ignore all', cancelLabel: 'Cancel' },
+    );
+    if (ok) await resolveSuggestions(false, null, personId);
+  } else if (payload.action === 'review') {
+    window.dispatchEvent(new CustomEvent('lapcasa-person-review', { detail: { personId, name: payload.name } }));
+  }
+}).then((off) => { stopNativeGridControl = off; });
+
+// Right-click on a native tile: select it as the page does, then open the tile's menu.
+const nativeTileMenuRef = ref<any>(null);
+const nativeMenuFile = ref<any>(null);
+let nativeMenu = { index: -1, fileId: 0, personId: 0 };
+const nativeFileMenuItems = useFileMenuItems(nativeMenuFile, localeMsg, isMac, t,
+  (action: string) => handleItemAction({ action, index: nativeMenu.index }));
+const nativeTileMenuItems = computed(() => {
+  const base = nativeFileMenuItems.value as any[];
+  const state = personFaces.people.get(nativeMenu.personId);
+  const faceOnPerson = !!state && (state.confirmedFaces.has(nativeMenu.fileId) || state.suggestions.has(nativeMenu.fileId));
+  if (!faceOnPerson) return base;
+  return [
+    { label: 'Not this person', action: () => void handlePersonFaceAction('exclude-person', nativeMenu.fileId, nativeMenu.personId) },
+    { label: '-', action: null },
+    ...base,
+  ];
+});
+async function handleNativeGridContext(payload: { fileIndex: number; fileId: number; personId: number | null; select: boolean; clientX: number; clientY: number }) {
+  const index = Number(payload.fileIndex);
+  const personId = Number(payload.personId || 0);
+  if (!(await loadGroupedFileAtIndex(index, Number(payload.fileId), personId))) return;
+  if (personId > 0 && !personFaces.people.has(personId)) await whenPersonFacesLoaded(personId);
+  nativeMenu = { index, fileId: Number(payload.fileId), personId };
+  nativeMenuFile.value = fileList.value[index];
+  // The menu first, then the selection: selecting in the whole People list costs a few
+  // hundred ms of page work, which would otherwise hold the menu off the screen.
+  await nativeTileMenuRef.value?.open?.(payload.clientX, payload.clientY);
+  if (payload.select) requestAnimationFrame(() => setTimeout(() => handleItemClicked(index), 0));
+}
 let suppressPersonContextRefresh = false;
 const dedupQueryParams = computed(() => {
   return { ...currentQueryParams.value };
@@ -4042,12 +4784,27 @@ const currentTitleIcon = computed(() => {
 const backupState = ref<any>(null);
 
 let unlistenKeydown: () => void;
+let unlistenExternalSearch: (() => void) | undefined;
+let lastExternalSearchId = -1;
+
+function applyExternalSearch(payload: any) {
+  if (!payload || !Array.isArray(payload.tokens) || payload.id <= lastExternalSearchId) return;
+  if (!payload.tokens.every((token: any) => token.type === 'ids' && typeof token.value === 'string')) return;
+  lastExternalSearchId = payload.id;
+  libConfig.search.searchTokens = payload.tokens;
+  libConfig.search.searchText = payload.text || '';
+  libConfig.search.searchHistoryIndex = -1;
+  libConfig.activePane = 'main';
+  config.main.sidebarIndex = SIDEBAR.SEARCH;
+  uiStore.requestCountUpdate({ source: 'search', text: payload.text || '' });
+}
 let unlistenImageViewer: () => void;
 let unlistenImageEditor: (() => void) | null = null;
 let unlistenFaceIndexProgress: (() => void) | null = null;
 let unlistenLibraryTotalRefreshed: (() => void) | null = null;
 let unlistenImportFilesAdded: (() => void) | null = null;
 let unlistenPasteClipboard: (() => void) | null = null;
+let unlistenFolderMtimeSynced: (() => void) | null = null;
 
 let resizeObserver: ResizeObserver | null = null;
 let contentUpdateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4125,6 +4882,8 @@ onBeforeUnmount(() => {
   if (unlistenImageEditor) unlistenImageEditor();
   if (unlistenLibraryTotalRefreshed) unlistenLibraryTotalRefreshed();
   if (unlistenImportFilesAdded) unlistenImportFilesAdded();
+  if (unlistenPasteClipboard) unlistenPasteClipboard();
+  if (unlistenFolderMtimeSynced) unlistenFolderMtimeSynced();
 });
 
 async function refreshImportedAlbumContent(albumId: number) {
@@ -4154,7 +4913,10 @@ function handleItemClicked(
   index: number,
   modifiers: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {}
 ) {
-  if (!ensureGroupedFileAtIndex(index)) return;
+  if (!ensureGroupedFileAtIndex(index)) {
+    if (nativeGridOn.value) void loadGroupedFileAtIndex(index).then(ok => { if (ok) handleItemClicked(index, modifiers); });
+    return;
+  }
   keyboardSelectionKeepsPanelClosed.value = selectMode.value || !!(modifiers.shiftKey || modifiers.metaKey || modifiers.ctrlKey);
   const shiftKey = !!modifiers.shiftKey;
   const toggleSelection = !!(modifiers.metaKey || modifiers.ctrlKey);
@@ -4203,7 +4965,10 @@ function handleItemDblClicked(
   index: number,
   modifiers: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {}
 ) {
-  if (!ensureGroupedFileAtIndex(index)) return;
+  if (!ensureGroupedFileAtIndex(index)) {
+    if (nativeGridOn.value) void loadGroupedFileAtIndex(index).then(ok => { if (ok) handleItemDblClicked(index, modifiers); });
+    return;
+  }
   const openInNewWindow = !!(
     modifiers.shiftKey || modifiers.metaKey || modifiers.ctrlKey
   );
@@ -4542,12 +5307,19 @@ async function clickSetDesktopWallpaper() {
 
 async function handlePersonTileAction(action: string, index: number) {
   const file = fileList.value[index];
-  const personId = Number(file?.face_person_id ?? personFaces.personId);
+  if (!file) return;
+  await handlePersonFaceAction(action, Number(file.id), Number(file.face_person_id ?? personFaces.personId));
+}
+
+// Tick / x / "Not this person" on one person's face in a photo (or on the selection).
+async function handlePersonFaceAction(action: string, fileId: number, personId: number) {
+  // The native grid can act on a section the page has not loaded yet.
+  if (personId > 0 && !personFaces.people.has(personId)) await whenPersonFacesLoaded(personId);
   const state = personFaces.people.get(personId);
-  if (!file || !personId || !state) return;
+  if (!fileId || !personId || !state) return;
   // A control on an unselected tile acts on that tile, not an unrelated selection.
-  const useSelection = selectMode.value && selectedFileIds.has(Number(file.id));
-  const candidates = useSelection ? Array.from(selectedFileIds) : [Number(file.id)];
+  const useSelection = selectMode.value && selectedFileIds.has(fileId);
+  const candidates = useSelection ? Array.from(selectedFileIds) : [fileId];
   const fileIds = candidates.filter(id => state.suggestions.has(id)
     || (action === 'exclude-person' && state.confirmedFaces.has(id)));
   if (!fileIds.length) return;
@@ -4623,13 +5395,32 @@ function handleItemAction(payload: { action: string, index: number }) {
     return;
   }
 
+  if (action.startsWith('batch-edit:')) {
+    const op = action.slice('batch-edit:'.length);
+    void onBatchEdit(op);
+    return;
+  }
+
   const actionMap = {
     'open': () => openImageViewer(selectedItemIndex.value, true),
     'print': () => void printImage(selectedItemIndex.value),
     'edit': () => void openImageEditor(selectedItemIndex.value),
+    'copy-all-effects': () => void onCopyAllEffects(),
+    'copy-all-effects-selection': () => void onCopyAllEffectsSelection(),
+    'paste-all-effects': () => void onPasteAllEffects(),
+    'paste-all-effects-selection': () => void onPasteAllEffectsSelection(),
+    'batch-rotate-cw': () => void rotateSelected(90),
+    'batch-rotate-ccw': () => void rotateSelected(-90),
     'open-external-app': () => {
       void openInExternalApp();
     },
+    'send-email': () => void sendSelectedByEmail(),
+    'adjust-date-time': () => void openAdjustDate(),
+    'geotag': () => void openGeotag(),
+    'clear-geotags': () => void clearGeotags(),
+    'create-collage': () => void openCollage(),
+    'export-to-folder': () => void openExportToFolder(),
+    'make-poster': () => void openPoster(),
     'compare-selected-images': () => {
       const files = getActionableSelectedItems().filter(item => item.file_type === 1 || item.file_type === 3);
       if (files.length < 2) return;
@@ -4652,6 +5443,8 @@ function handleItemAction(payload: { action: string, index: number }) {
     'reveal': () => revealPath(fileList.value[selectedItemIndex.value].file_path),
     'refresh-file-info': () => selectMode.value ? startSelectedFileRefresh() : void updateFile(fileList.value[selectedItemIndex.value], true),
     'favorite': toggleFavorite,
+    'hide': () => void setFilesHiddenState(true),
+    'unhide': () => void setFilesHiddenState(false),
     'rotate': clickRotate,
     'info': toggleInfoPanel,
     'tag': clickTag,
@@ -4719,7 +5512,7 @@ function updateScrollPosition(currentScrollTop: number, currentScrollHeight: num
       // Calculate max scroll top
       const totalRows = Math.ceil(scrollbarTotal.value / columnCount.value);
       const topPadding = 48;
-      const bottomPadding = config.settings.showStatusBar ? 18 : 4;
+      const bottomPadding = bottomChrome.value;
       
       // Determine effective scroll height
       // If provided (from event), use it. Otherwise calculate based on layout.
@@ -4754,8 +5547,13 @@ function handleGridScroll(event: any) {
         event.target.scrollTop, 
         event.target.scrollHeight
     );
-    syncPersonFromScroll(event.target.scrollTop);
-    syncFolderFromScroll(event.target.scrollTop);
+    // With the native grid on, the page's grid sits hidden underneath with a different layout;
+    // only the native grid's own section reports may move the sidebar, or the two fight
+    // (LAP-064: People flickering between sections, the wrong person selected).
+    if (!nativeGridOn.value) syncPersonFromScroll(event.target.scrollTop);
+    // Folders use the native section reports too; a resize of the hidden web grid
+    // must not replace the selected folder with a section from its old layout.
+    if (!nativeGridOn.value) syncFolderFromScroll(event.target.scrollTop);
   }
 }
 
@@ -4784,7 +5582,7 @@ function handleScrollUpdate(newIndex: number) {
     // Calculate max scroll top
     const totalRows = Math.ceil(scrollbarTotal.value / columnCount.value);
     const topPadding = 48;
-    const bottomPadding = config.settings.showStatusBar ? 18 : 4;
+    const bottomPadding = bottomChrome.value;
     
     // Use reported layout height when available; date headers also affect normal grid height.
     const contentHeight = layoutContentHeight.value > 0
@@ -4797,6 +5595,8 @@ function handleScrollUpdate(newIndex: number) {
     const newScrollTop = ratio * maxScrollTop;
     
     gridViewRef.value.scrollToPosition(newScrollTop);
+    // the native grid drawn over it moves to the same place (Build 46)
+    if (nativeGridOn.value) void nativeGridScrollRatio(ratio);
   } else if (gridScrollContainerRef.value) {
     // For filmstrip or other layouts, fallback to simple calculation or existing logic
     // But filmstrip uses horizontal scroll, handled differently.
@@ -4986,6 +5786,13 @@ function handleLocalKeyDown(event: KeyboardEvent) {
     return;
   }
 
+  const viewAction = LIBRARY_VIEW_ACTIONS.find((actionId) => matchesShortcut(actionId, event, shortcutPlatform));
+  if (viewAction) {
+    event.preventDefault();
+    runLibraryViewAction(viewAction);
+    return;
+  }
+
   if (selectedItemIndex.value < 0 || fileList.value.length === 0) {
     return;
   }
@@ -5061,9 +5868,9 @@ function handleLocalKeyDown(event: KeyboardEvent) {
     return;
   }
 
-  if ((showQuickView.value || isFilmstripView.value) && matchesShortcut('slideshow.toggle', event, shortcutPlatform)) {
+  if (matchesShortcut('slideshow.toggle', event, shortcutPlatform)) {
     event.preventDefault();
-    toggleSlideShow();
+    toggleLibrarySlideShow();
     return;
   }
 
@@ -5148,6 +5955,12 @@ function handleLocalKeyDown(event: KeyboardEvent) {
     return;
   }
 
+  if (matchesShortcut('file.exportToFolder', event, shortcutPlatform)) {
+    event.preventDefault();
+    void openExportToFolder();
+    return;
+  }
+
   if (matchesShortcut('file.rename', event, shortcutPlatform)) {
     event.preventDefault();
     clickRename();
@@ -5213,14 +6026,6 @@ function handleQuickPreviewShortcut(event: { key: string; code?: string }): bool
     return false;
   }
 
-  if (event.key === 'Enter') {
-    if (!showQuickView.value && !isFilmstripView.value) {
-      showQuickView.value = true;
-      quickViewZoomFit.value = true;
-    }
-    return true;
-  }
-
   if (event.key !== 'Space' && event.key !== ' ') {
     return false;
   }
@@ -5272,11 +6077,14 @@ function handleContentWheel(event: WheelEvent) {
 
   event.preventDefault();
   event.stopPropagation();
+  stepGridZoom(event.deltaY < 0);
+}
 
-  const currentSize = gridSize.value;
-  const delta = event.deltaY < 0 ? 10 : -10;
-  if (usesColumnGrid.value) activeGridColumns.value += event.deltaY < 0 ? -1 : 1;
-  else setGridSize(currentSize + delta);
+// One Ctrl+wheel detent: a column fewer (bigger tiles) or more. The stored setting changes, so the
+// next launch opens at this size.
+function stepGridZoom(zoomIn: boolean) {
+  if (usesColumnGrid.value) activeGridColumns.value += zoomIn ? -1 : 1;
+  else setGridSize(gridSize.value + (zoomIn ? 10 : -10));
 }
 
 function isTextInputFocused() {
@@ -5365,6 +6173,10 @@ const handleKeyDown = (e: any) => {
     const file = fileList.value[selectedItemIndex.value];
     if (file && (file.file_type === 1 || file.file_type === 3)) {
       void openImageEditor(selectedItemIndex.value);
+    } else if (file && key === 'Enter' && !showQuickView.value && !isFilmstripView.value) {
+      // A video has no editor: Enter previews it, as double-click does.
+      showQuickView.value = true;
+      quickViewZoomFit.value = true;
     }
   } else if (matchesShortcut('file.trash', event, shortcutPlatform)) {
     if (selectMode.value && selectedCount.value === 0) return;
@@ -5382,6 +6194,14 @@ let unlistenIndexFinished: (() => void) | undefined;
 let unlistenThumbnailReady: (() => void) | undefined;
 let unlistenTriggerNextAlbum: (() => void) | undefined;
 let unlistenRefreshContent: (() => void) | undefined;
+let unlistenTriggerPictureHide: (() => void) | undefined;
+let unlistenTriggerPictureUnhide: (() => void) | undefined;
+let unlistenTriggerAdjustDate: (() => void) | undefined;
+let unlistenTriggerCreateCollage: (() => void) | undefined;
+let unlistenTriggerExportToFolder: (() => void) | undefined;
+let unlistenTriggerShortcut: (() => void) | undefined;
+let unlistenTriggerMakePoster: (() => void) | undefined;
+let unlistenTriggerToggleHiddenPictures: (() => void) | undefined;
 let unlistenFilesDeleted: (() => void) | undefined;
 let unlistenAlbumUpdated: (() => void) | undefined;
 const showIndexRecoveryMsgbox = ref(false);
@@ -5454,6 +6274,34 @@ const isIndexing = computed(() => {
 const isAnyIndexing = computed(() =>
   libConfig.index.albumQueue.length > 0 && Number(libConfig.index.status || 0) !== 2
 );
+
+// LAP-064: the scan's latest photo for the bottom-right card (any album being scanned, as in
+// Picasa); it stays a moment after the scan ends, then slides away.
+const scanPreview = ref({ fileId: 0, name: '', folder: '', folderPath: '', src: '', processed: 0, total: 0 });
+const scanPreviewLinger = ref(false);
+let scanPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+const scanPreviewShown = computed(() => scanPreview.value.fileId > 0 && (isAnyIndexing.value || scanPreviewLinger.value));
+function noteScanPreview(payload: any) {
+  const fileId = Number(payload?.latest_file_id || 0);
+  const processed = Number(payload?.processed || payload?.current || 0), total = Number(payload?.total || 0);
+  if (fileId <= 0) { if (scanPreview.value.fileId > 0) scanPreview.value = { ...scanPreview.value, processed, total }; return; }
+  const folderPath = String(payload?.latest_folder || '');
+  scanPreview.value = {
+    fileId, name: String(payload?.latest_name || ''), folderPath,
+    folder: folderPath.split(/[\\/]/).filter(Boolean).pop() || folderPath,
+    src: fileId === scanPreview.value.fileId ? scanPreview.value.src : getThumbUrl(fileId),
+    processed, total,
+  };
+}
+watch(isAnyIndexing, (scanning) => {
+  if (scanPreviewTimer) clearTimeout(scanPreviewTimer);
+  if (scanning) { scanPreviewLinger.value = false; return; }
+  scanPreviewLinger.value = true;
+  scanPreviewTimer = setTimeout(() => {
+    scanPreviewLinger.value = false;
+    scanPreview.value = { fileId: 0, name: '', folder: '', folderPath: '', src: '', processed: 0, total: 0 };
+  }, 1500);
+});
 
 const isScanStreamingMode = computed(() =>
   isIndexing.value &&
@@ -5890,6 +6738,7 @@ onMounted( async() => {
   const appConfig = await getAppConfig();
   pendingInitialSelectedIndex = Number(appConfig?.last_selected_item_index ?? -1);
   hasRestoredInitialSelection = false;
+  void setShowHiddenPictures(Boolean(config.settings.showHiddenPictures));
 
   window.addEventListener('keydown', handleLocalKeyDown);
   window.addEventListener(PREVIEW_WINDOW_FOCUS_RESTORED, restoreOpenPreviewFocus);
@@ -5897,13 +6746,30 @@ onMounted( async() => {
   unlistenKeydown = await listen('global-keydown', handleKeyDown);
 
   unlistenLibraryTotalRefreshed = await listen('library-total-refreshed', (event: any) => {
-    if (event?.payload?.source === 'content') return;
+    if (event?.payload?.source === 'content' || event?.payload?.source === 'folder-watch') return;
     if (isScanStreamingMode.value) return;
     if (config.main.sidebarIndex === SIDEBAR.ALBUM) {
       pendingInitialSelectedIndex = selectedItemIndex.value;
       hasRestoredInitialSelection = false;
       updateContent(true);
     }
+  });
+  unlistenFolderMtimeSynced = await listen('folder-mtime-synced', (event: any) => {
+    if (event?.payload?.source === 'content') return;
+    if (isScanStreamingMode.value) return;
+    void loadFolderSections(true);
+    if (gridViewRef.value) {
+      pendingRestoreScrollTop.value = gridViewRef.value.getScrollTop();
+    }
+    if ((isPeopleAllView.value && isPeopleAllLoaded()) || (isFoldersAllView.value && isFoldersAllLoaded())) {
+      pendingKeepPeopleRows = true;
+    }
+    pendingInitialSelectedIndex = selectedItemIndex.value;
+    hasRestoredInitialSelection = false;
+    // LAP-045: the native grid re-reads its rows in place at once, keeping its scroll and the
+    // pictures it has decoded; the page's reload below brings the page's own list up to date.
+    if (nativeGridOn.value) void nativeGridRefresh();
+    void updateContent(true);
   });
   unlistenImportFilesAdded = await listen('import-files-added', (event: any) => {
     void refreshImportedAlbumContent(Number(event.payload?.albumId || 0));
@@ -5915,6 +6781,9 @@ onMounted( async() => {
       void pasteClipboardImage({ albumId, folderPath });
     }
   });
+  unlistenExternalSearch = await listen('external-search', (event) => applyExternalSearch(event.payload));
+  try { applyExternalSearch(await invoke('take_external_search')); }
+  catch (error) { console.error('External search handoff:', error); }
 
   // Drag-drop file import. Tauri native drag/drop is disabled so internal
   // HTML5 drag interactions (e.g. sortable lists) keep their drop events.
@@ -6114,18 +6983,9 @@ onMounted( async() => {
           uiStore.updateFileVersion(filePath);
         }
         if (recipeSaved && sourceId > 0) {
-          const refreshed = await getFileInfo(sourceId);
-          if (refreshed) {
-            if (Number(refreshed.rotate || 0) !== 0) {
-              await setFileRotate(sourceId, 0);
-              refreshed.rotate = 0;
-            }
-            clearCachedThumbnailDataUrl(sourceId, config.settings.thumbnailSize);
-            clearPreviewPreloadCache(filePath);
-            refreshed.thumbnail = getLapUrl(sourceId, true, config.settings.thumbnailSize, Number(refreshed.modified_at || 0), refreshed.edits);
-            for (const file of fileList.value) if (Number(file.id) === sourceId) Object.assign(file, refreshed);
-            await syncFileMetaToImageViewer(sourceId, { edits: refreshed.edits, rotate: refreshed.rotate });
-            if (type === 'success') toast.success(localeMsg.value.tooltip.save_image.success);
+          const refreshed = await refreshEditedFile(sourceId, filePath, true);
+          if (refreshed && type === 'success') {
+            toast.success(localeMsg.value.tooltip.save_image.success);
           }
         } else {
           await onFileSaved(true, { saveAsNew, filePath, saveAsContext });
@@ -6143,6 +7003,7 @@ onMounted( async() => {
   unlistenIndexProgress = await listenIndexProgress(async (event: any) => {
     const { album_id, phase, current, discovered, processed, search_ready, total, search_total, current_size, failed } = event.payload;
     if (libConfig.index.albumQueue.length > 0 && libConfig.index.albumQueue[0] === album_id) {
+        noteScanPreview(event.payload);
         libConfig.index.phase = String(phase || libConfig.index.phase || 'discovering');
         libConfig.index.discovered = Number(discovered || 0);
         libConfig.index.processed = Number(processed || current || 0);
@@ -6157,6 +7018,7 @@ onMounted( async() => {
         ) {
           totalFileSize.value = Number(current_size || 0);
         }
+        void refreshNativeGridForScan(Number(album_id || 0));
     }
   });
 
@@ -6284,6 +7146,36 @@ onMounted( async() => {
     updateContent();
   });
 
+  unlistenTriggerPictureHide = await listen('trigger-picture-hide', () => {
+    void setFilesHiddenState(true);
+  });
+  unlistenTriggerPictureUnhide = await listen('trigger-picture-unhide', () => {
+    void setFilesHiddenState(false);
+  });
+  unlistenTriggerAdjustDate = await listen('trigger-adjust-date-time', () => {
+    void openAdjustDate();
+  });
+  unlistenTriggerCreateCollage = await listen('trigger-create-collage', () => {
+    void openCollage();
+  });
+  unlistenTriggerExportToFolder = await listen('trigger-export-to-folder', () => {
+    void openExportToFolder();
+  });
+  unlistenTriggerShortcut = await listen('trigger-shortcut', (event: any) => {
+    runMenuShortcut(event.payload?.actionId);
+  });
+  unlistenTriggerMakePoster = await listen('trigger-make-poster', () => {
+    void openPoster();
+  });
+  unlistenTriggerToggleHiddenPictures = await listen('trigger-toggle-hidden-pictures', async () => {
+    await setShowHiddenPictures(Boolean(config.settings.showHiddenPictures));
+    clearFolderFileCounts();
+    uiStore.clearCountUpdateRequest();
+    libConfig.clearLazySidebarCounts();
+    void loadFolderSections(true);
+    void updateContent(true);
+  });
+
   unlistenTriggerNextAlbum = await listen('trigger-next-album', () => {
     processNextAlbum();
   });
@@ -6403,11 +7295,20 @@ onBeforeUnmount(() => {
   unlistenImageViewer();
   if (unlistenImageEditor) unlistenImageEditor();
   if (unlistenKeydown) unlistenKeydown();
+  if (unlistenExternalSearch) unlistenExternalSearch();
   if (unlistenTriggerNextAlbum) unlistenTriggerNextAlbum();
   if (unlistenIndexProgress) unlistenIndexProgress();
   if (unlistenIndexFinished) unlistenIndexFinished();
   if (unlistenThumbnailReady) unlistenThumbnailReady();
   if (unlistenRefreshContent) unlistenRefreshContent();
+  if (unlistenTriggerPictureHide) unlistenTriggerPictureHide();
+  if (unlistenTriggerPictureUnhide) unlistenTriggerPictureUnhide();
+  if (unlistenTriggerAdjustDate) unlistenTriggerAdjustDate();
+  if (unlistenTriggerCreateCollage) unlistenTriggerCreateCollage();
+  if (unlistenTriggerExportToFolder) unlistenTriggerExportToFolder();
+  if (unlistenTriggerShortcut) unlistenTriggerShortcut();
+  if (unlistenTriggerMakePoster) unlistenTriggerMakePoster();
+  if (unlistenTriggerToggleHiddenPictures) unlistenTriggerToggleHiddenPictures();
   if (unlistenFilesDeleted) unlistenFilesDeleted();
   if (unlistenAlbumUpdated) unlistenAlbumUpdated();
   if (unlistenFaceIndexProgress) unlistenFaceIndexProgress();
@@ -6499,7 +7400,7 @@ watch(
     album: [libConfig.album.id, libConfig.album.folderId, libConfig.album.folderPath, libConfig.album.selected],
     smartAlbum: [libConfig.smartAlbum.type, libConfig.smartAlbum.id],
     personId: libConfig.person.id,
-    calendar: [config.calendar.view, libConfig.calendar.year, libConfig.calendar.month, libConfig.calendar.date],
+    calendar: [config.calendar.view, libConfig.calendar.year, libConfig.calendar.quarter, libConfig.calendar.month, libConfig.calendar.date],
     tagId: libConfig.tag.id,
     tagGroupId: libConfig.tag.groupId,
     location: [libConfig.location.admin1, libConfig.location.name],
@@ -6550,13 +7451,14 @@ watch(
     config.settings.showSubfolderFiles,                                            // album folder view
     config.settings.folderSort, config.settings.calendarSort, config.settings.categorySort, config.search.groupBy, // group sorting and filtering
     libConfig.person.id,                                                              // person
-    config.calendar.view, libConfig.calendar.year, libConfig.calendar.month, libConfig.calendar.date, // calendar
+    config.calendar.view, libConfig.calendar.year, libConfig.calendar.quarter, libConfig.calendar.month, libConfig.calendar.date, // calendar
     libConfig.tag.id, libConfig.tag.groupId, libConfig.tag.activateTick, // tag
     libConfig.location.admin1, libConfig.location.name,                               // location
     libConfig.camera.make, libConfig.camera.model,                                    // camera 
     config.camera.isCamera, (libConfig.camera as any).lensMake, (libConfig.camera as any).lensModel, // lens
     config.settings.face?.minimumUnnamedSightings, config.leftStack.unnamedCollapsed,
     config.settings.face?.hideDuplicateUnnamed,
+    plainSearchSubmission.value,
   ], 
   (values, previousValues) => {
     // Replacing smartAlbums creates a new outer array even if these values match.
@@ -6697,6 +7599,10 @@ watch(() => selectedItemIndex.value, (newIndex, oldIndex) => {
     fileList.value[oldIndex].rotate %= 360;
   }
   void setLastSelectedItemIndex(Number(newIndex ?? -1));
+  // A photo the list has not fetched yet (keyboard moved past the loaded rows): fetch it now.
+  if (newIndex >= 0 && fileList.value[newIndex] && !isRealFileItem(fileList.value[newIndex])) {
+    void fetchDataRange(newIndex, Math.min(fileList.value.length, newIndex + 40));
+  }
   updateSelectedImage(newIndex);
   // Keep an open image viewer in sync with the main-window selection.
   if (!suppressImageViewerSync) {
@@ -6724,8 +7630,12 @@ function disablePreviewModes() {
   stopSlideShow();
 }
 
+// Store a column count once, migrated from the old size slider at the first measured width. A
+// saved count is only ever changed by the user: the width at startup (before the window's saved
+// size is restored) clamps what is shown, and must not overwrite the owner's zoom level.
 watch(() => [containerWidth.value, isPersonFaceView.value, usesColumnGrid.value, config.settings.thumbnailSize], () => {
-  if (usesColumnGrid.value && containerWidth.value > 0) activeGridColumns.value = activeGridColumns.value;
+  if (!usesColumnGrid.value || containerWidth.value <= 0) return;
+  if (!savedGridColumns()) activeGridColumns.value = activeGridColumns.value;
 }, { immediate: true });
 
 watch(gridSize, (newSize, oldSize) => {
@@ -6864,9 +7774,15 @@ const getCurrentQueryTimeLine = () => {
   return getQueryTimeLine(currentQueryParams.value);
 };
 
-const getCurrentQueryFiles = (offset: number, limit: number) => {
+const getCurrentQueryFiles = async (offset: number, limit: number) => {
   if (currentQuerySource.value === 'search') {
-    return Promise.resolve(fileList.value.slice(offset, offset + limit));
+    const requestId = currentContentRequestId;
+    const rows = fileList.value.slice(offset, offset + limit);
+    const ids = rows.filter(isPendingFileItem).map(file => Number(file.id));
+    if (!ids.length) return rows;
+    const loaded = new Map(((await getFilesByIds(ids)) || []).map((file: any) => [Number(file.id), file]));
+    if (requestId !== currentContentRequestId) return [];
+    return rows.map(file => loaded.get(Number(file.id)) || file);
   }
   if (currentQuerySource.value === 'collection' && currentCollectionId.value) {
     return getCollectionFiles(currentCollectionId.value, currentQueryParams.value, offset, limit);
@@ -6877,7 +7793,20 @@ const getCurrentQueryFiles = (offset: number, limit: number) => {
   return getQueryFiles(currentQueryParams.value, offset, limit);
 };
 
-const getCurrentGroupedQueryRows = (offset: number, limit: number) => {
+const getCurrentGroupedQueryRows = async (offset: number, limit: number) => {
+  if (currentQuerySource.value === 'search') {
+    const requestId = currentContentRequestId;
+    const rows = groupedRows.value.slice(offset, offset + limit);
+    const ids = rows.filter(row => isItemRow(row) && row.isPlaceholder).map(row => Number(row.file.id));
+    if (!ids.length) return { rows };
+    const loaded = new Map(((await getFilesByIds(ids)) || []).map((file: any) => [Number(file.id), file]));
+    if (requestId !== currentContentRequestId) return { rows: [] };
+    await prepareSearchThumbnails([...loaded.values()], ids.length, config.settings.thumbnailSize);
+    return { rows: rows.map(row => {
+      const file = isItemRow(row) ? loaded.get(Number(row.file?.id)) : null;
+      return file ? { ...row, file, isPlaceholder: false } : row;
+    }) };
+  }
   if (currentQuerySource.value === 'collection' && currentCollectionId.value) {
     return getCollectionGroupedQueryRows(currentCollectionId.value, getGroupingQueryParams(), offset, limit);
   }
@@ -7077,9 +8006,9 @@ async function fetchGroupedRowsRange(start: number, end: number, reverse = false
   if (start >= end || requestId !== currentContentRequestId) return;
 
   const peopleView = isPeopleAllQuery() || isAlbumThumbnailView.value;
-  const chunkSize = peopleView
-    ? Math.max(1, Math.min(selectionChunkSize.value, Math.max(32, visibleItemCount.value)))
-    : selectionChunkSize.value;
+  // One screen per request in every grouped view (Build 42): Calendar and the other date-sectioned
+  // views asked for 500 rows a chunk and waited for all of them.
+  const chunkSize = Math.max(1, Math.min(selectionChunkSize.value, Math.max(32, visibleItemCount.value)));
   const startChunk = Math.floor(start / chunkSize);
   const endChunk = Math.floor((end - 1) / chunkSize);
   const chunkPromises: Promise<void>[] = [];
@@ -7089,6 +8018,13 @@ async function fetchGroupedRowsRange(start: number, end: number, reverse = false
       start: (startChunk + i) * chunkSize,
       end: Math.min(totalRowCount.value, (startChunk + i + 1) * chunkSize),
     }));
+  // A folder jump needs one screen of metadata, not separate responses that each
+  // mount part of the screen and repeat the complete section list over IPC. The same holds for
+  // a Timeline jump in Calendar and the other date-sectioned views (Build 42): one request, one
+  // render of the new screen. People keeps its viewport-first chunks.
+  if (ranges.length > 1 && (isAlbumThumbnailView.value || !peopleView)) {
+    ranges.splice(0, ranges.length, { start: ranges[0].start, end: ranges[ranges.length - 1].end });
+  }
   if (reverse) ranges.reverse();
   for (const range of ranges) {
     const chunkStart = range.start;
@@ -7166,6 +8102,8 @@ function normalizeGridRow(row: any, rowIndex: number) {
   };
 }
 
+const preservedThumbByFileId = new Map<number, string>();
+
 function applyGroupedRows(rows: any[], rowOffset: number) {
   const filesToFetch: any[] = [];
   for (let j = 0; j < rows.length; j++) {
@@ -7203,7 +8141,9 @@ function applyGroupedRows(rows: any[], rowOffset: number) {
       const fileId = Number(file?.id || 0);
       const isSelected = Boolean(existingItem?.isSelected) || (fileId > 0 && selectedFileIds.has(fileId));
       const rotate = existingItem ? (existingItem.rotate || 0) : 0;
-      const thumbnail = existingItem?.thumbnail;
+      const thumbnail = (Number(existingItem?.id) === fileId && existingItem?.thumbnail)
+        ? existingItem.thumbnail
+        : (fileId > 0 ? preservedThumbByFileId.get(fileId) : undefined);
       const nextFile = {
         ...file,
         ...peopleSectionFields(row),
@@ -7222,7 +8162,9 @@ function applyGroupedRows(rows: any[], rowOffset: number) {
 
       const groupId = String(row.group_id || '');
       if (groupId && fileId) fileIdToGroupId.set(fileId, groupId);
-      filesToFetch.push(fileList.value[fileIndex]);
+      if (!fileList.value[fileIndex].thumbnail) {
+        filesToFetch.push(fileList.value[fileIndex]);
+      }
 
       if (fileIndex === selectedItemIndex.value) {
         openImageViewer(selectedItemIndex.value, false, selectedItemIndex.value === 0);
@@ -7232,6 +8174,78 @@ function applyGroupedRows(rows: any[], rowOffset: number) {
   }
   return filesToFetch;
 }
+
+// LAP-064: a scan adds files the native grid has not read; re-read its rows about once a second
+// so photos appear as they are found, and bring the scanned folder into view once, when it is
+// the folder open (later refreshes leave the view where the user put it).
+let nativeScanRefreshAt = 0;
+let nativeScanFocused = 0;
+let nativeScanBusy = false;
+async function refreshNativeGridForScan(albumId: number) {
+  if (!nativeGridOn.value || !albumId || nativeScanBusy || performance.now() - nativeScanRefreshAt < 1000) return;
+  nativeScanBusy = true;
+  try {
+    const focus = nativeScanFocused !== albumId && Number(libConfig.album.id || 0) === albumId
+      ? ((await getAlbum(albumId)) as any)?.path || null : null;
+    if ((await nativeGridRefresh(focus)) && focus) nativeScanFocused = albumId;
+  } finally {
+    nativeScanBusy = false;
+    nativeScanRefreshAt = performance.now();
+  }
+}
+
+// LAP-062: People/Folders drawn by the native grid window, which has its own headers.
+const nativeGridOn = computed(() => config.settings.grid.nativeGrid === true && currentQuerySource.value === 'query'
+  && (isPeopleAllQuery() || isAlbumThumbnailView.value || isCalendarDateSections.value));
+// Build 43: Calendar in date sections (Day / Month / Quarter / Year) draws through the native grid
+// too, so a Timeline jump paints in one frame as People and Folders do.
+const isCalendarDateSections = computed(() => config.main.sidebarIndex === SIDEBAR.CALENDAR && !isCollectionPane.value
+  && tempViewMode.value === 'none' && !isFilmstripView.value && groupedModeActive.value
+  && ([GROUP.DAY, GROUP.MONTH, GROUP.QUARTER, GROUP.YEAR] as number[]).includes(Number(effectiveGroupBy.value)));
+
+// The native grid draws at the tile size it was shown with. Send it again whenever the page's
+// size changes (the window's saved size restored after startup, a resize, zoom), at most every
+// 150 ms, so the native tiles always match the page's column count.
+let nativeGridShown: { params: any; libraryId: string; tile: number } | null = null;
+let nativeGridRetileTimer: ReturnType<typeof setTimeout> | null = null;
+let nativeGridRetiledAt = 0;
+function showNativeGrid(params: any, libraryId: string) {
+  // Face crops at the size the page's tiles request, so both share the face cache.
+  const faceSize = gridSize.value * window.devicePixelRatio <= 128 ? 128 : config.settings.thumbnailSize;
+  nativeGridShown = { params, libraryId, tile: gridSize.value };
+  void nativeGridShow(params, gridSize.value, faceSize, libraryId);
+}
+watch(nativeGridOn, (on) => { if (!on) nativeGridShown = null; });
+onBeforeUnmount(() => { if (nativeGridRetileTimer) clearTimeout(nativeGridRetileTimer); nativeGridShown = null; });
+watch(gridSize, () => {
+  if (!nativeGridShown || nativeGridRetileTimer) return;
+  nativeGridRetileTimer = setTimeout(() => {
+    nativeGridRetileTimer = null;
+    if (!nativeGridOn.value || !nativeGridShown || Math.abs(gridSize.value - nativeGridShown.tile) < 0.5) return;
+    nativeGridRetiledAt = performance.now();
+    showNativeGrid(nativeGridShown.params, nativeGridShown.libraryId);
+  }, Math.max(0, nativeGridRetiledAt + 150 - performance.now()));
+
+// The page's review state goes to the native grid for every person it has loaded: pending
+// suggestions, and faces ignored this session (dimmed with Undo). Only changes are sent.
+const nativeMarksSent = new Map<number, string>();
+watch(() => nativeGridOn.value
+  ? [...personFaces.people].filter(([id]) => id > 0).map(([id, s]) => [id, [...s.suggestions.keys()], [...s.sessionIgnored]] as const)
+  : null, (people) => {
+  if (!people) return;
+  const present = new Set(people.map(([id]) => id));
+  const reset = [...nativeMarksSent.keys()].some((id) => !present.has(id));
+  if (reset) nativeMarksSent.clear();
+  const marks: Record<number, { suggested: number[]; dimmed: number[] }> = {};
+  for (const [id, suggested, dimmed] of people) {
+    const key = JSON.stringify([suggested, dimmed]);
+    if (nativeMarksSent.get(id) === key) continue;
+    nativeMarksSent.set(id, key);
+    marks[id] = { suggested, dimmed };
+  }
+  if (reset || Object.keys(marks).length) void nativeGridMarks(marks, reset);
+});
+});
 
 async function initializeGroupedFileList(requestId: number) {
   if (!isGroupingSupportedForCurrentView()) {
@@ -7254,10 +8268,46 @@ async function initializeGroupedFileList(requestId: number) {
   }
 
   const normalized = normalizeGroupedRowsResult(groupedResult);
-  const keepPeopleRows = isPeopleAllQuery() && groupedModeActive.value
+  const keepPeopleRows = (isPeopleAllQuery() || isFoldersAllQuery()) && groupedModeActive.value
     && pendingKeepPeopleRows;
   const previousGroups = keepPeopleRows ? groupedTimelineGroups.value : [];
   const previousRows = keepPeopleRows ? groupedRows.value : [];
+  const previousThumbByFileId = new Map<number, string>();
+  if (keepPeopleRows) {
+    for (const item of fileList.value) {
+      const fid = Number(item?.id || 0);
+      if (fid > 0 && item?.thumbnail) previousThumbByFileId.set(fid, item.thumbnail);
+    }
+    for (const row of previousRows) {
+      const fid = Number(row?.file?.id || 0);
+      if (fid > 0 && row?.file?.thumbnail) previousThumbByFileId.set(fid, row.file.thumbnail);
+    }
+  }
+  preservedThumbByFileId.clear();
+  for (const [fid, thumb] of previousThumbByFileId) {
+    preservedThumbByFileId.set(fid, thumb);
+  }
+
+  const savedVisibleRange = { ...lastVisibleRange };
+  let visibleResult: any = null;
+  let visibleOffset = 0;
+  let visibleLimit = 0;
+  if (keepPeopleRows) {
+    if (savedVisibleRange.start >= 0 && savedVisibleRange.end >= savedVisibleRange.start) {
+      visibleOffset = Math.max(0, savedVisibleRange.start - 2);
+      visibleLimit = Math.max(selectionChunkSize.value, savedVisibleRange.end - savedVisibleRange.start + 16);
+    } else if (isFoldersAllQuery() && libConfig.album.folderPath) {
+      const activeGroup = normalized.groups.find((g: any) => String(g.groupId) === String(libConfig.album.folderPath));
+      if (activeGroup) {
+        visibleOffset = Math.max(0, Number(activeGroup.rowIndex || 0));
+        visibleLimit = Math.max(selectionChunkSize.value, Number(activeGroup.count || 0) + 4);
+      }
+    }
+    if (visibleLimit > 0) {
+      visibleResult = await getCurrentGroupedQueryRows(visibleOffset, visibleLimit);
+      if (requestId !== currentContentRequestId) return true;
+    }
+  }
   const restackIds = [...pendingRestackPersonIds];
   pendingRestackPersonIds.clear();
   const restackOrders = new Map<string, number[]>();
@@ -7342,6 +8392,21 @@ async function initializeGroupedFileList(requestId: number) {
   }
 
   const initialFiles = applyGroupedRows(normalized.rows, 0);
+  // LAP-062: the native grid draws People/Folders from the same query. Shown once the rows are in
+  // the page, which brings in its scroll bar: the width measured then is the one it keeps, so
+  // the first native frame already has the tile size the page settles on.
+  if (nativeGridOn.value) {
+    await nextTick();
+    if (requestId !== currentContentRequestId) return true;
+    const box = gridScrollContainerRef.value?.getBoundingClientRect();
+    if (box && box.width > 0) containerWidth.value = box.width;
+    nativeTopSection.value = null; // a new view: its top section is reported afresh
+    showNativeGrid(getGroupingQueryParams(), getThumbLibraryId());
+  }
+  if (visibleResult) {
+    const visibleFiles = applyGroupedRows(normalizeGroupedRowsResult(visibleResult).rows, visibleOffset);
+    initialFiles.push(...visibleFiles);
+  }
   if (initialFiles.length > 0) {
     await getFileListThumb(initialFiles);
   }
@@ -7353,7 +8418,11 @@ async function initializeGroupedFileList(requestId: number) {
   if (totalFileCount.value === 0) {
     openImageViewer(0, false, true);
   }
-  lastVisibleRange = { start: -1, end: -1 };
+  if (keepPeopleRows && savedVisibleRange.start >= 0 && savedVisibleRange.end >= savedVisibleRange.start) {
+    lastVisibleRange = savedVisibleRange;
+  } else {
+    lastVisibleRange = { start: -1, end: -1 };
+  }
   visibleRangeSeqId++;
   return true;
 }
@@ -7515,7 +8584,60 @@ let visibleRangeSeqId = 0;
 
 // Keep decoded images near the current position, rather than warming the entire library.
 const albumPreloadedImages = new Map<string, HTMLImageElement>();
+let albumPreloadBytes = 0;
 const albumPreloadCancels = new Set<() => void>();
+let albumPreloadJob: Promise<void> = Promise.resolve();
+let albumPreloadGeneration = 0;
+let folderPrefetchTimer: ReturnType<typeof setTimeout> | undefined;
+let folderPrefetchGeneration = 0;
+
+function scheduleFolderPrefetch(paths: string[], delay: number) {
+  clearTimeout(folderPrefetchTimer);
+  const generation = ++folderPrefetchGeneration;
+  const requestId = currentContentRequestId;
+  folderPrefetchTimer = setTimeout(() => {
+    if (!paths.length) return;
+    // A newly targeted folder takes priority over old speculative ranges.
+    // Cancel their decodes and skip their queued work before warming this folder.
+    const preloadGeneration = ++albumPreloadGeneration;
+    for (const cancel of [...albumPreloadCancels]) cancel();
+    const seqId = visibleRangeSeqId;
+    albumPreloadJob = albumPreloadJob.catch(() => {}).then(async () => {
+      for (const path of paths) {
+        if (preloadGeneration !== albumPreloadGeneration || generation !== folderPrefetchGeneration || seqId !== visibleRangeSeqId || requestId !== currentContentRequestId) return;
+        const section = folderSectionIn(path);
+        if (!section) continue;
+        const start = Number(section.rowIndex) + 1;
+        const screen = Math.max(120, Math.min(256, visibleItemCount.value + 2 * columnCount.value));
+        await preloadAlbumRange(start, Math.min(totalRowCount.value, start + screen), false, seqId, requestId,
+          () => generation === folderPrefetchGeneration);
+      }
+    }).catch(() => {});
+  }, delay);
+}
+
+function scheduleNeighbourPrefetch(path: string) {
+  const list = folderSections.list;
+  const index = list.findIndex(section => section.path === path);
+  scheduleFolderPrefetch(index < 0 ? [] : [1, -1].map(offset => list[index + offset]?.path).filter(Boolean), 250);
+}
+
+watch(hoveredFolder, path => scheduleFolderPrefetch(path ? [path] : [], 80));
+watch(() => libConfig._libraryId, () => {
+  folderPrefetchGeneration++;
+  clearTimeout(folderPrefetchTimer);
+  albumPreloadedImages.clear();
+  albumPreloadBytes = 0;
+  for (const cancel of [...albumPreloadCancels]) cancel();
+});
+onBeforeUnmount(() => {
+  visibleRangeSeqId++;
+  folderPrefetchGeneration++;
+  clearTimeout(folderPrefetchTimer);
+  for (const cancel of [...albumPreloadCancels]) cancel();
+  albumPreloadedImages.clear();
+  albumPreloadBytes = 0;
+});
 
 function albumPreloadRanges(start: number, end: number, previousStart: number, total: number) {
   const screen = Math.max(1, Math.min(120, end - start));
@@ -7527,8 +8649,9 @@ function albumPreloadRanges(start: number, end: number, previousStart: number, t
        { start: Math.max(0, start - margin), end: start, reverse: true }];
 }
 
-async function preloadAlbumRange(start: number, end: number, reverse: boolean, seqId: number, requestId: number) {
-  const current = () => seqId === visibleRangeSeqId && requestId === currentContentRequestId && isAlbumThumbnailView.value;
+async function preloadAlbumRange(start: number, end: number, reverse: boolean, seqId: number, requestId: number, stillWanted = () => true) {
+  const generation = albumPreloadGeneration;
+  const current = () => generation === albumPreloadGeneration && stillWanted() && seqId === visibleRangeSeqId && requestId === currentContentRequestId && isAlbumThumbnailView.value;
   if (start >= end || !current()) return;
   await fetchDataRange(start, end, reverse);
   if (!current()) return;
@@ -7536,7 +8659,7 @@ async function preloadAlbumRange(start: number, end: number, reverse: boolean, s
   if (reverse) rows.reverse();
   const urls = [...new Set(rows.map((row: any) => isItemRow(row) ? row.file : row)
     .filter((file: any) => isRealFileItem(file) && !(Number(file.face_person_id) > 0))
-    .map((file: any) => file.thumbnail || getLapUrl(Number(file.id), false, config.settings.thumbnailSize, Number(file.modified_at || 0))))];
+    .map((file: any) => file.thumbnail || getLapUrl(Number(file.id), false, config.settings.thumbnailSize, Number(file.modified_at || 0), file.edits)))];
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(4, urls.length) }, async () => {
     while (current() && next < urls.length) {
@@ -7549,14 +8672,25 @@ async function preloadAlbumRange(start: number, end: number, reverse: boolean, s
       }
       await new Promise<void>((resolve) => {
         const image = new Image();
+        image.fetchPriority = 'low';
+        image.decoding = 'async';
+        let finished = false;
+        const timeout = setTimeout(() => cancel(), 5000);
         const cancel = () => { finish(false); image.removeAttribute('src'); };
         const finish = (ready: boolean) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timeout);
           image.onload = image.onerror = null;
           albumPreloadCancels.delete(cancel);
           if (ready && current()) {
             albumPreloadedImages.set(url, image);
-            while (albumPreloadedImages.size > 192) {
-              albumPreloadedImages.delete(albumPreloadedImages.keys().next().value!);
+            albumPreloadBytes += image.naturalWidth * image.naturalHeight * 4;
+            while (albumPreloadedImages.size > 192 || albumPreloadBytes > 96 * 1024 * 1024) {
+              const oldest = albumPreloadedImages.keys().next().value!;
+              const evicted = albumPreloadedImages.get(oldest)!;
+              albumPreloadBytes -= evicted.naturalWidth * evicted.naturalHeight * 4;
+              albumPreloadedImages.delete(oldest);
             }
           }
           resolve();
@@ -7591,6 +8725,7 @@ async function fetchMissingVisibleThumbnails(startIndex: number, endIndex: numbe
 }
 
 function handleVisibleRangeUpdate({ startIndex, endIndex }: { startIndex: number, endIndex: number }) {
+  syncHistogramLens(startIndex);
   // Skip if the range hasn't changed significantly
   if (lastVisibleRange.start === startIndex && lastVisibleRange.end === endIndex) {
     void fetchMissingVisibleThumbnails(startIndex, endIndex);
@@ -7602,6 +8737,7 @@ function handleVisibleRangeUpdate({ startIndex, endIndex }: { startIndex: number
 
   const buffer = Math.max(40, Math.min(visibleItemCount.value, 120));
   const seqId = ++visibleRangeSeqId;
+  const preloadGeneration = ++albumPreloadGeneration;
   for (const cancel of [...albumPreloadCancels]) cancel();
   if (isAlbumThumbnailView.value) {
     const requestId = currentContentRequestId;
@@ -7609,9 +8745,12 @@ function handleVisibleRangeUpdate({ startIndex, endIndex }: { startIndex: number
       if (seqId !== visibleRangeSeqId || requestId !== currentContentRequestId) return;
       await fetchMissingVisibleThumbnails(startIndex, endIndex - 1);
       if (seqId !== visibleRangeSeqId || requestId !== currentContentRequestId) return;
-      for (const range of albumPreloadRanges(startIndex, endIndex, previousStart, gridRows.value.length)) {
-        await preloadAlbumRange(range.start, range.end, range.reverse, seqId, requestId);
-      }
+      albumPreloadJob = albumPreloadJob.catch(() => {}).then(async () => {
+        for (const range of albumPreloadRanges(startIndex, endIndex, previousStart, gridRows.value.length)) {
+          if (preloadGeneration !== albumPreloadGeneration) return;
+          await preloadAlbumRange(range.start, range.end, range.reverse, seqId, requestId);
+        }
+      }).catch(() => {});
     });
     return;
   }
@@ -7620,7 +8759,9 @@ function handleVisibleRangeUpdate({ startIndex, endIndex }: { startIndex: number
   fetchDataRange(startIndex, endIndex + 1).then(() => {
     if (seqId !== visibleRangeSeqId) return;
     fetchMissingVisibleThumbnails(startIndex, endIndex).then(() => {
-      if (seqId !== visibleRangeSeqId || isPeopleAllQuery()) return;
+      // People loads only what is on screen, except in the filmstrip, where the next photo
+      // must be ready when the arrow key moves to it (LAP-064: steps stuck, preview blank).
+      if (seqId !== visibleRangeSeqId || (isPeopleAllQuery() && !isFilmstripView.value)) return;
 
       // Phase 2: below viewport (most likely scroll direction)
       fetchDataRange(endIndex + 1, endIndex + 1 + buffer).then(() => {
@@ -7709,11 +8850,13 @@ async function getFileList(
     personSuggestions,
     personIgnored,
     personSince,
+    personFaceSort: Number(config.settings.personFaceSort || 0),
     peopleAll,
     peopleIncludeUnnamed: config.leftStack.unnamedCollapsed === false,
     minimumUnnamedSightings: config.settings.face?.minimumUnnamedSightings ?? 2,
     hideDuplicateUnnamed: config.settings.face?.hideDuplicateUnnamed ?? false,
     foldersAll,
+    showHidden: Boolean(config.settings.showHiddenPictures),
     gpsMinLat,
     gpsMaxLat,
     gpsMinLon,
@@ -8106,14 +9249,16 @@ async function getImageSearchFileList(
   }
 }
 
-async function getUnifiedSearchFileList(searchText: string, requestId: number) {
+async function getUnifiedSearchFileList(searchText: string, requestId: number, retryCancelled = false): Promise<void> {
+  const revision = plainSearchRevision();
+  const isCurrent = () => requestId === currentContentRequestId && revision === plainSearchRevision();
   const tokens = libConfig.search.searchTokens || [];
   const hasTypedFilter = tokens.some((token: any) => token.type !== 'raw');
   const rawText = tokens.length > 0
     ? tokens.filter((token: any) => token.type === 'raw').map((token: any) => token.value).join(' ')
     : searchText;
   const textParams = {
-    searchFileType: config.search.fileType,
+    searchFileType: tokens.some((token: any) => token.type === 'ids' || token.type === 'id') ? 0 : config.search.fileType,
     sortType: 3,
     sortOrder: 0,
     searchFileName: tokens.length > 0 ? '' : searchText,
@@ -8142,7 +9287,7 @@ async function getUnifiedSearchFileList(searchText: string, requestId: number) {
   currentQuerySource.value = 'search';
   currentSmartQueryParams.value = null;
   currentCollectionId.value = null;
-  currentSearchFileIds.value = [];
+  if (!fileList.value.length) currentSearchFileIds.value = [];
   currentImageSearchParams.value = {
     searchText: rawText,
     fileId: 0,
@@ -8151,47 +9296,33 @@ async function getUnifiedSearchFileList(searchText: string, requestId: number) {
   };
   imageSearchError.value = false;
   const isDefaultModelUnsupportedLanguage =
-    !hasTypedFilter && Number(config.settings.imageSearch.model || 0) === 0
-    && hasNonLatinLetters(rawText);
+    !hasTypedFilter && hasNonLatinLetters(rawText);
   imageSearchLanguageUnsupported.value = isDefaultModelUnsupportedLanguage;
   isLoading.value = true;
   timelineData.value = [];
-  let visualSearchFailed = false;
-
-  try {
-    const [textResult, visualResult] = await Promise.all([
-      getQueryFiles(textParams, 0, 0).catch(error => {
-        console.error('Text search failed:', error);
-        return [];
-      }),
-      (hasTypedFilter || isDefaultModelUnsupportedLanguage
-        ? Promise.resolve([])
-        : searchSimilarImages(currentImageSearchParams.value)
-      ).catch(error => {
-        console.error('Visual search failed:', error);
-        visualSearchFailed = true;
-        return [];
-      }),
-    ]);
-    if (requestId !== currentContentRequestId) return;
-    imageSearchError.value = visualSearchFailed;
-
-    const textMatches = Array.isArray(textResult) ? textResult : [];
-    const textIds = new Set(textMatches.map((file: any) => Number(file.id)));
+  const publishResults = (textResult: any[], visualResult: any[], append = false) => {
+    if (!isCurrent()) return;
+    const textMatches = (Array.isArray(textResult) ? textResult : []).filter(passesAlbumFilters);
+    const textIds = new Set((append ? fileList.value : textMatches).map((file: any) => Number(file.id)));
     const visualMatches = (Array.isArray(visualResult) ? visualResult : [])
       .filter((file: any) => !textIds.has(Number(file.id)))
       .filter(passesAlbumFilters);
     const files = preserveLoadedThumbnails([...textMatches, ...visualMatches]);
-    contentCountIsAuthoritative.value = true;
+    contentCountIsAuthoritative.value = hasTypedFilter || isDefaultModelUnsupportedLanguage || append;
 
-    clearSelectionForFileListUpdate();
-    resetGroupingState();
-    fileList.value = files;
-    currentSearchFileIds.value = fileList.value
+    const previousCount = append ? fileList.value.length : 0;
+    if (append) {
+      fileList.value.push(...files);
+    } else {
+      clearSelectionForFileListUpdate();
+      resetGroupingState();
+      fileList.value = files;
+    }
+    currentSearchFileIds.value = [...(append ? currentSearchFileIds.value : []), ...files
       .map(file => Number(file.id))
-      .filter(id => Number.isFinite(id) && id > 0);
+      .filter(id => Number.isFinite(id) && id > 0)];
     totalFileCount.value = fileList.value.length;
-    totalFileSize.value = fileList.value.reduce((total, file) => total + Number(file.size || 0), 0);
+    totalFileSize.value = (append ? totalFileSize.value : 0) + files.reduce((total, file) => total + Number(file.size || 0), 0);
 
     const groups = isFilmstripView.value ? [] : [
       textMatches.length > 0
@@ -8214,15 +9345,19 @@ async function getUnifiedSearchFileList(searchText: string, requestId: number) {
         : null,
     ].filter(Boolean) as Array<{ id: string; label: string; icon: any; files: any[]; countLabel: string }>;
 
-    let fileIndex = 0;
+    let fileIndex = previousCount;
+    const nextRows = append ? [...groupedRows.value] : [];
     for (const group of groups) {
-      const rowIndex = groupedRows.value.length;
+      const rowIndex = nextRows.length;
       const size = group.files.reduce((total, file) => total + Number(file.size || 0), 0);
-      groupedRows.value.push({
+      nextRows.push({
         type: 'group',
         id: `group-row-${group.id}`,
         group_id: group.id,
         label: group.label,
+        notice: group.id === 'search-visual'
+          ? localeMsg.value.search.semantic_notice || 'Approximate — not a confirmed location.'
+          : undefined,
         icon: group.icon,
         count: group.files.length,
         countLabel: group.countLabel,
@@ -8245,32 +9380,113 @@ async function getUnifiedSearchFileList(searchText: string, requestId: number) {
         const loadedFile = fileList.value[fileIndex];
         const id = Number(loadedFile?.id || 0);
         if (id > 0) fileIdToGroupId.set(id, group.id);
-        groupedRows.value.push({
+        nextRows.push({
           type: 'item',
           id: `search-item-${group.id}-${id}`,
           group_id: group.id,
           file_index: fileIndex,
           file: loadedFile,
+          isPlaceholder: Boolean(loadedFile?.isPlaceholder),
         });
         fileIndex++;
       }
     }
 
-    groupedModeActive.value = groups.length > 0;
+    groupedRows.value = nextRows;
+    groupedModeActive.value = groupedRows.value.length > 0;
     totalRowCount.value = groupedRows.value.length;
-    selectedItemIndex.value = fileList.value.length > 0 ? 0 : -1;
-    scrollPosition.value = 0;
-    markDedupSourceUpdated(requestId);
-    openImageViewer(0, false, true);
-
-    if (fileList.value.length > 0) {
-      getFileListThumb(fileList.value);
+    if (!append || previousCount === 0) {
+      selectedItemIndex.value = fileList.value.length > 0 ? 0 : -1;
+      scrollPosition.value = 0;
+      openImageViewer(0, false, true);
+    } else {
+      void syncSelectionToImageViewer(selectedItemIndex.value);
     }
+    markDedupSourceUpdated(requestId);
+
+    // Search tiles load the indexed thumbnail directly; do not walk every
+    // offscreen result through the no-op thumbnail batching loop.
+    const waitingForPictures = !append && !hasTypedFilter && !isDefaultModelUnsupportedLanguage && fileList.value.length === 0;
+    isLoading.value = waitingForPictures;
+    hasLoadedInitialResult.value = true;
+    contentReady.value = !waitingForPictures;
+    if (!append) {
+      searchFirstPaint.value = true;
+      void waitForContentLoadingPaint().then(waitForContentLoadingPaint).then(() => {
+        if (isCurrent()) searchFirstPaint.value = false;
+      });
+    }
+  };
+
+  let textPublished = false;
+  let completionHandled = false;
+  const prepareVisiblePhotos = (files: any[]) => {
+    const columns = columnCount.value;
+    const rows = Math.ceil((containerHeight.value || 600) / (gridSize.value * .75 + 20)) + 1;
+    return prepareSearchThumbnails(files, columns * rows, config.settings.thumbnailSize);
+  };
+  try {
+    await waitForPlainSearchCancellation();
+    if (!isCurrent()) return;
+    const args = { query: rawText, fileType: Number(config.search.fileType || 0), model: 0, initialLimit: 256 };
+    const text = hasTypedFilter
+      ? { text_matches: await getQueryFiles(textParams, 0, 0).catch(error => { console.error('Text search failed:', error); return []; }) }
+      : await invoke<any>('search_plain_photos', { ...args, phase: 'text' });
+    if (!isCurrent()) return;
+    const loadedText = new Map(text.text_matches.map((file: any) => [Number(file.id), file]));
+    const matchedText = Array.isArray(text.text_index)
+      ? text.text_index.map(([id, taken_date, size, width, height, rotate, album_visible]: [number, number, number, number, number, number, boolean]) => loadedText.get(Number(id))
+        || { id: Number(id), taken_date, size, width, height, rotate, album_visible, isPlaceholder: true })
+      : text.text_matches;
+    const inferredIds = new Set<number>(text.inferred_ids || []);
+    const textMatches = matchedText.filter((file: any) => !inferredIds.has(Number(file.id)));
+    const inferredMatches = matchedText.filter((file: any) => inferredIds.has(Number(file.id)));
+    const visualTask = hasTypedFilter || isDefaultModelUnsupportedLanguage ? null
+      : invoke<any>('search_plain_photos', {
+        ...args, phase: 'visual', generation: text.generation, excludeIds: matchedText.map((file: any) => Number(file.id)),
+      }).then(value => ({ value }), error => ({ error }));
+    if (textMatches.some(passesAlbumFilters) || !visualTask) {
+      await prepareVisiblePhotos(text.text_matches.filter((file: any) => !visualTask || !inferredIds.has(Number(file.id))));
+      if (!isCurrent()) return;
+      publishResults(textMatches, visualTask ? [] : inferredMatches);
+      textPublished = true;
+    }
+    if (!visualTask) return;
+    const result = await visualTask;
+    if (!isCurrent()) return;
+    if ('error' in result && String(result.error) === 'Search cancelled') throw result.error;
+    const visual = 'error' in result
+      ? { visual_matches: [], semantic_error: String(result.error) }
+      : result.value;
+    const visualMatches = [...inferredMatches, ...visual.visual_matches];
+    await prepareVisiblePhotos([...(textPublished ? textMatches.slice(0, 128) : []), ...visualMatches]);
+    if (!isCurrent()) return;
+    imageSearchError.value = Boolean(visual.semantic_error);
+    publishResults([], visualMatches, textPublished);
+  } catch (error) {
+    if (!isCurrent()) return;
+    if (String(error) === 'Search cancelled') {
+      completionHandled = true;
+      if (!retryCancelled) await getUnifiedSearchFileList(searchText, requestId, true);
+      else {
+        if (!textPublished) publishResults([], []);
+        imageSearchError.value = true;
+        contentCountIsAuthoritative.value = false;
+        isLoading.value = false;
+        contentReady.value = true;
+      }
+      return;
+    }
+    console.error('Search failed:', error);
+    if (!textPublished) publishResults([], []);
+    imageSearchError.value = true;
   } finally {
-    if (requestId === currentContentRequestId) {
+    if (isCurrent() && !completionHandled) {
       isLoading.value = false;
       hasLoadedInitialResult.value = true;
       contentReady.value = true;
+      contentCountIsAuthoritative.value = true;
+      commitRequestedSidebarCount(totalFileCount.value);
     }
   }
 }
@@ -8278,6 +9494,9 @@ async function getUnifiedSearchFileList(searchText: string, requestId: number) {
 let contentUpdateSeq = 0;
 
 async function updateContent(force = false, preserveMultiSelection = selectMode.value) {
+  cancelPlainSearch();
+  cancelSearchThumbnailPreparation();
+  searchFirstPaint.value = false;
   const updateSeq = ++contentUpdateSeq;
   const newIndex = config.main.sidebarIndex;
   const nextAlbumId = newIndex === SIDEBAR.ALBUM ? Number(libConfig.album.id || 0) : 0;
@@ -8326,15 +9545,20 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
   }
 
   // Reset file list immediately to reflect UI change
-  const keepingPeopleRows = isPeopleAllView.value && isPeopleAllLoaded()
-    && pendingKeepPeopleRows;
-  if (!keepingPeopleRows) clearSelectionForFileListUpdate();
-  if (!keepingPeopleRows) clearContentRows();
+  const keepingPeopleRows = (
+    (isPeopleAllView.value && isPeopleAllLoaded())
+    || (isFoldersAllView.value && isFoldersAllLoaded())
+  ) && pendingKeepPeopleRows;
+  const keepingSearchRows = newIndex === SIDEBAR.SEARCH && currentQuerySource.value === 'search' && fileList.value.length > 0;
+  if (!keepingPeopleRows && !keepingSearchRows) clearSelectionForFileListUpdate();
+  if (!keepingPeopleRows && !keepingSearchRows) clearContentRows();
   isLoading.value = true;
 
   await nextTick();
   if (updateSeq !== contentUpdateSeq) return; // superseded by a later updateContent call
-  if (!keepingPeopleRows) await waitForContentLoadingPaint();
+  // Plain search can return before a frame. Start it immediately instead of
+  // waiting for a separate loading frame before issuing the worker request.
+  if (!keepingPeopleRows && newIndex !== SIDEBAR.SEARCH) await waitForContentLoadingPaint();
   if (requestId !== currentContentRequestId) return;
 
   if (libConfig.activePane === 'collection') {
@@ -8434,7 +9658,7 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
     }
   }
   else if(newIndex === SIDEBAR.ALBUM) {
-    // Folders view: every folder with pictures in one continuous list. A folder
+    // Picasa Folders view: every folder with pictures in one continuous list. A folder
     // that is not in that list (no pictures of its own) keeps the single-folder view.
     const folderViewTarget = isFoldersAllView.value ? await resolveFolderViewTarget() : null;
     if (requestId !== currentContentRequestId) return;
@@ -8564,18 +9788,21 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
     }
   }
   else if(newIndex === SIDEBAR.CALENDAR) {
-    if(libConfig.calendar.year === null) {
-      contentTitle.value = "";
-      showEmptyContent(requestId);
+    if(libConfig.calendar.year === null || libConfig.calendar.year === undefined) {
+      // All Dates (LAP-049): every photo in the library, whatever its folder, in date sections
+      contentTitle.value = localeMsg.value.calendar?.all_dates || 'All Dates';
+      getFileList({}, requestId);
     } else {
-      if (libConfig.calendar.month === -1) {          // yearly
+      if (libConfig.calendar.month === -1 && libConfig.calendar.quarter) {   // quarterly
+        contentTitle.value = formatQuarterLabel(libConfig.calendar.year!, libConfig.calendar.quarter * 3);
+      } else if (libConfig.calendar.month === -1) {          // yearly
         contentTitle.value = formatDate(libConfig.calendar.year!, 1, 1, localeMsg.value.format.year);
       } else if (libConfig.calendar.date === -1) {    // monthly
         contentTitle.value = formatDate(libConfig.calendar.year!, libConfig.calendar.month!, 1, localeMsg.value.format.month);
       } else {                                    // daily
         contentTitle.value = formatDate(libConfig.calendar.year!, libConfig.calendar.month!, libConfig.calendar.date!, localeMsg.value.format.date_long);
       }
-      const [startDate, endDate] = getCalendarDateRange(libConfig.calendar.year!, libConfig.calendar.month!, libConfig.calendar.date!);
+      const [startDate, endDate] = getCalendarDateRange(libConfig.calendar.year!, libConfig.calendar.month!, libConfig.calendar.date!, libConfig.calendar.quarter);
       getFileList({ startDate, endDate }, requestId);
     }
   } 
@@ -8613,7 +9840,7 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
       contentTitle.value = "";
       showEmptyContent(requestId);
     } else if (isPeopleAllView.value) {
-      // People view: every named person, one continuous list.
+      // Picasa People view: every named person, one continuous list.
       if (!peopleAllSession) startPeopleSession();
       peopleAllSession = true;
       personFaces.controlsRow = true; // sections mix: keep every row the same height
@@ -8627,6 +9854,12 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
         if (keepingPlace) {
           await waitForGroupedGridLayout();
           peopleSyncPausedUntil = performance.now() + 500;
+        } else if (Number(personId) > 0 && !peopleSectionOf(personId)) {
+          // Not one of the People sections (an unnamed Person 31xx picked from the Timeline):
+          // show that person's photos alone rather than the top of the first named person.
+          peopleSyncPausedUntil = 0;
+          contentTitle.value = libConfig.person.name || `${localeMsg.value.sidebar.people}`;
+          getFileList({ personId: Number(personId), personSuggestions: personFaces.reviewMode, personIgnored: personFaces.ignoredMode, personSince: personFaces.sessionSince }, requestId);
         } else if (!(await scrollToPersonSection(personId))) {
           peopleSyncPausedUntil = 0;
         }
@@ -8688,6 +9921,7 @@ async function updateContent(force = false, preserveMultiSelection = selectMode.
 
 // --- Similar Search Mode Logic ---
 function enterSimilarSearchMode(file: any) {
+  if (!PHOTO_DISCOVERY_ENABLED) return;
   if (file.file_type !== 1 && file.file_type !== 3) {
     return;
   }
@@ -9085,6 +10319,205 @@ const openInExternalApp = async (appId?: string) => {
 
   await launchInExternalApp(paths, appPath);
 }
+
+// Send to > Email and the status bar's Email button (LAP-008): the selection (off-screen selected
+// photos included) or the current photo, attached as shown (edits rendered) in the default email app's review dialog.
+let emailDraftBusy = false;
+const sendSelectedByEmail = async () => {
+  if (emailDraftBusy) return;
+  const items = selectMode.value
+    ? (selectedCount.value > 0 ? await getActionableSelectedItemsForAction() : [])
+    : [fileList.value[selectedItemIndex.value]].filter(Boolean);
+  const ids = (items || []).filter((item: any) => isRealFileItem(item) && item.file_path).map((item: any) => Number(item.id));
+  if (ids.length === 0) {
+    toast.warning('Select one or more photos to email.');
+    return;
+  }
+  emailDraftBusy = true;
+  try {
+    const opened = await emailFilesDraft(ids);
+    if (opened) toast.success('Photos opened in your email app.');
+  } catch (error) {
+    toast.error(`Could not prepare the email draft: ${error}`);
+  } finally {
+    emailDraftBusy = false;
+  }
+}
+
+// Picasa's Tools > Adjust Date and Time (LAP-049): the photo in focus (or the first selected one) is
+// the anchor whose new date the user types; every selected photo moves by the same amount.
+const adjustDate = ref<{ ids: number[]; anchorId: number; anchorName: string; anchorDate: number } | null>(null);
+const takenSeconds = (file: any) => Number(file?.taken_date || 0) || Number(file?.created_at || 0);
+const openAdjustDate = async () => {
+  const items = selectMode.value
+    ? (selectedCount.value > 0 ? await getActionableSelectedItemsForAction() : [])
+    : [fileList.value[selectedItemIndex.value]].filter(Boolean);
+  const files = (items || []).filter((item: any) => isRealFileItem(item));
+  const focused = fileList.value[selectedItemIndex.value];
+  const anchor = files.find((f: any) => Number(f.id) === Number(focused?.id)) || files.find((f: any) => takenSeconds(f) > 0);
+  if (!anchor || !takenSeconds(anchor)) {
+    toast.warning('Select one or more photos with a date to adjust.');
+    return;
+  }
+  adjustDate.value = { ids: files.map((f: any) => Number(f.id)), anchorId: Number(anchor.id), anchorName: anchor.name, anchorDate: takenSeconds(anchor) };
+};
+const applyAdjustDate = async (newTakenDate: number) => {
+  const job = adjustDate.value;
+  adjustDate.value = null;
+  if (!job) return;
+  try {
+    const changed = await adjustFilesTakenDate(job.ids, job.anchorId, newTakenDate);
+    const delta = newTakenDate - job.anchorDate;
+    const ids = new Set(job.ids);
+    for (const item of fileList.value) {     // loaded rows show the new date at once
+      if (item && ids.has(Number(item.id)) && takenSeconds(item)) item.taken_date = takenSeconds(item) + delta;
+    }
+    toast.success(`Adjusted the date and time of ${changed.toLocaleString()} photo${changed === 1 ? '' : 's'}.`);
+    if (nativeGridOn.value) void nativeGridRefresh();
+    if (gridViewRef.value) pendingRestoreScrollTop.value = gridViewRef.value.getScrollTop();
+    if ((isPeopleAllView.value && isPeopleAllLoaded()) || (isFoldersAllView.value && isFoldersAllLoaded())) pendingKeepPeopleRows = true;
+    pendingInitialSelectedIndex = selectedItemIndex.value;
+    hasRestoredInitialSelection = false;
+    void updateContent(true);                // date sorting and grouping follow the new dates
+  } catch (error) {
+    toast.error(`Could not adjust the date: ${error}`);
+  }
+};
+
+// Picasa's Geotag / Clear Geotags (LAP-049): the selection, or the photo in focus.
+const geotag = ref<{ ids: number[]; latitude: number | null; longitude: number | null; placeName: string } | null>(null);
+const geotagTargets = async () => {
+  const items = selectMode.value
+    ? (selectedCount.value > 0 ? await getActionableSelectedItemsForAction() : [])
+    : [fileList.value[selectedItemIndex.value]].filter(Boolean);
+  return (items || []).filter((item: any) => isRealFileItem(item));
+};
+const applyLocationToRows = (ids: Set<number>, latitude: number | null, longitude: number | null, name: string | null) => {
+  for (const item of fileList.value) {
+    if (item && ids.has(Number(item.id))) {
+      Object.assign(item, { gps_latitude: latitude, gps_longitude: longitude, gps_altitude: null, geo_name: name, geo_admin1: null, geo_admin2: null, geo_cc: null });
+    }
+  }
+};
+const openGeotag = async () => {
+  const files = await geotagTargets();
+  if (!files.length) { toast.warning('Select one or more photos to place.'); return; }
+  const placed = files.find((f: any) => f.gps_latitude != null && f.gps_longitude != null);
+  geotag.value = { ids: files.map((f: any) => Number(f.id)), latitude: placed?.gps_latitude ?? null, longitude: placed?.gps_longitude ?? null, placeName: placed?.geo_name || '' };
+};
+const applyGeotag = async (place: { latitude: number; longitude: number; name: string | null }) => {
+  const job = geotag.value;
+  geotag.value = null;
+  if (!job) return;
+  try {
+    const changed = await setFilesLocation(job.ids, place.latitude, place.longitude, place.name);
+    applyLocationToRows(new Set(job.ids), place.latitude, place.longitude, place.name);
+    toast.success(`Placed ${changed.toLocaleString()} photo${changed === 1 ? '' : 's'}${place.name ? ` at ${place.name}` : ''}.`);
+  } catch (error) {
+    toast.error(`Could not set the place: ${error}`);
+  }
+};
+const clearGeotags = async () => {
+  const files = await geotagTargets();
+  if (!files.length) return;
+  try {
+    const ids = files.map((f: any) => Number(f.id));
+    const changed = await setFilesLocation(ids, null, null, null);
+    applyLocationToRows(new Set(ids), null, null, null);
+    toast.success(`Cleared the geotags of ${changed.toLocaleString()} photo${changed === 1 ? '' : 's'}.`);
+  } catch (error) {
+    toast.error(`Could not clear the geotags: ${error}`);
+  }
+};
+
+// Picasa's Create Picture Collage (LAP-049): the selected photos, or else the photos of the focused
+// photo's folder that are loaded, in their order.
+const collage = ref<{ ids: number[] } | null>(null);
+const isPhotoItem = (item: any) => isRealFileItem(item) && (item.file_type === 1 || item.file_type === 3);
+const openCollage = async () => {
+  let files: any[];
+  if (selectMode.value && selectedCount.value > 0) {
+    files = ((await getActionableSelectedItemsForAction()) || []).filter(isPhotoItem);
+  } else {
+    const focused = fileList.value[selectedItemIndex.value];
+    const folderOf = (item: any) => String(item?.file_path || '').replace(/[\\/][^\\/]*$/, '');
+    const folder = folderOf(focused);
+    files = folder ? fileList.value.filter((item: any) => isPhotoItem(item) && folderOf(item) === folder) : [];
+    if (!files.length && isPhotoItem(focused)) files = [focused];
+  }
+  const seen = new Set<number>();
+  const ids = files.map((f: any) => Number(f.id)).filter((id) => id > 0 && !seen.has(id) && seen.add(id));
+  if (!ids.length) { toast.warning('Select one or more photos for the collage.'); return; }
+  collage.value = { ids };
+};
+const applyCollage = async (opts: { layout: string; width: number; height: number; spacing: number; bgColor: string; includeCaptions: boolean }) => {
+  const job = collage.value;
+  collage.value = null;
+  if (!job) return;
+  try {
+    const path = await createPictureCollage(job.ids.slice(0, 200), opts.layout, opts.width, opts.height, opts.spacing, opts.bgColor, opts.includeCaptions);
+    toast.success(`Created ${String(path).split(/[\\/]/).pop()} next to the photos.`);
+    if (nativeGridOn.value) void nativeGridRefresh();
+    if (gridViewRef.value) pendingRestoreScrollTop.value = gridViewRef.value.getScrollTop();
+    if ((isPeopleAllView.value && isPeopleAllLoaded()) || (isFoldersAllView.value && isFoldersAllLoaded())) pendingKeepPeopleRows = true;
+    pendingInitialSelectedIndex = selectedItemIndex.value;
+    hasRestoredInitialSelection = false;
+    void updateContent(true);
+  } catch (error) {
+    toast.error(`Could not create the collage: ${error}`);
+  }
+};
+
+// Picasa's File > Export Picture to Folder (LAP-049): the selected photos, or the photo in focus,
+// into Pictures\LapCasa\Exports\<the first photo's folder name> unless another folder is chosen.
+const exportJob = ref<{ ids: number[]; defaultFolder: string } | null>(null);
+const openExportToFolder = async () => {
+  const items = selectMode.value
+    ? (selectedCount.value > 0 ? await getActionableSelectedItemsForAction() : [])
+    : [fileList.value[selectedItemIndex.value]].filter(Boolean);
+  const files = (items || []).filter(isPhotoItem);
+  if (!files.length) { toast.warning('Select one or more photos to export.'); return; }
+  const folderName = String(files[0].file_path || '').split(/[\\/]/).slice(-2, -1)[0] || 'Export';
+  let defaultFolder = '';
+  try { defaultFolder = await joinPath(await pictureDir(), 'LapCasa', 'Exports', folderName); } catch { /* the owner picks one */ }
+  exportJob.value = { ids: files.map((f: any) => Number(f.id)), defaultFolder };
+};
+const applyExportToFolder = async (opts: { destFolder: string; maxDimension: number | null; quality: number }) => {
+  const job = exportJob.value;
+  exportJob.value = null;
+  if (!job) return;
+  toast.info(`Exporting ${job.ids.length.toLocaleString()} photo${job.ids.length === 1 ? '' : 's'}...`);
+  try {
+    const paths = await exportPicturesToFolder(job.ids, opts.destFolder, opts.maxDimension, opts.quality);
+    toast.success(`Exported ${paths.length.toLocaleString()} photo${paths.length === 1 ? '' : 's'} to ${opts.destFolder}.`);
+  } catch (error) {
+    toast.error(`Could not export: ${error}`);
+  }
+};
+
+// Picasa's Tools > Make a Poster (LAP-049): the one selected photo, or the photo in focus.
+const poster = ref<{ id: number; name: string } | null>(null);
+const openPoster = async () => {
+  const items = selectMode.value && selectedCount.value > 0
+    ? ((await getActionableSelectedItemsForAction()) || [])
+    : [fileList.value[selectedItemIndex.value]].filter(Boolean);
+  const photos = items.filter(isPhotoItem);
+  if (photos.length !== 1) { toast.warning('Select one photo for the poster.'); return; }
+  poster.value = { id: Number(photos[0].id), name: String(photos[0].name || '') };
+};
+const applyPoster = async (opts: { cols: number; rows: number; overlapPx: number }) => {
+  const job = poster.value;
+  poster.value = null;
+  if (!job) return;
+  toast.info(`Making a ${opts.cols} x ${opts.rows} poster...`);
+  try {
+    const sheets = await createPosterTiles(job.id, opts.cols, opts.rows, opts.overlapPx);
+    const folder = String(sheets[0] || '').split(/[\\/]/).slice(-2, -1)[0] || '';
+    toast.success(`Made a ${opts.cols} x ${opts.rows} poster: ${sheets.length} sheets in ${folder}, next to the photo.`);
+  } catch (error) {
+    toast.error(`Could not make the poster: ${error}`);
+  }
+};
 
 const onRenameFile = async (newName: string) => {
   if(selectedItemIndex.value >= 0) {
@@ -10141,6 +11574,162 @@ const selectModeSetCullingFlags = async (cullingFlag: number) => {
   void tauriEmit('culling-status-updated', { fileIds: items.map(item => item.id), cullingFlag: normalized });
 };
 
+function removeHiddenFromGroupedRows(hiddenIdSet: Set<number>) {
+  if (!groupedModeActive.value || hiddenIdSet.size === 0) return;
+  const nextGroups: any[] = [];
+  const nextRows: any[] = [];
+  const nextFileList: any[] = [];
+  let totalRemovedSize = 0;
+  peopleFileIndexes.clear();
+  fileIdToGroupId.clear();
+
+  for (const group of groupedTimelineGroups.value) {
+    const oldHeader = Number(group.rowIndex || 0);
+    const oldCount = Number(group.count || 0);
+    const headerRow = groupedRows.value[oldHeader];
+    const keptItemRows: any[] = [];
+    let groupRemovedSize = 0;
+
+    for (let offset = 1; offset <= oldCount; offset++) {
+      const row = groupedRows.value[oldHeader + offset];
+      if (isItemRow(row) && row.file && hiddenIdSet.has(Number(row.file.id))) {
+        groupRemovedSize += Number(row.file.size || 0);
+        continue;
+      }
+      keptItemRows.push(row);
+    }
+
+    totalRemovedSize += groupRemovedSize;
+    if (keptItemRows.length === 0) {
+      groupMetaMap.delete(String(group.groupId || ''));
+      continue;
+    }
+
+    const newHeaderIndex = nextRows.length;
+    const newCount = keptItemRows.length;
+    const newSize = Math.max(0, Number(group.size || 0) - groupRemovedSize);
+    const nextGroup = {
+      ...group,
+      rowIndex: newHeaderIndex,
+      count: newCount,
+      size: newSize,
+    };
+    nextGroups.push(nextGroup);
+    groupMetaMap.set(String(nextGroup.groupId || ''), {
+      count: newCount,
+      size: newSize,
+    });
+    nextRows.push(
+      headerRow && isGroupRow(headerRow)
+        ? { ...headerRow, count: newCount, size: newSize }
+        : createGroupHeaderRow(nextGroup),
+    );
+
+    for (const row of keptItemRows) {
+      const newFileIndex = nextFileList.length;
+      if (isItemRow(row) && row.file && !row.isPlaceholder) {
+        const fileId = Number(row.file.id || 0);
+        nextFileList.push(row.file);
+        nextRows.push({
+          ...row,
+          file_index: newFileIndex,
+          file: row.file,
+        });
+        if (isPeopleAllQuery() && fileId > 0) {
+          notePeopleFileIndex(fileId, newFileIndex);
+        }
+        const groupId = String(row.group_id || nextGroup.groupId || '');
+        if (groupId && fileId > 0) {
+          fileIdToGroupId.set(fileId, groupId);
+        }
+      } else {
+        nextFileList.push({
+          id: `ph-${newFileIndex}`,
+          isPlaceholder: true,
+          name: '',
+          size: 0,
+        });
+        nextRows.push(row || {
+          id: `grouped-ph-${nextRows.length}`,
+          isPlaceholder: true,
+        });
+      }
+    }
+  }
+
+  groupedTimelineGroups.value = nextGroups;
+  groupedRows.value = nextRows;
+  totalRowCount.value = nextRows.length;
+  fileList.value = nextFileList;
+  totalFileCount.value = nextFileList.length;
+  totalFileSize.value = Math.max(0, totalFileSize.value - totalRemovedSize);
+  if (nextFileList.length > 0) {
+    selectedItemIndex.value = Math.min(Math.max(0, selectedItemIndex.value), nextFileList.length - 1);
+    ensureGroupedFileAtIndex(selectedItemIndex.value);
+  } else {
+    selectedItemIndex.value = -1;
+  }
+}
+
+const setFilesHiddenState = async (isHidden: boolean) => {
+  const hiddenIds: number[] = [];
+  const affectedAlbumIds = new Set<number>();
+  if (selectMode.value && selectedCount.value > 0) {
+    const items = await getActionableSelectedItemsForAction();
+    if (!items || items.length === 0) return;
+    if (!await confirmLargeBatch(items.length)) return;
+    const result = await batchUpdateFileMetadata({
+      fileIds: items.map(item => item.id),
+      isHidden,
+    });
+    if (result === null) return;
+    items.forEach(item => {
+      item.is_hidden = isHidden;
+      hiddenIds.push(Number(item.id));
+      affectedAlbumIds.add(Number(item.album_id || 0));
+    });
+  } else if (selectedItemIndex.value >= 0) {
+    const item = fileList.value[selectedItemIndex.value];
+    if (!item) return;
+    const result = await setFileHidden(item.id, isHidden);
+    if (result === null) return;
+    item.is_hidden = isHidden;
+    hiddenIds.push(Number(item.id));
+    affectedAlbumIds.add(Number(item.album_id || 0));
+  } else {
+    return;
+  }
+  clearFolderFileCounts();
+  uiStore.clearCountUpdateRequest();
+  libConfig.clearLazySidebarCounts();
+  if (!config.settings.showHiddenPictures && isHidden && hiddenIds.length > 0) {
+    const hiddenIdSet = new Set(hiddenIds);
+    if (groupedModeActive.value) {
+      removeHiddenFromGroupedRows(hiddenIdSet);
+      if (selectMode.value) {
+        rebuildSelectionAfterListMutation(new Set());
+      }
+      await nextTick();
+      gridViewRef.value?.refreshLayout?.();
+    } else if (selectMode.value) {
+      fileList.value = fileList.value.filter(f => !hiddenIdSet.has(Number(f?.id)));
+      totalFileCount.value = fileList.value.length;
+      totalFileSize.value = fileList.value.reduce((total, file) => total + Number(file?.size || 0), 0);
+      selectedItemIndex.value = fileList.value.length > 0 ? Math.min(selectedItemIndex.value, fileList.value.length - 1) : -1;
+      rebuildSelectionAfterListMutation(new Set());
+    } else if (selectedItemIndex.value >= 0) {
+      removeFromFileList(selectedItemIndex.value);
+    }
+    updateSelectedImage(selectedItemIndex.value);
+  }
+  // The native grid draws People/Folders itself: re-read its rows in place, so a hidden photo
+  // leaves it (or, with Hidden Pictures shown, is drawn dimmed) without the view moving.
+  if (nativeGridOn.value) void nativeGridRefresh();
+  void loadFolderSections(true);
+  void refreshAffectedAlbums(Array.from(affectedAlbumIds));
+  void refreshLibraryTotalCount();
+};
+
 // slide show
 let slideShowIntervalId: NodeJS.Timeout | null = null;
 
@@ -10151,6 +11740,40 @@ function toggleSlideShow() {
   } else {
     stopSlideShow();
   }
+}
+
+// Shift+P / Ctrl+4: from the grid the slideshow opens in the quick preview.
+function toggleLibrarySlideShow() {
+  if (!showQuickView.value && !isFilmstripView.value) {
+    showQuickView.value = true;
+    quickViewZoomFit.value = true;
+  }
+  toggleSlideShow();
+}
+
+// View-menu chords in the Library (LAP-101): Ctrl+1 / Ctrl+2 small / normal thumbnails, Ctrl+5 the timeline.
+const LIBRARY_VIEW_ACTIONS = ['view.thumbnailsSmall', 'view.thumbnailsNormal', 'view.timeline'] as const;
+function runLibraryViewAction(actionId: typeof LIBRARY_VIEW_ACTIONS[number]) {
+  if (actionId === 'view.timeline') {
+    if (!isPersonView.value && !showQuickView.value) showDateHistogram.value = !showDateHistogram.value;
+    return;
+  }
+  if (getActivePreviewMode() !== 'none' || isMapView.value) return;
+  if (actionId === 'view.thumbnailsSmall') gridSizePosition.value = 0;
+  else setGridSize(PICASA_FACE_TILE_PX);
+}
+
+// The View menu runs the same actions as the keys.
+function runMenuShortcut(actionId: ShortcutActionId) {
+  if (uiStore.inputStack.length > 0) return;
+  if ((LIBRARY_VIEW_ACTIONS as readonly string[]).includes(actionId)) {
+    runLibraryViewAction(actionId as typeof LIBRARY_VIEW_ACTIONS[number]);
+    return;
+  }
+  const file = fileList.value[selectedItemIndex.value];
+  if (!file) return;
+  if (actionId === 'file.editImage') void openImageEditor(selectedItemIndex.value);
+  else if (actionId === 'slideshow.toggle') toggleLibrarySlideShow();
 }
 
 function clearSlideShowTimer() {
@@ -10219,6 +11842,146 @@ watch(() => config.settings.slideShowInterval, () => {
     scheduleNextSlide();
   }
 });
+
+const refreshEditedFile = async (sourceId: number, filePath?: string, resetRotate = false) => {
+  if (sourceId <= 0) return null;
+  const refreshed = await getFileInfo(sourceId);
+  if (!refreshed) return null;
+  if (resetRotate && Number(refreshed.rotate || 0) !== 0) {
+    await setFileRotate(sourceId, 0);
+    refreshed.rotate = 0;
+  }
+  clearCachedThumbnailDataUrl(sourceId, config.settings.thumbnailSize);
+  clearPreviewPreloadCache(filePath || refreshed.file_path);
+  refreshed.thumbnail = getLapUrl(sourceId, true, config.settings.thumbnailSize, Number(refreshed.modified_at || 0), refreshed.edits);
+  for (const file of fileList.value) {
+    if (Number(file.id) === sourceId) {
+      Object.assign(file, refreshed);
+    }
+  }
+  await syncFileMetaToImageViewer(sourceId, { edits: refreshed.edits, rotate: refreshed.rotate });
+  return refreshed;
+};
+
+const getTargetImageFileIds = async (): Promise<number[] | null> => {
+  if (selectMode.value && selectedCount.value > 0) {
+    const items = await getActionableSelectedItemsForAction();
+    if (!items) return null;
+    const imageItems = items.filter(item => item.file_type === 1 || item.file_type === 3);
+    if (imageItems.length === 0) return [];
+    if (!await confirmLargeBatch(imageItems.length)) return null;
+    return imageItems.map(item => Number(item.id)).filter(id => id > 0);
+  } else if (selectedItemIndex.value >= 0) {
+    const file = fileList.value[selectedItemIndex.value];
+    if (file && (file.file_type === 1 || file.file_type === 3)) {
+      return [Number(file.id)].filter(id => id > 0);
+    }
+  }
+  return [];
+};
+
+const onCopyAllEffects = async () => {
+  if (selectedItemIndex.value < 0) return;
+  const file = fileList.value[selectedItemIndex.value];
+  if (!file || (file.file_type !== 1 && file.file_type !== 3)) return;
+  const fileId = Number(file.id);
+  if (!fileId) return;
+  try {
+    const effects = await invoke('copy_all_effects', { fileId });
+    copiedEffects.value = effects;
+    toast.success(t('menu.file.effects_copied'));
+  } catch (error) {
+    console.error('Failed to copy effects:', error);
+    toast.error(t('menu.file.copy_failed'));
+  }
+};
+
+const onCopyAllEffectsSelection = async () => {
+  const items = await getActionableSelectedItemsForAction();
+  const imageItems = (items || []).filter(item => item.file_type === 1 || item.file_type === 3);
+  if (imageItems.length !== 1) return;
+  const fileId = Number(imageItems[0].id);
+  if (!fileId) return;
+  try {
+    const effects = await invoke('copy_all_effects', { fileId });
+    copiedEffects.value = effects;
+    toast.success(t('menu.file.effects_copied'));
+  } catch (error) {
+    console.error('Failed to copy effects from selection:', error);
+    toast.error(t('menu.file.copy_failed'));
+  }
+};
+
+const onPasteAllEffects = async () => {
+  if (!copiedEffects.value) return;
+  if (selectedItemIndex.value < 0) return;
+  const file = fileList.value[selectedItemIndex.value];
+  if (!file || (file.file_type !== 1 && file.file_type !== 3)) return;
+  const fileId = Number(file.id);
+  if (!fileId) return;
+  try {
+    const res = await invoke<{ ok: number[]; failed: { id: number; error: string }[] }>('paste_all_effects', {
+      fileIds: [fileId],
+      effects: copiedEffects.value,
+    });
+    if (res?.ok?.length) {
+      await Promise.all(res.ok.map(id => refreshEditedFile(id)));
+      if (nativeGridOn.value) void nativeGridRefresh();
+      toast.success(t('menu.file.effects_pasted'));
+    }
+    if (res?.failed?.length) {
+      toast.error(t('menu.file.batch_edit_failed_count', { count: res.failed.length }));
+    }
+  } catch (error) {
+    console.error('Failed to paste effects:', error);
+    toast.error(t('menu.file.paste_failed'));
+  }
+};
+
+const onPasteAllEffectsSelection = async () => {
+  if (!copiedEffects.value) return;
+  const fileIds = await getTargetImageFileIds();
+  if (!fileIds || fileIds.length === 0) return;
+  try {
+    const res = await invoke<{ ok: number[]; failed: { id: number; error: string }[] }>('paste_all_effects', {
+      fileIds,
+      effects: copiedEffects.value,
+    });
+    if (res?.ok?.length) {
+      await Promise.all(res.ok.map(id => refreshEditedFile(id)));
+      if (nativeGridOn.value) void nativeGridRefresh();
+      toast.success(t('menu.file.effects_pasted'));
+    }
+    if (res?.failed?.length) {
+      toast.error(t('menu.file.batch_edit_failed_count', { count: res.failed.length }));
+    }
+  } catch (error) {
+    console.error('Failed to paste effects on selection:', error);
+    toast.error(t('menu.file.paste_failed'));
+  }
+};
+
+const onBatchEdit = async (op: string) => {
+  const fileIds = await getTargetImageFileIds();
+  if (!fileIds || fileIds.length === 0) return;
+  try {
+    const res = await invoke<{ ok: number[]; failed: { id: number; error: string }[] }>('batch_edit_images', {
+      fileIds,
+      op,
+    });
+    if (res?.ok?.length) {
+      await Promise.all(res.ok.map(id => refreshEditedFile(id)));
+      if (nativeGridOn.value) void nativeGridRefresh();
+      toast.success(t('menu.file.batch_edit_success'));
+    }
+    if (res?.failed?.length) {
+      toast.error(t('menu.file.batch_edit_failed_count', { count: res.failed.length }));
+    }
+  } catch (error) {
+    console.error(`Failed to batch edit (${op}):`, error);
+    toast.error(t('menu.file.batch_edit_failed'));
+  }
+};
 
 // set file rotate
 const clickRotate = () => rotateSelected(90);
@@ -10653,6 +12416,7 @@ const toggleDedupPanel = () => {
 };
 
 async function openDedupPanel() {
+  if (!PHOTO_DISCOVERY_ENABLED) return;
   const wasInSelectMode = selectMode.value;
   if (wasInSelectMode) selectMode.value = false;
   disablePreviewModes();
@@ -10810,7 +12574,7 @@ const groupOptions = computed(() => {
 
   return [
     ...options,
-    ...[GROUP.FOLDER, GROUP.FILE_TYPE, GROUP.DAY, GROUP.MONTH, GROUP.YEAR, GROUP.RATING, GROUP.CULLING, GROUP.LOCATION, GROUP.CAMERA, GROUP.LENS]
+    ...[GROUP.FOLDER, GROUP.FILE_TYPE, GROUP.DAY, GROUP.MONTH, GROUP.QUARTER, GROUP.YEAR, GROUP.RATING, GROUP.CULLING, GROUP.LOCATION, GROUP.CAMERA, GROUP.LENS]
       .map(value => ({ label: groupTypeLabels.value[value], value }))
       .filter(option => option.label),
   ];
@@ -11064,7 +12828,9 @@ async function getFileListThumb(files: any[], offset = 0, concurrencyLimit = 4, 
         }
       }
       // The grid and preloader share the direct indexed URL; do not duplicate photo bytes over IPC.
-      if (!bustCache && isAlbumThumbnailView.value && !(Number(file.face_person_id) > 0)) continue;
+      // Every tile with an id loads lap://.../thumb/<id> itself (Thumbnail.vue), in every view:
+      // Calendar, Library and search sent ~100 base64 get_file_thumbs calls per jump (Build 42).
+      if (!bustCache && Number(file.id) > 0 && !(Number(file.face_person_id) > 0)) continue;
       // Face tiles fetch their own small crop via lap://; do not also load whole-photo bytes.
       if (!bustCache && (!isAlbumThumbnailView.value || Number(file.face_person_id) > 0)
           && (isPersonView.value || isPeopleAllQuery()) && config.settings.grid.personFaces !== false

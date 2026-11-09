@@ -402,6 +402,14 @@ pub struct AppConfig {
     pub debug: bool,
     #[serde(default)]
     pub process_library_in_background: bool,
+    #[serde(default)]
+    pub ai_scene_detection_enabled: bool,
+    #[serde(default)]
+    pub ai_object_detection_enabled: bool,
+    #[serde(default)]
+    pub ai_ocr_enabled: bool,
+    #[serde(default)]
+    pub ai_description_enabled: bool,
     #[serde(default = "default_last_selected_item_index")]
     pub last_selected_item_index: i64,
     #[serde(default)]
@@ -420,6 +428,10 @@ impl Default for AppConfig {
         Self {
             debug: false,
             process_library_in_background: false,
+            ai_scene_detection_enabled: false,
+            ai_object_detection_enabled: false,
+            ai_ocr_enabled: false,
+            ai_description_enabled: false,
             last_selected_item_index: default_last_selected_item_index(),
             db_storage_dir: None,
             current_library_id: "default".to_string(),
@@ -448,6 +460,22 @@ mod background_processing_tests {
         let saved = serde_json::to_string(&config).unwrap();
         let reloaded: AppConfig = serde_json::from_str(&saved).unwrap();
         assert!(reloaded.process_library_in_background);
+    }
+
+    #[test]
+    fn experimental_ai_requires_explicit_persisted_opt_in() {
+        let legacy: AppConfig = serde_json::from_str(r#"{"process_library_in_background":true,"current_library_id":"default","libraries":[]}"#).unwrap();
+        for config in [legacy, AppConfig::default()] {
+            assert!(!config.ai_scene_detection_enabled);
+            assert!(!config.ai_object_detection_enabled);
+            assert!(!config.ai_ocr_enabled);
+            assert!(!config.ai_description_enabled);
+        }
+        let config = AppConfig { ai_scene_detection_enabled: true, ai_ocr_enabled: true, ..AppConfig::default() };
+        let saved = serde_json::to_string(&config).unwrap();
+        let restored: AppConfig = serde_json::from_str(&saved).unwrap();
+        assert!(restored.ai_scene_detection_enabled && restored.ai_ocr_enabled);
+        assert!(!restored.ai_object_detection_enabled && !restored.ai_description_enabled);
     }
 }
 
@@ -731,6 +759,10 @@ fn recover_app_config_from_library_dbs() -> Result<AppConfig, String> {
     Ok(AppConfig {
         debug: false,
         process_library_in_background: false,
+        ai_scene_detection_enabled: false,
+        ai_object_detection_enabled: false,
+        ai_ocr_enabled: false,
+        ai_description_enabled: false,
         last_selected_item_index: default_last_selected_item_index(),
         db_storage_dir: None,
         current_library_id,

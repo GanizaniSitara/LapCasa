@@ -38,7 +38,7 @@
         {{ titlebar }}
       </span>
 
-      <!-- General Menu Bar -->
+      <!-- General Menu Bar (Picasa parity) -->
       <TopMenuBar v-if="!isMac && viewName === 'Home'" />
     </div>
     <div v-if="isMac" class="flex-1" data-tauri-drag-region></div>

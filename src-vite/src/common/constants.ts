@@ -69,6 +69,7 @@ export const GROUP = {
   YEAR: 8,
   FILE_TYPE: 9,
   CULLING: 10,
+  QUARTER: 11,   // calendar quarter (Browse by date, LAP-049)
 } as const;
 
 export type Group = (typeof GROUP)[keyof typeof GROUP];
