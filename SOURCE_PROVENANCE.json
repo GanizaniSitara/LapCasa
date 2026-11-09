@@ -105,6 +105,10 @@
     {
       "path": "src-tauri/src/t_face_suggest.rs",
       "reason": "Generic test names and anonymised explanatory comments; inference behavior unchanged."
+    },
+    {
+      "path": "src-tauri/build.rs",
+      "reason": "Retain actual full source/version provenance as compiled metadata under Windows LTO with an unmangled used symbol and standard MSVC /INCLUDE. Existing About API is unchanged. No binary post-patching."
     }
   ],
   "excluded": [
@@ -161,7 +165,11 @@
     "focused_native_readers": 4,
     "frontend_regressions": 50,
     "complete_crate_tests": "pending",
-    "production_artifact_gate": "pending"
+    "production_artifact_gate": "pending",
+    "complete_crate_release_edit_tests": 26,
+    "complete_crate_release_slab_tests": 18,
+    "initial_production_runtime": "b70f3fa native identity/English/model/white/default-network tests passed on synthetic133. Full gate RED from mismatched copied fixture and literal identity retention; original reports retained.",
+    "identity_retention_probe": "const and plain used-static lose literal bytes under LTO; standard linker-rooted metadata keeps native API and full identity bytes. Independent Astra source-only review ship."
   },
   "publication_pending": [
     "Exact FFmpeg external corresponding source/build definitions",

@@ -211,6 +211,7 @@ fn write_build_info() {
         Err(error) => panic!("Invalid SOURCE_DATE_EPOCH: {error}"),
     };
     let commit_hash = current_git_commit_hash().unwrap_or_default();
+    let full_commit = git_output(&["rev-parse", "HEAD"]).unwrap_or_default();
 
     let mut formatted = String::new();
     write!(
@@ -219,6 +220,16 @@ fn write_build_info() {
         timestamp, commit_hash
     )
     .unwrap();
+
+    // Keep source provenance readable in the optimized Windows binary. LTO can
+    // otherwise reconstruct the short About hash without retaining its bytes.
+    let identity = format!("LapCasa {} source {}\0", env!("CARGO_PKG_VERSION"), full_commit);
+    write!(formatted, "\n#[used]\n#[unsafe(no_mangle)]\npub static LAPCASA_BUILD_IDENTITY: [u8; {}] = {:?};\n",
+        identity.len(), identity.as_bytes()).unwrap();
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let prefix = if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86") { "_" } else { "" };
+        println!("cargo:rustc-link-arg=/INCLUDE:{prefix}LAPCASA_BUILD_IDENTITY");
+    }
 
     if fs::read(&dest_path).ok().as_deref() != Some(formatted.as_bytes()) {
         fs::write(dest_path, formatted).unwrap();
