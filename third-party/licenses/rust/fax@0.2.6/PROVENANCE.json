@@ -1,0 +1,11 @@
+{
+  "package": "fax",
+  "version": "0.2.6",
+  "declared_license": "MIT",
+  "published_source_url": "https://static.crates.io/crates/fax/fax-0.2.6.crate",
+  "published_source_sha256": "f05de7d48f37cd6730705cbca900770cab77a89f413d23e100ad7fad7795a0ab",
+  "standard_terms_urls": {
+    "MIT": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt"
+  },
+  "notice_policy": "Exact published source/manifests and original notices retained. Standard licence texts are reference templates matching the published grant, not recovered author-issued standalone notices. No copyright holder/year is invented."
+}

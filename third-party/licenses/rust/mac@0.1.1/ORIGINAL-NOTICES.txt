@@ -1,0 +1,2 @@
+No standalone copyright/licence notice was present in the published package.
+Its explicit licence grant and author declarations are preserved in the original Cargo.toml and source archive.

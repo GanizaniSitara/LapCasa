@@ -1,0 +1,12 @@
+{
+  "package": "anndists",
+  "version": "0.1.5",
+  "declared_license": "MIT/Apache-2.0",
+  "published_source_url": "https://static.crates.io/crates/anndists/anndists-0.1.5.crate",
+  "published_source_sha256": "9a8396b473aa0bceed68fb32462505387ea39fa47c7029417e0a49f10592b036",
+  "standard_terms_urls": {
+    "MIT": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt",
+    "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  },
+  "notice_policy": "Exact published source/manifests and original notices retained. Standard licence texts are reference templates matching the published grant, not recovered author-issued standalone notices. No copyright holder/year is invented."
+}

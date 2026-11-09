@@ -1,0 +1,11 @@
+{
+  "package": "convert_case",
+  "version": "0.4.0",
+  "declared_license": "MIT",
+  "published_source_url": "https://static.crates.io/crates/convert_case/convert_case-0.4.0.crate",
+  "published_source_sha256": "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e",
+  "standard_terms_urls": {
+    "MIT": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt"
+  },
+  "notice_policy": "Exact published source/manifests and original notices retained. Standard licence texts are reference templates matching the published grant, not recovered author-issued standalone notices. No copyright holder/year is invented."
+}

@@ -30,7 +30,7 @@ their identifier; original upstream Lap profiles remain separate. See
 ## Source and verification
 
 The application binary was compiled from a306de3599f0a52384657ebe5c8cdab659269d24.
-The release tag adds documentation and release records only; application/build
+The release tag adds documentation, attribution and release records; application/build
 source files are unchanged. SOURCE_PROVENANCE.json records that distinction.
 The release source ZIP includes all four pinned native source trees; ordinary
 Git clones need the public submodules in .gitmodules.

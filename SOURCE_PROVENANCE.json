@@ -171,7 +171,7 @@
     "fresh_standard_account_and_hardware_matrix_complete": false
   },
   "application_build_commit": "a306de3599f0a52384657ebe5c8cdab659269d24",
-  "release_changes_since_application_build": "Release documentation/records only; all application and build source inputs unchanged. Binary native metadata reports the compiled commit.",
+  "release_changes_since_application_build": "Release documentation/attribution/records only; all application and build source inputs unchanged. Binary native metadata reports the compiled commit.",
   "runtime_package_exclusions": [
     "Pretrained model weights",
     "FFmpeg/ffprobe executables"

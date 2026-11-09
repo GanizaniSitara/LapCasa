@@ -220,7 +220,38 @@
       "version": "0.1.5",
       "license_expression": "MIT/Apache-2.0",
       "repository": "https://github.com/jean-pierreBoth/anndists",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/anndists@0.1.5/LICENSE-Apache-2.0-REFERENCE.txt",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/anndists@0.1.5/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/anndists@0.1.5/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/anndists@0.1.5/original-published-source.crate",
+          "bytes": 19549,
+          "sha256": "9a8396b473aa0bceed68fb32462505387ea39fa47c7029417e0a49f10592b036",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/anndists@0.1.5/PROVENANCE.json",
+          "bytes": 728,
+          "sha256": "592cef4800ff6d45f273616356c0f5a25d399665b14263b14e1d7bf63d9719c5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "9a8396b473aa0bceed68fb32462505387ea39fa47c7029417e0a49f10592b036",
       "upstream_vcs": {
         "git": {
@@ -1486,7 +1517,32 @@
       "version": "0.4.0",
       "license_expression": "MIT",
       "repository": "https://github.com/rutrum/convert-case",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/convert_case@0.4.0/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/convert_case@0.4.0/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/convert_case@0.4.0/original-published-source.crate",
+          "bytes": 8098,
+          "sha256": "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/convert_case@0.4.0/PROVENANCE.json",
+          "bytes": 659,
+          "sha256": "4ee2e443fb356f819e150410bb96d7a3078198573dcb6ec0a9cd670464d3c715",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e",
       "upstream_vcs": {
         "git": {
@@ -3076,7 +3132,32 @@
       "version": "0.2.6",
       "license_expression": "MIT",
       "repository": "https://github.com/pdf-rs/fax",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/fax@0.2.6/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax@0.2.6/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax@0.2.6/original-published-source.crate",
+          "bytes": 13279,
+          "sha256": "f05de7d48f37cd6730705cbca900770cab77a89f413d23e100ad7fad7795a0ab",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax@0.2.6/PROVENANCE.json",
+          "bytes": 632,
+          "sha256": "8da4cae04c8e99bf61dc98a838e3619fd06654872d4f39406d00e93c48f70a9b",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "f05de7d48f37cd6730705cbca900770cab77a89f413d23e100ad7fad7795a0ab",
       "upstream_vcs": {
         "git": {
@@ -3091,7 +3172,32 @@
       "version": "0.2.0",
       "license_expression": "MIT",
       "repository": "https://github.com/pdf-rs/fax",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/fax_derive@0.2.0/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax_derive@0.2.0/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax_derive@0.2.0/original-published-source.crate",
+          "bytes": 4442,
+          "sha256": "a0aca10fb742cb43f9e7bb8467c91aa9bcb8e3ffbc6a6f7389bb93ffc920577d",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fax_derive@0.2.0/PROVENANCE.json",
+          "bytes": 653,
+          "sha256": "b736f24987f41074aeb373ccdd496b5e24d4225e8d9f0a56ba2882c78d18f6d9",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "a0aca10fb742cb43f9e7bb8467c91aa9bcb8e3ffbc6a6f7389bb93ffc920577d",
       "upstream_vcs": {
         "git": {
@@ -3520,7 +3626,38 @@
       "version": "0.2.1",
       "license_expression": "Apache-2.0/MIT",
       "repository": "https://github.com/cbreeden/fxhash",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/fxhash@0.2.1/LICENSE-Apache-2.0-REFERENCE.txt",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fxhash@0.2.1/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fxhash@0.2.1/ORIGINAL-NOTICES.txt",
+          "bytes": 498,
+          "sha256": "81b31eca53fdeb93d6e0cf7fef2cec577e361f6faee521365f04151533152380",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fxhash@0.2.1/original-published-source.crate",
+          "bytes": 4102,
+          "sha256": "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/fxhash@0.2.1/PROVENANCE.json",
+          "bytes": 722,
+          "sha256": "f4b2f8d0fae82bdbe0fffe744a9bd7f981b5ed43435719f6d9e7bf472cec9ca5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c",
       "upstream_vcs": null
     },
@@ -5800,7 +5937,38 @@
       "version": "0.1.1",
       "license_expression": "MIT/Apache-2.0",
       "repository": "https://github.com/reem/rust-mac.git",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/mac@0.1.1/LICENSE-Apache-2.0-REFERENCE.txt",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/mac@0.1.1/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/mac@0.1.1/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/mac@0.1.1/original-published-source.crate",
+          "bytes": 4838,
+          "sha256": "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/mac@0.1.1/PROVENANCE.json",
+          "bytes": 713,
+          "sha256": "c9cdb80c97dbdaaedde8b4d163ef4773da8c85692c8b676bd485f2a5a577610d",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4",
       "upstream_vcs": null
     },
@@ -9853,7 +10021,32 @@
       "version": "0.1.0",
       "license_expression": "MIT",
       "repository": "https://github.com/lu-zero/simd_helpers",
-      "notices": [],
+      "notices": [
+        {
+          "path": "licenses/rust/simd_helpers@0.1.0/LICENSE-MIT-REFERENCE.txt",
+          "bytes": 1078,
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/simd_helpers@0.1.0/ORIGINAL-NOTICES.txt",
+          "bytes": 191,
+          "sha256": "0923ac86f1a0d35fdddc8081251037f4d4b753f93211d6f71af4f6ad5cc14747",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/simd_helpers@0.1.0/original-published-source.crate",
+          "bytes": 1527,
+          "sha256": "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        },
+        {
+          "path": "licenses/rust/simd_helpers@0.1.0/PROVENANCE.json",
+          "bytes": 659,
+          "sha256": "3972b8a19dd0a01cecb1981c7011f9751669fd003efcfd17538a71b473206d89",
+          "origin": "Published source or identified standard terms; see PROVENANCE.json"
+        }
+      ],
       "checksum": "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6",
       "upstream_vcs": {
         "git": {
@@ -18876,15 +19069,7 @@
       ]
     }
   ],
-  "missing_standalone_texts": [
-    "rust/anndists@0.1.5",
-    "rust/convert_case@0.4.0",
-    "rust/fax@0.2.6",
-    "rust/fax_derive@0.2.0",
-    "rust/fxhash@0.2.1",
-    "rust/mac@0.1.1",
-    "rust/simd_helpers@0.1.0"
-  ],
+  "missing_standalone_texts": [],
   "locked_frontend_not_installed": [
     {
       "package": "@emnapi/core@1.9.1",
@@ -19235,5 +19420,15 @@
       "cpu": null
     }
   ],
-  "public_cleared": false
+  "standalone_template_provenance": "Seven packages use explicitly identified reference licence terms alongside their exact published source grants; see attribution-followups.json.",
+  "upstream_standalone_text_unavailable": [
+    "rust/anndists@0.1.5",
+    "rust/convert_case@0.4.0",
+    "rust/fax@0.2.6",
+    "rust/fax_derive@0.2.0",
+    "rust/fxhash@0.2.1",
+    "rust/mac@0.1.1",
+    "rust/simd_helpers@0.1.0"
+  ],
+  "legal_certification": false
 }

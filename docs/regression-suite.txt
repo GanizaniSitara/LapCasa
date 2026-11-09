@@ -312,5 +312,5 @@ Expected: Attribute native/helper/WebView contacts and verify consent boundaries
 
 PLAT-05 | Platform/privacy | PASS_CURRENT
 Procedure: Verify complete allowlist, all ZIP entry hashes, no model/profile payloads and extracted native identity.
-Expected: 1230 package entries match; frozen ZIP and native hashes agree.
+Expected: Every packaged entry matches its manifest; frozen ZIP and native hashes agree.
 

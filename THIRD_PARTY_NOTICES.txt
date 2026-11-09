@@ -6,9 +6,12 @@ See LICENSE and the original notices in the corresponding source files.
 Dependency inventory: third-party/inventory.json. Full recovered licence,
 copyright, NOTICE and PATENTS texts are preserved in third-party/licenses/.
 The inventory includes build tools conservatively; not every entry is a
-runtime component. Seven published-permissive grants have incomplete
-recovered standalone text; see third-party/attribution-followups.json and
-third-party/unresolved-license-grants/. Original published grants/manifests are retained alongside collected material.
+runtime component. Seven packages omit author-issued standalone licence text.
+For these, third-party/licenses/rust/ includes the complete standard terms
+identified by the published grant, exact checksum-verified published source,
+original notices and provenance. These are identified reference terms; no
+copyright holder/year has been invented. Original manifests remain in
+third-party/unresolved-license-grants/; see attribution-followups.json.
 
 Native source pins: SOURCE_PROVENANCE.json and .gitmodules.
 DirectML 1.15.4 DLL redistribution: third-party/licenses/runtime/DirectML-1.15.4/.

@@ -1,0 +1,12 @@
+{
+  "package": "fxhash",
+  "version": "0.2.1",
+  "declared_license": "Apache-2.0/MIT",
+  "published_source_url": "https://static.crates.io/crates/fxhash/fxhash-0.2.1.crate",
+  "published_source_sha256": "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c",
+  "standard_terms_urls": {
+    "MIT": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt",
+    "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  },
+  "notice_policy": "Exact published source/manifests and original notices retained. Standard licence texts are reference templates matching the published grant, not recovered author-issued standalone notices. No copyright holder/year is invented."
+}

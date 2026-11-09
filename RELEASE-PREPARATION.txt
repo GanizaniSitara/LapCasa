@@ -7,7 +7,7 @@ The source includes build code and pinned native source, public locked dependenc
 metadata and collected notices.
 
 Compiled application commit:a306de3599f0a52384657ebe5c8cdab659269d24.
-Release documentation updates do not change application/build source inputs.
+Release documentation and attribution updates do not change application/build source inputs.
 Read SOURCE_PROVENANCE.json and the release asset manifest for exact identities.
 See docs/regression-suite.txt for executed, historical and unexecuted coverage.
 Fresh-account, missing-runtime, hardware and comprehensive feature acceptance
