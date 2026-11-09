@@ -1,0 +1,21 @@
+Optional FFmpeg video tools
+
+The public Windows ZIP does not contain FFmpeg or ffprobe. They are separate
+programs with their own terms; obtain them directly from a provider if needed.
+The app does not automatically download or install these programs.
+Official project/download information: https://ffmpeg.org/download.html
+Windows build provider: https://www.gyan.dev/ffmpeg/builds/
+
+After reviewing your chosen provider's terms, extract the tools yourself.
+Create an ffmpeg folder beside lap-casa.exe and place the binaries there as:
+  ffmpeg/ffmpeg-x86_64-pc-windows-msvc.exe
+  ffmpeg/ffprobe-x86_64-pc-windows-msvc.exe
+These are the app's expected names; rename the extracted ffmpeg.exe and
+ffprobe.exe accordingly. Keep other required files from your chosen provider
+if using a shared build. Restart LapCasa after changing the tools.
+
+Without these tools, video processing and FFmpeg-backed image formats are
+unavailable; native supported photo browsing/search/editing remain available.
+Not every codec/format/provider version has been tested.
+Collected FFmpeg notices in third-party are reference/build provenance;
+they do not mean FFmpeg binaries are shipped in this public package.

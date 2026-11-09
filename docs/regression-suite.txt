@@ -1,0 +1,316 @@
+LapCasa0.5.0-beta.1 regression coverage
+Compiled application:a306de3599f0a52384657ebe5c8cdab659269d24
+
+The automated full gate passed49 source/gate-fault tests,51People cases and6folder workloads, wheel/review position, zoom, confirmation ordering and approved look/flicker.
+Separately50frontend tests and44focused release-profile Rust tests passed. The301registered native tests were not all run.
+PASS_CURRENT=exact compiled application; PASS_SOURCE=tested functional source unchanged; HISTORICAL=earlier build only; AVAILABLE_NOT_RUN=code exists but not run in this release; NOT_RUN=written acceptance only.
+The public package excludes optional FFmpeg binaries; its separate smoke is recorded in release verification.
+No complete clean-account/hardware/confirmed-People upgrade or comprehensive feature-matrix claim.
+Run frontend tests from src-vite: node --test --test-concurrency=1 tests/*.test.mjs
+Use an existing provisioned toolchain for Rust tests; no dependency/runtime install is implied.
+
+Product checklist:
+BOOT-01 | Startup | PASS_CURRENT
+Procedure: Extract complete portable package and launch its exact executable on a disposable profile.
+Expected: Correct native version/commit; no page errors; browsing opens without automatic model download.
+
+BOOT-02 | Startup | PASS_CURRENT
+Procedure: Start with empty WebView preferences.
+Expected: Light theme and appearance0.
+
+BOOT-03 | Startup | HISTORICAL
+Procedure: Save explicit Dark, restart, then repeat with Light in both Library and embedded editor.
+Expected: Both explicit choices persist; a fresh profile still defaults to Light.
+
+BOOT-04 | Startup | NOT_RUN
+Procedure: Launch final portable app from a fresh standard Windows account, without workstation environment variables.
+Expected: Useful launch or a precise prerequisite error; no access to owner profile.
+
+BOOT-05 | Startup | NOT_RUN
+Procedure: Exercise missing WebView2 and missing VC runtime separately on an existing approved clean test environment.
+Expected: Document actual error/recovery path; never uninstall owner runtimes to manufacture the case.
+
+BOOT-06 | Startup | PASS_CURRENT
+Procedure: Read native package info and match executable/source/archive hashes.
+Expected: Version0.5.0-beta.1, a306de3 and exact manifest identity agree.
+
+LIB-01 | Library | PASS_CURRENT
+Procedure: Browse all fixed named-People cases and six fixed folder workloads.
+Expected: Correct complete images and layouts with no blank/wrong-person tiles; all cases pass.
+
+LIB-02 | Library | PASS_CURRENT
+Procedure: Scroll the fixed People section and folder workloads, then reload review.
+Expected: Content follows wheel and review position remains stable.
+
+LIB-03 | Library | PASS_CURRENT
+Procedure: Use Ctrl+wheel to zoom out/in and check persisted columns.
+Expected: Tile size and saved column count change together; normal wheel remains scroll.
+
+LIB-04 | Library | PASS_CURRENT
+Procedure: Capture approved People/folder/Info views and settled idle frames.
+Expected: Approved pixels/layout preserved; no idle tile flicker.
+
+LIB-05 | Library | NOT_RUN
+Procedure: Create two disposable libraries; switch repeatedly and restart.
+Expected: Albums, selected photo, filters and view state stay associated with the correct library.
+
+LIB-06 | Library | NOT_RUN
+Procedure: Add/remove an album, exclude a nested folder, rescan and reconnect a temporarily unavailable folder.
+Expected: Counts and exclusions remain consistent; originals survive removal from the library.
+
+LIB-07 | Library | NOT_RUN
+Procedure: Start a scan of copied sample media; cancel, restart and resume after app restart.
+Expected: No duplicate rows or stuck progress; usable browsing during work; recovery state is truthful.
+
+SEARCH-01 | Search | PASS_CURRENT
+Procedure: Submit legacy model1 queries to current native English search twice.
+Expected: English query encoding succeeds; second model_load_ms is0; unsupported model selection rejected.
+
+SEARCH-02 | Search | PASS_CURRENT
+Procedure: Open Search settings and inspect model options and feature-pack rows.
+Expected: Only Default English search; eleven interface languages remain independent; five feature packs remain.
+
+SEARCH-03 | Search | NOT_RUN
+Procedure: Search known filename, folder, caption and date terms in a deterministic sample library.
+Expected: Exact matching items/counts are returned and match the documented search semantics.
+
+SEARCH-04 | Search | NOT_RUN
+Procedure: Use New York text in one photo and a visually similar unrelated skyline in another.
+Expected: Exact text matches and approximate visual guesses appear in separate sections with the location disclaimer.
+
+SEARCH-05 | Search | NOT_RUN
+Procedure: Type rapidly, replace a query while visual work is pending, then clear search.
+Expected: Only newest-query results appear; selection and scroll do not jump; no stale append.
+
+SEARCH-06 | Search | NOT_RUN
+Procedure: Observe first viewport while a large search result set arrives.
+Expected: No chunks flashing through the viewport or whole-area blanking; compare with People/Library behavior.
+
+SEARCH-07 | Search | NOT_RUN
+Procedure: Use real mouse-wheel events over search grid, its text-match section and visual-match section.
+Expected: All current result sections scroll normally with no hidden wheel trap.
+
+SEARCH-08 | Search | NOT_RUN
+Procedure: Jump and wheel through Timeline while a search filter is active.
+Expected: Timeline and selection operate on current matching results and do not jump into the whole library.
+
+SEARCH-09 | Search | NOT_RUN
+Procedure: Search a scene from the scene dropdown and inspect all dropdown labels.
+Expected: Scene query is readable without scene: prefix; dropdown has no decorative emojis; approved positions unchanged.
+
+SEARCH-10 | Search | NOT_RUN
+Procedure: Exercise empty/no-match queries, Unicode OCR text, punctuation and quoted text.
+Expected: No crash or spurious visual/text conflation; Unicode preserved; clear restores normal browsing.
+
+SEARCH-11 | Search | NOT_RUN
+Procedure: Measure cold process, first model load, repeated warm query, index change and idle-expiry reload.
+Expected: Separate text-ready, visual-ready and model-load timings; verify cache invalidation and record distribution, not a blanket instant guarantee.
+
+SEARCH-12 | Search | NOT_RUN
+Procedure: Run plain text search without installed packs and with background processing disabled.
+Expected: Text browsing/search remains usable; unavailable semantic features explain the missing optional pack.
+
+PEOPLE-01 | People | PASS_CURRENT
+Procedure: Open every fixed named-person view.
+Expected: 51 cases complete with correct tiles; current measured paint median54.6ms/max75.5ms.
+
+PEOPLE-02 | People | PASS_CURRENT
+Procedure: Confirm the prepared suggestions and compare tile order before/after.
+Expected: Existing tiles do not move and confirmations are persisted.
+
+PEOPLE-03 | People | NOT_RUN
+Procedure: Detect faces on permitted synthetic/public-safe portraits with a properly usable pack.
+Expected: Named/unnamed groups and detected regions are correct enough for the documented fixture; cancellation is recoverable.
+
+PEOPLE-04 | People | NOT_RUN
+Procedure: Rename/merge a person, confirm/reject suggestions, undo rejection and restore ignored faces in a disposable library.
+Expected: Confirmed membership is preserved; no unrelated person/face changes.
+
+PEOPLE-05 | People | NOT_RUN
+Procedure: Upgrade a COPY of an actual0.4.1 library containing confirmed People.
+Expected: Person IDs/names, confirmed associations, ignored/rejected state and thumbnails survive; keep old library untouched.
+
+PEOPLE-06 | People | NOT_RUN
+Procedure: Rotate/crop a face photo and reopen People/Info/editor.
+Expected: Displayed face boxes and crops follow rendered orientation without whole-photo substitution.
+
+EDIT-01 | Editing | PASS_SOURCE
+Procedure: Run all26 t_edit_recipe tests in the actual release-profile crate.
+Expected: History, copy/paste, batch effects, geometry/face mapping, saved-effect compatibility and original preservation pass.
+
+EDIT-02 | Editing | PASS_SOURCE
+Procedure: Run frontend geometry, Fill Light, slider-step and editor-review tests.
+Expected: Latest preview wins; gestures form correct undo steps; geometry stays inside image; no stale preview.
+
+EDIT-03 | Editing | PASS_CURRENT
+Procedure: Open a copied actual0.4.1 eight-photo library with two saved edits and exercise native undo/redo.
+Expected: Saved current edit and history survive, explicit settings survive, DB integrity isOK; old DB and original bytes unchanged.
+
+EDIT-04 | Editing | NOT_RUN
+Procedure: Open embedded editor, adjust Fill Light quickly, release, undo/redo and close/reopen.
+Expected: Visible preview, history labels and saved rendering agree through rapid changes and restart.
+
+EDIT-05 | Editing | NOT_RUN
+Procedure: Exercise crop/straighten/rotate/flips, aspect choices and A/A|B/A|A comparison on portrait/landscape/oriented files.
+Expected: No black crop edges or wrong orientation; controls remain in their approved positions.
+
+EDIT-06 | Editing | NOT_RUN
+Procedure: Use local subject selection/masking, refine it, switch photo and undo.
+Expected: Mask is associated with the correct photo/revision and survives save/reopen; missing pack is handled clearly.
+
+EDIT-07 | Editing | NOT_RUN
+Procedure: Copy/paste effects and batch-edit multiple disposable photos, including one invalid/unavailable target.
+Expected: Each valid target gets one correct history step; partial failure is explicit; target geometry/originals stay intact.
+
+EDIT-08 | Editing | NOT_RUN
+Procedure: Export JPEG/PNG/WebP to a new disposable folder with resize/quality settings; cancel overwrite once.
+Expected: Dimensions/rendering/format match choices; cancellation writes nothing; intended originals remain byte-identical.
+
+VIEW-01 | Viewer | PASS_SOURCE
+Procedure: Run preview lifecycle/focus/queued-fullscreen frontend tests.
+Expected: Disposed/queued viewers do not steal focus; final resize restores focus correctly.
+
+VIEW-02 | Viewer | NOT_RUN
+Procedure: Open viewer, filmstrip and slideshow; navigate with keys/wheel; enter/exit fullscreen twice.
+Expected: Correct file order, persisted mode and focus; ordinary scrolling works in A view.
+
+VIEW-03 | Viewer | NOT_RUN
+Procedure: Open every advertised format available in the public-safe sample set, including RAW/HEIC/JXL/video.
+Expected: Orientation/colour/dimensions/decoding are correct or unsupported-file error is clear.
+
+VIEW-04 | Viewer | NOT_RUN
+Procedure: Play/pause/seek video and motion-photo content, switch photo during loading and stop playback.
+Expected: No stuck audio/process, wrong frame or stale media; unavailable video tool errors are clear.
+
+META-01 | Metadata | NOT_RUN
+Procedure: Apply/remove tags, tag groups, ratings, favourite/hidden and culling flags; restart and filter.
+Expected: DB, counts, selection and visible metadata remain consistent after every change.
+
+META-02 | Metadata | NOT_RUN
+Procedure: Create/rename/reorder collections, add/remove items, then use smart query rules and counts.
+Expected: Collections/rules persist and returned membership/order/counts agree.
+
+META-03 | Metadata | NOT_RUN
+Procedure: Edit caption, taken date and GPS on copied files, including Unicode and fractional timezone inputs.
+Expected: Only selected copies change as requested; filters/Timeline/Info refresh to the stored value.
+
+FILES-01 | File operations | NOT_RUN
+Procedure: Rename, copy and move disposable files/folders within and outside album roots.
+Expected: Destination bytes and DB paths/counts agree; failed moves do not orphan originals.
+
+FILES-02 | File operations | NOT_RUN
+Procedure: Trash copied files and restore them; test permanent-delete cancellation on an extra expendable copy.
+Expected: Only explicitly selected disposable items are affected; cancellation leaves bytes unchanged.
+
+FILES-03 | File operations | NOT_RUN
+Procedure: Import copied media via folder, drag/drop and clipboard with duplicate-name conflicts.
+Expected: Correct copies and metadata are indexed; no silent overwrite or unrelated deletion.
+
+FILES-04 | File operations | NOT_RUN
+Procedure: Run duplicate/similar-photo scans, cancel/retry, choose keepers, and cancel the delete action.
+Expected: Groups reflect fixture truth; keeper choices persist; cancel leaves all files intact.
+
+MAP-01 | Maps | HISTORICAL
+Procedure: Start fresh/legacy settings and expand both map panels without online consent.
+Expected: Offline/local default; no online tile attempt; basic world overview works.
+
+MAP-02 | Maps | HISTORICAL
+Procedure: Use read-only raster MBTiles, TMS rows, missing coverage and vector/remote/device path inputs.
+Expected: Local tiles render; unsupported input rejected; no online fallback on missing tile.
+
+MAP-03 | Maps | HISTORICAL
+Procedure: Explicitly select each online provider with recording/blocking active, then switch back offline.
+Expected: Provider/IP/viewed-area disclosure; only selected provider attempted; no later fallback.
+
+MAP-04 | Maps | NOT_RUN
+Procedure: Repeat MAP-01..03 on the final extracted production package and restart.
+Expected: Same approved behavior on the exact release artifact, with per-provider request evidence.
+
+MODEL-01 | Models | PASS_CURRENT
+Procedure: Start extracted model-free package and inspect an existing verified MIT pack/receipt.
+Expected: No bundled weights; existing search pack is recognised without changing revision/path.
+
+MODEL-02 | Models | AVAILABLE_NOT_RUN
+Procedure: Run12 current t_models native unit tests with local synthetic responses.
+Expected: No consent/stale consent rejected; whole-pack atomicity, cancel/race/hash/size/failure/repair/serialization pass.
+
+MODEL-03 | Models | NOT_RUN
+Procedure: Decline each model dialog on final package, close/reopen and exercise the missing feature.
+Expected: No transfer or consent receipt; browsing remains available; permitted-use restrictions remain explicit.
+
+MODEL-04 | Models | NOT_RUN
+Procedure: For a permitted test pack, explicitly accept, observe progress, cancel/retry, corrupt a disposable copy and repair.
+Expected: Verified full set activates once; cancellation/tamper never makes a usable mixed/partial pack.
+
+MODEL-05 | Models | NOT_RUN
+Procedure: Exercise unavailable GPU/runtime offer and user-declined acceleration on supported test hardware.
+Expected: No automatic runtime/model transfer; accurate fallback/error; no recurring blocking prompt after refusal.
+
+EMAIL-01 | Email | AVAILABLE_NOT_RUN
+Procedure: Run native injected-composer test without opening or sending mail.
+Expected: Compose/review mandatory; recipients empty; no automatic sending.
+
+EMAIL-02 | Email | NOT_RUN
+Procedure: Use final package with an approved test default mail client; compose selected synthetic Unicode-named attachments, then discard.
+Expected: Correct attachments; empty recipients; review window only; no sent mail.
+
+EMAIL-03 | Email | NOT_RUN
+Procedure: Exercise no-default-client/cancel/error outcomes in an existing disposable environment.
+Expected: Useful error/cancellation with no silent send or personalized account/recipient.
+
+SET-01 | Settings | PASS_SOURCE
+Procedure: Run Settings-search/localization/lazy-panel frontend tests.
+Expected: Search highlights preserve reactive rows, clear restores rows, all locales contain lazy search previews.
+
+SET-02 | Settings | NOT_RUN
+Procedure: Search settings and switch each of the eleven UI languages on the final app; change window size/DPI.
+Expected: Labels remain usable and persist; no control overlap or relocation; English description search remains independent.
+
+SET-03 | Settings | PASS_SOURCE
+Procedure: Run shortcut conflict and Library/editor/Automask chord tests.
+Expected: No duplicate binding per context; intended actions retain their chords.
+
+IMPORT-01 | Import/export tools | NOT_RUN
+Procedure: Run Picasa import dry review using a copied fixture with captions, contacts/face regions, edits and originals.
+Expected: Preview and applied mapping agree; repeated import is safe; source data unchanged.
+
+IMPORT-02 | Import/export tools | NOT_RUN
+Procedure: Run Picasa import with no discoverable Python using an existing disposable configuration.
+Expected: Precise missing-runtime instruction; no automatic install or workstation-specific fallback.
+
+IMPORT-03 | Import/export tools | NOT_RUN
+Procedure: Generate collage/poster/export outputs from copied photos to a disposable destination.
+Expected: Output dimensions/layout/count match controls; cancellation/error never overwrites originals.
+
+REC-01 | Recovery | PASS_SOURCE
+Procedure: Run all18 slab tests, including truncation/append/reopen, invalid headers and shard limits.
+Expected: Damaged data is rejected without resurrection, panic or unintended mutation; valid controls pass.
+
+REC-02 | Recovery | NOT_RUN
+Procedure: Back up a disposable DB; parse/restore into a separate library; compare contents and restart.
+Expected: Restored counts/edits/tags/People match backup; failed or canceled restore preserves prior usable state.
+
+REC-03 | Recovery | NOT_RUN
+Procedure: Interrupt an isolated scan or write through the test harness, then reopen its disposable library.
+Expected: Consistent recoverable state; no originals altered; report actual recovery limits.
+
+PLAT-01 | Platform/privacy | PASS_CURRENT
+Procedure: Inspect both final archives for selected owner/path/email markers; inspect the exact executable for selected credential signatures.
+Expected: No selected marker hit; keep bounded scope, never infer exhaustive privacy clearance.
+
+PLAT-02 | Platform/privacy | PASS_CURRENT
+Procedure: Record default WebView requests with a blocked positive control while exercising the scoped English settings/search run.
+Expected: No default external WebView attempts; positive control is recorded/blocked; owner focus preserved.
+
+PLAT-03 | Platform/privacy | NOT_RUN
+Procedure: Run exact package on CPU-only/no-NVIDIA and supported GPU hosts, with offline and permission-denied fixtures.
+Expected: Useful supported behavior/errors and responsive browsing; record feature-specific limitations.
+
+PLAT-04 | Platform/privacy | NOT_RUN
+Procedure: Capture process-wide egress during default startup, browsing/search and explicit online/download choices.
+Expected: Attribute native/helper/WebView contacts and verify consent boundaries; no claim from a WebView-only recorder.
+
+PLAT-05 | Platform/privacy | PASS_CURRENT
+Procedure: Verify complete allowlist, all ZIP entry hashes, no model/profile payloads and extracted native identity.
+Expected: 1230 package entries match; frozen ZIP and native hashes agree.
+

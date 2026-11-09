@@ -1,14 +1,14 @@
-UNPUBLISHED PREPARATION - NOT A CLEARED PUBLIC RELEASE
+LapCasa0.5.0-beta.1 public beta scope
 
-Remaining checks:
-- Previous-public recipe/settings compatibility, including tools and scalingFitDefault.
-- Crop-icon origin/permission or approved replacement; existing icon is unchanged.
-- Complete corresponding source/build materials for the actual FFmpeg sidecars.
-- Seven declared-permissive dependencies need standalone attribution follow-up.
-- Final unique version, exact production build and normal regression/release review.
-- Fresh standard-user/prerequisites, copied-library upgrade/recovery and CPU/GPU tests.
+Portable Windows x64 application, unsigned; no installer/updater or packaged CLI.
+No pretrained model weights or FFmpeg/ffprobe binaries in the public ZIP.
+Existing WebView2/Visual C++ runtimes are prerequisites; none is auto-installed.
+The source includes build code and pinned native source, public locked dependency
+metadata and collected notices.
 
-No installer, model weights, accounts, photos, library databases, caches, private
-history, verification screenshots, private relay or workstation build config is included.
-The two runtime portability changes remove workstation-specific CLI database and
-Python interpreter fallbacks. They require validation before distribution.
+Compiled application commit:a306de3599f0a52384657ebe5c8cdab659269d24.
+Release documentation updates do not change application/build source inputs.
+Read SOURCE_PROVENANCE.json and the release asset manifest for exact identities.
+See docs/regression-suite.txt for executed, historical and unexecuted coverage.
+Fresh-account, missing-runtime, hardware and comprehensive feature acceptance
+remain limited; the beta does not claim a complete pass of that matrix.

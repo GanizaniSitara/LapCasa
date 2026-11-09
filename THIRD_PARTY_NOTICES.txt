@@ -1,4 +1,4 @@
-LapCasa 0.5.0-beta.1 - UNPUBLISHED PREPARATION
+LapCasa 0.5.0-beta.1 - third-party notices
 
 Application: GPL-3.0-or-later. Based on Lap by julyx10 and contributors.
 See LICENSE and the original notices in the corresponding source files.
@@ -8,16 +8,17 @@ copyright, NOTICE and PATENTS texts are preserved in third-party/licenses/.
 The inventory includes build tools conservatively; not every entry is a
 runtime component. Seven published-permissive grants have incomplete
 recovered standalone text; see third-party/attribution-followups.json and
-third-party/unresolved-license-grants/. These remain release follow-ups.
+third-party/unresolved-license-grants/. Original published grants/manifests are retained alongside collected material.
 
 Native source pins: SOURCE_PROVENANCE.json and .gitmodules.
 DirectML 1.15.4 DLL redistribution: third-party/licenses/runtime/DirectML-1.15.4/.
 Its binary distribution terms are distinct from its source-code licence.
 ONNX Runtime 1.22.0: third-party/licenses/runtime/onnxruntime-1.22.0/.
-FFmpeg/ffprobe 8.1 essentials by Gyan Doshi: GPLv3, statically linked;
-third-party/licenses/runtime/FFmpeg-8.1/ contains the original licence and
-build README. Complete corresponding source/build materials for its external
-libraries remain pending. This preparation is NOT cleared for distribution.
+FFmpeg/ffprobe are NOT included in the public binary package. Existing build
+reference notices for Gyan8.1 remain in third-party/licenses/runtime/FFmpeg-8.1/.
+Optional tools must be obtained separately under their provider terms; see
+docs/optional-video-tools.txt. No FFmpeg corresponding-source completeness
+claim is made for those reference materials.
 
 No pretrained model weights are included. Optional packs have separate terms
 shown before consent and download. Acceptance grants no rights beyond those
@@ -26,7 +27,7 @@ terms. See docs/model-downloads.txt and the exact model catalogue.
 Offline map overview: Natural Earth 5.1.2, public domain; docs/offline-maps.txt.
 Online maps require an explicit provider choice and retain provider attribution.
 
-Remaining release checks are recorded in RELEASE-PREPARATION.txt.
+Beta verification scope and remaining coverage are in docs/regression-suite.txt.
 
 Geographic names and coordinates: GeoNames, https://www.geonames.org/
 Creative Commons Attribution 4.0. Reduced coordinate/name/admin/country extract.

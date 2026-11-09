@@ -1,6 +1,5 @@
 {
-  "status": "unpublished-source-checkpoint",
-  "public_cleared": false,
+  "status": "public-beta-release-source",
   "base_application_commit": "a18fe868390c142ae0a5b3dd9d8a23d9126c6c90",
   "base_internal_build": 80,
   "upstream": "https://github.com/julyx10/lap",
@@ -148,10 +147,8 @@
     "picasa",
     "scalingPicasaDefault"
   ],
-  "built_from_this_source": false,
   "version": "0.5.0-beta.1",
   "public_branch_base": "841fedf",
-  "production_build_status_at_source_checkpoint": "not-yet-built",
   "published_profile_identifier": "com.lapcasa.dev",
   "identifier_reason": "Retain the existing public identifier and its settings/library location; the historical suffix does not select a development build.",
   "compatibility_changes": [
@@ -162,19 +159,21 @@
   "resource_changes": "Default plus Windows and macOS overrides exclude model weights.",
   "upstream_documents_retained": "Existing public docs/i18n/issue templates and FFmpeg source helpers retained, with current English introduction.",
   "validation_at_source_checkpoint": {
-    "focused_native_readers": 4,
-    "frontend_regressions": 50,
-    "complete_crate_tests": "pending",
-    "production_artifact_gate": "pending",
-    "complete_crate_release_edit_tests": 26,
-    "complete_crate_release_slab_tests": 18,
-    "initial_production_runtime": "b70f3fa native identity/English/model/white/default-network tests passed on synthetic133. Full gate RED from mismatched copied fixture and literal identity retention; original reports retained.",
-    "identity_retention_probe": "const and plain used-static lose literal bytes under LTO; standard linker-rooted metadata keeps native API and full identity bytes. Independent Astra source-only review ship."
+    "full_gate_passed": true,
+    "native_people_cases": 51,
+    "folder_cases": 6,
+    "gate_contract_tests": 49,
+    "frontend_tests": 50,
+    "release_crate_edit_tests": 26,
+    "release_crate_slab_tests": 18,
+    "all_registered_rust_tests_run": false,
+    "actual_previous_public_synthetic_upgrade": true,
+    "fresh_standard_account_and_hardware_matrix_complete": false
   },
-  "publication_pending": [
-    "Exact FFmpeg external corresponding source/build definitions",
-    "Seven standalone attribution follow-ups",
-    "Crop icon provenance or approved replacement",
-    "Exact production build/full gate/standard-user and copied-library upgrade/recovery/CPU-GPU review"
+  "application_build_commit": "a306de3599f0a52384657ebe5c8cdab659269d24",
+  "release_changes_since_application_build": "Release documentation/records only; all application and build source inputs unchanged. Binary native metadata reports the compiled commit.",
+  "runtime_package_exclusions": [
+    "Pretrained model weights",
+    "FFmpeg/ffprobe executables"
   ]
 }
